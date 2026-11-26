@@ -9,7 +9,7 @@ permissions:
   contents: read
 
 jobs:
-  check:
+  engine:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
@@ -22,3 +22,37 @@ jobs:
         with:
           tool: cargo-deny,cargo-machete
       - run: make check
+
+  app:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: wasm-bindgen@0.2.130
+      - name: Install binaryen
+        run: |
+          curl -sSfL https://github.com/WebAssembly/binaryen/releases/download/version_126/binaryen-version_126-x86_64-linux.tar.gz | tar -xz -C "$RUNNER_TEMP"
+          echo "$RUNNER_TEMP/binaryen-version_126/bin" >> "$GITHUB_PATH"
+      - uses: pnpm/action-setup@v4
+        with:
+          package_json_file: app/package.json
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: app/pnpm-lock.yaml
+      # Builds the browser engine and checks it writes the same bytes as the command line.
+      - run: make parity
+      - run: pnpm install --frozen-lockfile
+        working-directory: app
+      - run: pnpm check
+        working-directory: app
+      - run: pnpm exec playwright install --with-deps chromium
+        working-directory: app
+      - run: pnpm e2e
+        working-directory: app

@@ -1,0 +1,10 @@
+/* A plain shell until the interface design is approved. */
+:root {
+  color-scheme: light dark;
+  font-family: system-ui, sans-serif;
+  line-height: 1.4;
+}
+
+body {
+  margin: 0;
+}

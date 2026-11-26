@@ -1,0 +1,6 @@
+{
+  "$schema": "https://unpkg.com/knip@6/schema.json",
+  "entry": ["src/engine/worker.ts", "tests/**/*.ts"],
+  "project": ["src/**/*.{ts,svelte}", "tests/**/*.ts"],
+  "ignoreBinaries": ["make"]
+}

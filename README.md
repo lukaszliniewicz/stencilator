@@ -62,18 +62,24 @@ anywhere, and a local MCP server so that an AI assistant can prepare stencils fo
 
 ## Development
 
-`make check` runs everything CI runs: formatting, Clippy with pedantic lints treated as
-errors (for the native build and for WebAssembly), the tests, `cargo deny` for licences
-and security advisories, and `cargo machete` for unused dependencies. It needs the
-`wasm32-unknown-unknown` target, `cargo-deny` and `cargo-machete`.
+`make check` runs the engine's checks, as CI does: formatting, Clippy with pedantic
+lints treated as errors (for the native build and for WebAssembly), the tests,
+`cargo deny` for licences and security advisories, and `cargo machete` for unused
+dependencies. It needs the `wasm32-unknown-unknown` target, `cargo-deny` and
+`cargo-machete`.
 
 The engine lives in `crates/stencilator-core`. It only computes and never touches files,
 the network or the clock, which is what lets the same code run natively and in a browser
-with identical results. `crates/stencilator-cli` is the command, and
-`crates/stencilator-wasm` will become the browser build. `fixtures/` holds reference
-results, computed independently, that the tests compare against. `spikes/` holds early
-experiments with SVG rendering, outline tracing, 3D meshing and MCP that later work will
-turn into real code.
+with identical results. `crates/stencilator-cli` is the command and
+`crates/stencilator-wasm` the browser build, and `make parity` checks that the two write
+the same bytes. `fixtures/` holds reference results, computed independently, that the
+tests compare against. `spikes/` holds early experiments with SVG rendering, outline
+tracing, 3D meshing and MCP that later work will turn into real code.
+
+The web app in `app/` is written in Svelte and TypeScript and is not finished yet. To
+work on it you also need Node 22 or newer, pnpm, `wasm-bindgen-cli` 0.2.130 and
+binaryen. Run `make wasm` once, then `pnpm install` and `pnpm dev` inside `app/`, where
+`pnpm check` and `pnpm e2e` run its own checks.
 
 ## Licence
 
