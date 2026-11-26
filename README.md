@@ -11,9 +11,10 @@ and, later, behind an AI assistant, giving the same result everywhere.
 
 ## Status
 
-Early, but usable from the command line. Tile mode, the square grid described above, is
-finished. The rest is still to come (see the [roadmap](#roadmap)), and there are no
-prebuilt releases yet.
+Early, but usable. Tile mode, the square grid described above, is finished, both on the
+command line and in the web app at <https://stencilator.liniewicz.eu>, which runs entirely
+in your browser: your pictures are never uploaded. The rest is still to come (see the
+[roadmap](#roadmap)), and there are no prebuilt releases of the command yet.
 
 ## Trying it
 
@@ -57,8 +58,8 @@ Free-form mode comes next: stencils whose openings follow the shapes in the artw
 rather than a grid, made from SVG files, images or typed text. That brings the problem
 every stencil maker knows, the middle of an "O" falling out, so connectors that hold such
 islands in place follow, together with a frame and registration marks so the plates line
-up. After that comes a web app that runs entirely in your browser, with nothing uploaded
-anywhere, and a local MCP server so that an AI assistant can prepare stencils for you.
+up. After that comes a local MCP server, so that an AI assistant can prepare stencils for
+you. The web app gains each of these as the engine does.
 
 ## Development
 
@@ -76,8 +77,8 @@ the same bytes. `fixtures/` holds reference results, computed independently, tha
 tests compare against. `spikes/` holds early experiments with SVG rendering, outline
 tracing, 3D meshing and MCP that later work will turn into real code.
 
-The web app in `app/` is written in Svelte and TypeScript. It already does everything
-the command line does in tile mode, but it is not published anywhere yet. To work on it you also need Node 22 or newer, pnpm, `wasm-bindgen-cli` 0.2.130 and
+The web app in `app/` is written in Svelte and TypeScript and does everything the command
+line does in tile mode. To work on it you also need Node 22 or newer, pnpm, `wasm-bindgen-cli` 0.2.130 and
 binaryen. Run `make wasm` once, then `pnpm install` and `pnpm dev` inside `app/`, where
 `pnpm check` and `pnpm e2e` run its own checks.
 
