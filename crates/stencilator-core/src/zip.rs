@@ -112,46 +112,49 @@ pub fn zip<N: AsRef<str>, D: AsRef<[u8]>>(entries: &[(N, D)]) -> Result<Vec<u8>,
 }
 
 #[cfg(test)]
+fn u16_at(bytes: &[u8], at: usize) -> u16 {
+    u16::from_le_bytes([bytes[at], bytes[at + 1]])
+}
+
+#[cfg(test)]
+fn u32_at(bytes: &[u8], at: usize) -> u32 {
+    u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap())
+}
+
+/// Reads an archive back through its central directory, as unzip tools do.
+#[cfg(test)]
+pub(crate) fn unzip(archive: &[u8]) -> Vec<(String, Vec<u8>)> {
+    let end = archive.len() - 22;
+    assert_eq!(u32_at(archive, end), END_OF_CENTRAL_DIRECTORY);
+    let count = u16_at(archive, end + 10);
+    let mut at = u32_at(archive, end + 16) as usize;
+    (0..count)
+        .map(|_| {
+            assert_eq!(u32_at(archive, at), CENTRAL_HEADER);
+            let (method, crc) = (u16_at(archive, at + 10), u32_at(archive, at + 16));
+            let (packed, size) = (u32_at(archive, at + 20) as usize, u32_at(archive, at + 24) as usize);
+            let name_len = u16_at(archive, at + 28) as usize;
+            let name = String::from_utf8(archive[at + 46..at + 46 + name_len].to_vec()).unwrap();
+            let local = u32_at(archive, at + 42) as usize;
+            assert_eq!(u32_at(archive, local), LOCAL_HEADER);
+            assert_eq!(archive[local + 4..local + 30], archive[at + 6..at + 32], "{name}: headers differ");
+            let start = local + 30 + name_len;
+            let body = &archive[start..start + packed];
+            let data = match method {
+                DEFLATED => miniz_oxide::inflate::decompress_to_vec(body).unwrap(),
+                STORED => body.to_vec(),
+                other => panic!("method {other}"),
+            };
+            assert_eq!((data.len(), crc32(&data)), (size, crc), "{name}");
+            at += 46 + name_len;
+            (name, data)
+        })
+        .collect()
+}
+
+#[cfg(test)]
 mod tests {
     use super::*;
-
-    fn u16_at(bytes: &[u8], at: usize) -> u16 {
-        u16::from_le_bytes([bytes[at], bytes[at + 1]])
-    }
-
-    fn u32_at(bytes: &[u8], at: usize) -> u32 {
-        u32::from_le_bytes(bytes[at..at + 4].try_into().unwrap())
-    }
-
-    /// Reads an archive back through its central directory, as unzip tools do.
-    fn unzip(archive: &[u8]) -> Vec<(String, Vec<u8>)> {
-        let end = archive.len() - 22;
-        assert_eq!(u32_at(archive, end), END_OF_CENTRAL_DIRECTORY);
-        let count = u16_at(archive, end + 10);
-        let mut at = u32_at(archive, end + 16) as usize;
-        (0..count)
-            .map(|_| {
-                assert_eq!(u32_at(archive, at), CENTRAL_HEADER);
-                let (method, crc) = (u16_at(archive, at + 10), u32_at(archive, at + 16));
-                let (packed, size) = (u32_at(archive, at + 20) as usize, u32_at(archive, at + 24) as usize);
-                let name_len = u16_at(archive, at + 28) as usize;
-                let name = String::from_utf8(archive[at + 46..at + 46 + name_len].to_vec()).unwrap();
-                let local = u32_at(archive, at + 42) as usize;
-                assert_eq!(u32_at(archive, local), LOCAL_HEADER);
-                assert_eq!(archive[local + 4..local + 30], archive[at + 6..at + 32], "{name}: headers differ");
-                let start = local + 30 + name_len;
-                let body = &archive[start..start + packed];
-                let data = match method {
-                    DEFLATED => miniz_oxide::inflate::decompress_to_vec(body).unwrap(),
-                    STORED => body.to_vec(),
-                    other => panic!("method {other}"),
-                };
-                assert_eq!((data.len(), crc32(&data)), (size, crc), "{name}");
-                at += 46 + name_len;
-                (name, data)
-            })
-            .collect()
-    }
 
     #[test]
     fn crc_matches_the_standard_check_value() {

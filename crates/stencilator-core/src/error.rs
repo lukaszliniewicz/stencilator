@@ -17,6 +17,8 @@ pub enum Error {
     Export(String),
     /// Plate geometry could not be built.
     Geometry(String),
+    /// A project file could not be read.
+    Project(String),
 }
 
 impl Error {
@@ -28,7 +30,8 @@ impl Error {
             | Error::Image(m)
             | Error::Stencil(m)
             | Error::Export(m)
-            | Error::Geometry(m) => m,
+            | Error::Geometry(m)
+            | Error::Project(m) => m,
         }
     }
 }

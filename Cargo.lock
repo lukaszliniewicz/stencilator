@@ -1224,6 +1224,7 @@ dependencies = [
 name = "stencilator-core"
 version = "0.0.0"
 dependencies = [
+ "base64",
  "earcutr",
  "i_overlay",
  "image",

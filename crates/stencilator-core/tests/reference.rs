@@ -327,6 +327,24 @@ struct PlateCase {
     colours: usize,
     skip: Vec<String>,
     plates: Vec<MeasuredPlate>,
+    lib3mf: Read3mf,
+}
+
+/// What lib3mf read from the case's 3MF file, in strict mode.
+#[derive(Deserialize)]
+struct Read3mf {
+    warnings: u32,
+    objects: Vec<Read3mfObject>,
+    positions_mm: Vec<[f64; 3]>,
+}
+
+#[derive(Deserialize)]
+struct Read3mfObject {
+    name: String,
+    colour: String,
+    vertices: usize,
+    triangles: usize,
+    manifold_and_oriented: bool,
 }
 
 /// What trimesh found in a plate's STL.
@@ -343,7 +361,7 @@ struct MeasuredPlate {
 }
 
 #[test]
-fn plates_match_trimesh() {
+fn plates_match_trimesh_and_lib3mf() {
     use stencilator_core::artwork::{ArtworkSettings, Size, label_drawing, label_picture};
     use stencilator_core::drawing::{parse_svg, text_drawing};
     use stencilator_core::mesh::inspect;
@@ -377,9 +395,19 @@ fn plates_match_trimesh() {
         let names: Vec<String> = plates.iter().map(stencilator_core::plate::Plate::file_name).collect();
         let expected_names: Vec<&str> = case.plates.iter().map(|p| p.file.as_str()).collect();
         assert_eq!(names, expected_names, "{}", case.name);
-        for (plate, expected) in plates.iter().zip(&case.plates) {
+        let model = &case.lib3mf;
+        assert_eq!((model.warnings, model.objects.len(), model.positions_mm.len()), (0, plates.len(), plates.len()));
+        for ((plate, expected), object) in plates.iter().zip(&case.plates).zip(&model.objects) {
             let name = format!("{}, {}", case.name, expected.file);
-            let report = inspect(&plate.mesh(1.2).unwrap());
+            let mesh = plate.mesh(1.2).unwrap();
+            let [r, g, b] = plate.colour;
+            assert_eq!(
+                (object.name.as_str(), object.colour.as_str()),
+                (plate.name().as_str(), format!("#{r:02x}{g:02x}{b:02x}").as_str())
+            );
+            assert_eq!((object.vertices, object.triangles), (mesh.vertices.len(), mesh.triangles.len()), "{name}");
+            assert!(object.manifold_and_oriented, "{name}: lib3mf finds it open");
+            let report = inspect(&mesh);
             assert!(expected.watertight && expected.winding_consistent, "{name}: trimesh finds it open");
             assert!(report.is_closed(), "{name}: {report:?}");
             assert_eq!(report.triangles, expected.triangles, "{name}");

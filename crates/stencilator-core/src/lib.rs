@@ -9,7 +9,8 @@
 //! stencil per colour. Free-form mode is being built: pictures, SVG drawings and
 //! typed text become maps of paints at a physical size, and those become plates
 //! with traced openings, checked for islands, thin webs, narrow openings and bed
-//! size.
+//! size, and written as STL or one 3MF. A project file keeps the artwork, the
+//! settings of both modes and the paint choices together.
 
 #![warn(missing_docs)]
 #![deny(clippy::print_stdout, clippy::print_stderr)]
@@ -25,12 +26,14 @@ pub mod layout;
 pub mod mesh;
 pub mod paints;
 pub mod plate;
+pub mod project;
 pub mod quantise;
 mod resample;
 mod rng;
 pub mod source;
 pub mod stencil;
 mod text;
+pub mod threemf;
 pub mod trace;
 pub mod zip;
 

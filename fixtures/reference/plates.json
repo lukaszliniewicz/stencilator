@@ -1,5 +1,6 @@
 {
  "trimesh": "4.10.1",
+ "lib3mf": "2.5.0",
  "cases": [
   {
    "name": "badge",
@@ -72,7 +73,50 @@
       ]
      ]
     }
-   ]
+   ],
+   "lib3mf": {
+    "warnings": 0,
+    "objects": [
+     {
+      "name": "plate-01-1d2f5c",
+      "colour": "#1d2f5c",
+      "vertices": 2636,
+      "triangles": 5308,
+      "manifold_and_oriented": true
+     },
+     {
+      "name": "plate-02-ef7d2d",
+      "colour": "#ef7d2d",
+      "vertices": 1868,
+      "triangles": 3700,
+      "manifold_and_oriented": true
+     },
+     {
+      "name": "plate-03-ffffff",
+      "colour": "#ffffff",
+      "vertices": 1852,
+      "triangles": 3700,
+      "manifold_and_oriented": true
+     }
+    ],
+    "positions_mm": [
+     [
+      0.0,
+      100.0,
+      0.0
+     ],
+     [
+      100.0,
+      100.0,
+      0.0
+     ],
+     [
+      0.0,
+      0.0,
+      0.0
+     ]
+    ]
+   }
   },
   {
    "name": "text",
@@ -106,7 +150,26 @@
       ]
      ]
     }
-   ]
+   ],
+   "lib3mf": {
+    "warnings": 0,
+    "objects": [
+     {
+      "name": "plate-01-000000",
+      "colour": "#000000",
+      "vertices": 850,
+      "triangles": 1692,
+      "manifold_and_oriented": true
+     }
+    ],
+    "positions_mm": [
+     [
+      0.0,
+      0.0,
+      0.0
+     ]
+    ]
+   }
   },
   {
    "name": "fox",
@@ -182,7 +245,50 @@
       ]
      ]
     }
-   ]
+   ],
+   "lib3mf": {
+    "warnings": 0,
+    "objects": [
+     {
+      "name": "plate-01-2b2320",
+      "colour": "#2b2320",
+      "vertices": 176,
+      "triangles": 368,
+      "manifold_and_oriented": true
+     },
+     {
+      "name": "plate-02-9c3d17",
+      "colour": "#9c3d17",
+      "vertices": 520,
+      "triangles": 1048,
+      "manifold_and_oriented": true
+     },
+     {
+      "name": "plate-03-e8772e",
+      "colour": "#e8772e",
+      "vertices": 464,
+      "triangles": 920,
+      "manifold_and_oriented": true
+     }
+    ],
+    "positions_mm": [
+     [
+      0.0,
+      140.0,
+      0.0
+     ],
+     [
+      140.0,
+      140.0,
+      0.0
+     ],
+     [
+      0.0,
+      0.0,
+      0.0
+     ]
+    ]
+   }
   },
   {
    "name": "photo",
@@ -319,7 +425,86 @@
       ]
      ]
     }
-   ]
+   ],
+   "lib3mf": {
+    "warnings": 0,
+    "objects": [
+     {
+      "name": "plate-01-783ca4",
+      "colour": "#783ca4",
+      "vertices": 4062,
+      "triangles": 8180,
+      "manifold_and_oriented": true
+     },
+     {
+      "name": "plate-02-61607e",
+      "colour": "#61607e",
+      "vertices": 7538,
+      "triangles": 15080,
+      "manifold_and_oriented": true
+     },
+     {
+      "name": "plate-03-c9587f",
+      "colour": "#c9587f",
+      "vertices": 3802,
+      "triangles": 7620,
+      "manifold_and_oriented": true
+     },
+     {
+      "name": "plate-04-5fa089",
+      "colour": "#5fa089",
+      "vertices": 8558,
+      "triangles": 17168,
+      "manifold_and_oriented": true
+     },
+     {
+      "name": "plate-05-54ca72",
+      "colour": "#54ca72",
+      "vertices": 4368,
+      "triangles": 8720,
+      "manifold_and_oriented": true
+     },
+     {
+      "name": "plate-06-cab882",
+      "colour": "#cab882",
+      "vertices": 3668,
+      "triangles": 7340,
+      "manifold_and_oriented": true
+     }
+    ],
+    "positions_mm": [
+     [
+      0.0,
+      90.0,
+      0.0
+     ],
+     [
+      120.0,
+      90.0,
+      0.0
+     ],
+     [
+      240.0,
+      90.0,
+      0.0
+     ],
+     [
+      0.0,
+      0.0,
+      0.0
+     ],
+     [
+      120.0,
+      0.0,
+      0.0
+     ],
+     [
+      240.0,
+      0.0,
+      0.0
+     ]
+    ]
+   }
   }
  ]
 }

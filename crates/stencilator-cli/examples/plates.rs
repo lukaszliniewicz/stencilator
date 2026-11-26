@@ -1,6 +1,6 @@
-//! Writes the plates of the cases in a JSON file as STL, so that an independent mesh tool
-//! (trimesh, for `fixtures/reference/plates.json`) can check them, and prints each plate's
-//! report. A stand-in until the command line has a free-form command.
+//! Writes the plates of the cases in a JSON file as STL and all of them as one 3MF, so
+//! that independent tools (trimesh and lib3mf, for `fixtures/reference/plates.json`) can
+//! check them, and prints each plate's report. A stand-in until the command line has a free-form command.
 //!
 //! Usage: `plates CASES.json OUT_DIR`, run from the repository root. Each case is
 //! `{"name", "kind": "svg" | "picture" | "text", "source", "font_mm"?, "width_mm"?,
@@ -13,7 +13,7 @@ use serde_json::Value;
 use stencilator_core::artwork::{ArtworkSettings, Size, label_drawing, label_picture};
 use stencilator_core::colour::Rgb;
 use stencilator_core::drawing::{parse_svg, text_drawing};
-use stencilator_core::plate::{PlateSettings, build_plates, check_plate};
+use stencilator_core::plate::{PlateSettings, build_plates, check_plate, plates_3mf};
 
 const FONT: &str = "fixtures/fonts/NotoSans-Bold.ttf";
 
@@ -61,7 +61,10 @@ fn main() -> Result<(), String> {
         let plate_settings = PlateSettings::default();
         let dir = Path::new(out).join(&name);
         std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-        for plate in build_plates(&map, &plate_settings, &skip).map_err(|e| e.to_string())? {
+        let plates = build_plates(&map, &plate_settings, &skip).map_err(|e| e.to_string())?;
+        let model = plates_3mf(&plates, plate_settings.thickness_mm).map_err(|e| e.to_string())?;
+        std::fs::write(dir.join("plates.3mf"), model).map_err(|e| e.to_string())?;
+        for plate in plates {
             let stl = plate.stl(plate_settings.thickness_mm).map_err(|e| e.to_string())?;
             std::fs::write(dir.join(plate.file_name()), stl).map_err(|e| e.to_string())?;
             let report = check_plate(&plate, &plate_settings).map_err(|e| e.to_string())?;

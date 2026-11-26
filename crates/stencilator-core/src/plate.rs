@@ -20,6 +20,7 @@ use crate::geometry::{
 };
 use crate::mesh::{Mesh, Slab, mesh_slabs};
 use crate::stencil::{RECOMMENDED_MIN_WEB_MM, check_thickness, encode_stl};
+use crate::threemf::{Object, write_3mf};
 use crate::trace::{TraceSettings, trace_mask};
 
 /// Accepted margins around the artwork, in millimetres.
@@ -30,6 +31,9 @@ pub const FEATURE_MM: RangeInclusive<f64> = 0.1..=5.0;
 
 /// Accepted print bed sides, in millimetres.
 pub const BED_MM: RangeInclusive<f64> = 50.0..=2000.0;
+
+/// Space between plates laid out in a 3MF file, in micrometres.
+const LAYOUT_GAP_UM: i32 = 10_000;
 
 /// Narrow parts thinner than twice this, in micrometres, are rounding left over from the
 /// polygon engine, not features: printers cannot resolve them, and tracing makes nothing
@@ -210,12 +214,17 @@ pub fn build_plates(map: &LabelMap, settings: &PlateSettings, skip: &[Rgb]) -> R
 }
 
 impl Plate {
-    /// The file name, such as `plate-03-c02f34.stl`: the paint's number counted from 1,
-    /// padded so that the names sort in palette order, then its colour.
-    pub fn file_name(&self) -> String {
+    /// The name, such as `plate-03-c02f34`: the paint's number counted from 1, padded so
+    /// that the names sort in palette order, then its colour.
+    pub fn name(&self) -> String {
         let [r, g, b] = self.colour;
         let width = self.paints.to_string().len().max(2);
-        format!("plate-{:0width$}-{r:02x}{g:02x}{b:02x}.stl", self.paint + 1)
+        format!("plate-{:0width$}-{r:02x}{g:02x}{b:02x}", self.paint + 1)
+    }
+
+    /// The STL file name: the [`Plate::name`] with `.stl`.
+    pub fn file_name(&self) -> String {
+        format!("{}.stl", self.name())
     }
 
     /// The plate as a closed solid, from z = 0 to the thickness.
@@ -247,6 +256,36 @@ impl Plate {
 /// As [`Plate::mesh`].
 pub fn plate_files(plates: &[Plate], thickness_mm: f64) -> Result<Vec<(String, Vec<u8>)>, Error> {
     plates.iter().map(|plate| Ok((plate.file_name(), plate.stl(thickness_mm)?))).collect()
+}
+
+/// Every plate in one 3MF file, each an object named as [`Plate::name`] in its paint's
+/// colour. They lie in a grid with 10 mm between them, in palette order from the top left.
+///
+/// # Errors
+///
+/// As [`Plate::mesh`], and [`Error::Geometry`] when the grid would be too large to work
+/// with.
+pub fn plates_3mf(plates: &[Plate], thickness_mm: f64) -> Result<Vec<u8>, Error> {
+    let meshes = plates.iter().map(|plate| plate.mesh(thickness_mm)).collect::<Result<Vec<_>, _>>()?;
+    let names: Vec<String> = plates.iter().map(Plate::name).collect();
+    let columns = (1..=plates.len()).find(|c| c * c >= plates.len()).unwrap_or(1);
+    let rows = plates.len().div_ceil(columns);
+    let too_large = || Error::Geometry("The plates would be too large to lay out together.".to_owned());
+    let place = |index: usize, step: i32| {
+        i32::try_from(index).ok().and_then(|i| i.checked_mul(step.checked_add(LAYOUT_GAP_UM)?)).ok_or_else(too_large)
+    };
+    let objects = plates
+        .iter()
+        .zip(&meshes)
+        .zip(&names)
+        .enumerate()
+        .map(|(i, ((plate, mesh), name))| {
+            let x = place(i % columns, plate.size_um.0)?;
+            let y = place(rows - 1 - i / columns, plate.size_um.1)?;
+            Ok(Object { name, colour: plate.colour, mesh, position_um: (x, y) })
+        })
+        .collect::<Result<Vec<_>, Error>>()?;
+    write_3mf(&objects)
 }
 
 /// What may not print or paint well on a plate.
@@ -368,6 +407,11 @@ mod tests {
             ["plate-01-141414.stl", "plate-02-fafafa.stl"]
         );
         assert!(files[1].1.starts_with(b"stencilator plate rgb(250, 250, 250)"));
+        // Side by side in one 3MF: two columns, one row.
+        let xml = crate::zip::unzip(&plates_3mf(&plates, 1.2).unwrap()).remove(2).1;
+        let xml = String::from_utf8(xml).unwrap();
+        assert!(xml.contains(r#"<item objectid="2" transform="1 0 0 0 1 0 0 0 1 0 0 0"/>"#));
+        assert!(xml.contains(r#"<item objectid="3" transform="1 0 0 0 1 0 0 0 1 50 0 0"/>"#));
     }
 
     #[test]
