@@ -17,5 +17,6 @@ Notes for anyone changing this repository, people and coding agents alike.
 - The app in `app/` reaches the engine only through `src/engine/client.ts`, and only
   the Web Worker loads the WebAssembly build; dependency-cruiser enforces both. Run
   `make wasm` before working on it, and `pnpm check` and `pnpm e2e` in `app/` before
-  committing changes there.
+  committing changes there. Every word the interface shows lives in
+  `app/src/lib/text.ts`, so that a translation can follow.
 - Error messages are written for the person using the tool, in British English.

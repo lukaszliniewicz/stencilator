@@ -76,8 +76,8 @@ the same bytes. `fixtures/` holds reference results, computed independently, tha
 tests compare against. `spikes/` holds early experiments with SVG rendering, outline
 tracing, 3D meshing and MCP that later work will turn into real code.
 
-The web app in `app/` is written in Svelte and TypeScript and is not finished yet. To
-work on it you also need Node 22 or newer, pnpm, `wasm-bindgen-cli` 0.2.130 and
+The web app in `app/` is written in Svelte and TypeScript. It already does everything
+the command line does in tile mode, but it is not published anywhere yet. To work on it you also need Node 22 or newer, pnpm, `wasm-bindgen-cli` 0.2.130 and
 binaryen. Run `make wasm` once, then `pnpm install` and `pnpm dev` inside `app/`, where
 `pnpm check` and `pnpm e2e` run its own checks.
 

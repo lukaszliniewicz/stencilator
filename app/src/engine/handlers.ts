@@ -6,7 +6,7 @@
 import type { Replies, Request } from './protocol';
 import type * as Wasm from './wasm/stencilator_wasm.js';
 
-type Engine = Pick<typeof Wasm, 'Settings' | 'Source' | 'version'>;
+type Engine = Pick<typeof Wasm, 'Settings' | 'Source' | 'version' | 'recommendedMinWebMm'>;
 
 export interface Answer {
   value: Replies[Request['kind']];
@@ -30,8 +30,11 @@ export function createHandlers(engine: Engine): (request: Request) => Answer {
 
   return (request) => {
     switch (request.kind) {
-      case 'version':
-        return { value: engine.version(), transfer: [] };
+      case 'about':
+        return {
+          value: { version: engine.version(), minWebMm: engine.recommendedMinWebMm() },
+          transfer: []
+        };
       case 'open': {
         const next = new engine.Source(new Uint8Array(request.bytes));
         chart?.free();

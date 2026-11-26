@@ -49,6 +49,12 @@ describe('the engine in WebAssembly', () => {
     handle = createHandlers(engine);
   });
 
+  it('tells its version and the thinnest web it recommends', () => {
+    const about = ask({ kind: 'about' });
+    expect(about.version).toMatch(/^\d+\.\d+\.\d+/);
+    expect(about.minWebMm).toBeGreaterThan(0);
+  });
+
   it('refuses files before there is a chart', () => {
     expect(() => ask({ kind: 'chart', settings: SETTINGS })).toThrow('Open an image first.');
     expect(() => ask({ kind: 'stencilsZip', thicknessMm: 1.2 })).toThrow('There is no chart');
@@ -64,6 +70,7 @@ describe('the engine in WebAssembly', () => {
     expect([...chart.labels]).toEqual(reference.labels.flat());
     expect([...chart.counts].reduce((a, b) => a + b, 0)).toBe(chart.tilesX * chart.tilesY);
     expect(chart.stencilNames).toHaveLength(reference.palette.length);
+    for (const name of chart.stencilNames) expect(name).toMatch(/^stencil-\d{2}-[0-9a-f]{6}\.stl$/);
   });
 
   it('writes files of the newest chart', () => {

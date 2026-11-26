@@ -1,290 +1,179 @@
 <script lang="ts">
-  // The working shell: every feature wired to the engine, with no design yet.
-  import { onDestroy } from 'svelte';
+  // The workspace: picture and paints on the left, the bench or the files in the middle,
+  // settings on the right. Pictures come from the picker, a drop or the clipboard.
+  import Bench from './lib/Bench.svelte';
+  import Files from './lib/Files.svelte';
+  import SettingsPanel from './lib/SettingsPanel.svelte';
+  import Sidebar from './lib/Sidebar.svelte';
+  import { text } from './lib/text';
+  import { Theme } from './lib/theme.svelte';
+  import Toolbar from './lib/Toolbar.svelte';
+  import { Workbench } from './lib/workbench.svelte';
 
-  import {
-    Engine,
-    type ChartFormat,
-    type ChartSettings,
-    type ChartSummary,
-    type Mode,
-    type SourceInfo
-  } from './engine/client';
-  import ChartCanvas from './lib/ChartCanvas.svelte';
-  import { hexToNumber, rgbToHex } from './lib/colour';
-  import { save } from './lib/download';
-  import { latest } from './lib/latest';
+  const theme = new Theme();
+  const bench = new Workbench();
 
-  const MIN_WEB_MM = 0.6;
-  const TYPES: Record<ChartFormat, string> = {
-    png: 'image/png',
-    jpeg: 'image/jpeg',
-    pdf: 'application/pdf'
+  let picker: HTMLInputElement | undefined = $state();
+  let dragging = $state(false);
+
+  const choose = (): void => {
+    picker?.click();
   };
 
-  const engine = new Engine();
-  const build = latest((settings: ChartSettings) => engine.chart(settings));
+  const openFirst = (files: FileList | null | undefined): void => {
+    const file = files?.[0];
+    if (file) void bench.open(file);
+  };
 
-  let version = $state('');
-  let source: SourceInfo | undefined = $state();
-  let fileName = $state('');
-  let original = $state('');
-  let chart: ChartSummary | undefined = $state();
-  let current = $state(false);
-  let problem = $state('');
-  let busy = $state(false);
+  const carriesFiles = (event: DragEvent): boolean =>
+    event.dataTransfer?.types.includes('Files') ?? false;
 
-  let canvasWidthMm = $state(200);
-  let canvasHeightMm = $state(200);
-  let tileMm = $state(5);
-  let lineMm = $state(0.8);
-  let dpi = $state(300);
-  let mode: Mode = $state('colour');
-  let colours = $state(16);
-  let background = $state('#ffffff');
-  let gridColour = $state('#000000');
-  let thicknessMm = $state(1.2);
-
-  void engine.version().then((v) => (version = v));
-  onDestroy(() => {
-    if (original) URL.revokeObjectURL(original);
-  });
-
-  const baseName = $derived(fileName.replace(/\.[^.]*$/, '') || 'stencilator');
-
-  async function open(file: File | undefined) {
-    if (!file) return;
-    problem = '';
-    try {
-      source = await engine.open(file);
-      fileName = file.name;
-      if (original) URL.revokeObjectURL(original);
-      original = URL.createObjectURL(file);
-    } catch (error) {
-      problem = error instanceof Error ? error.message : String(error);
-    }
+  function paste(event: ClipboardEvent): void {
+    openFirst(event.clipboardData?.files);
   }
 
-  $effect(() => {
-    if (!source) return;
-    const settings: ChartSettings = {
-      canvasWidthMm,
-      canvasHeightMm,
-      tileMm,
-      lineMm,
-      dpi,
-      mode,
-      colours,
-      background: hexToNumber(background)
-    };
-    current = false;
-    build(settings).then(
-      (outcome) => {
-        if (outcome.superseded) return;
-        chart = outcome.result;
-        problem = '';
-        current = true;
-      },
-      (error: unknown) => {
-        chart = undefined;
-        problem = error instanceof Error ? error.message : String(error);
-        current = true;
-      }
-    );
-  });
-
-  async function download(task: () => Promise<Uint8Array>, name: string, type: string) {
-    busy = true;
-    try {
-      save(await task(), name, type);
-    } catch (error) {
-      problem = error instanceof Error ? error.message : String(error);
-    } finally {
-      busy = false;
-    }
+  function dragenter(event: DragEvent): void {
+    if (carriesFiles(event)) dragging = true;
   }
 
-  const saveChart = (format: ChartFormat, withLines: boolean) =>
-    download(
-      () => engine.chartFile(format, hexToNumber(gridColour), withLines),
-      `${baseName}-${withLines ? 'chart' : 'tiles'}.${format === 'jpeg' ? 'jpg' : format}`,
-      TYPES[format]
-    );
+  function dragover(event: DragEvent): void {
+    if (carriesFiles(event)) event.preventDefault();
+  }
 
-  const ready = $derived(chart !== undefined && current && !busy);
-  const stencilsPossible = $derived(chart !== undefined && chart.linePx > 0);
+  function dragleave(event: DragEvent): void {
+    // Only leaving the window itself ends the drag; moving between elements does not.
+    if (event.relatedTarget === null) dragging = false;
+  }
+
+  function drop(event: DragEvent): void {
+    event.preventDefault();
+    dragging = false;
+    openFirst(event.dataTransfer?.files);
+  }
+
+  function keydown(event: KeyboardEvent): void {
+    if (!(event.ctrlKey || event.metaKey) || event.altKey) return;
+    const key = event.key.toLowerCase();
+    if (key === 'z') {
+      event.preventDefault();
+      if (event.shiftKey) bench.redo();
+      else bench.undo();
+    } else if (key === 'y') {
+      event.preventDefault();
+      bench.redo();
+    } else if (key === 'o') {
+      event.preventDefault();
+      choose();
+    }
+  }
 </script>
 
-<main>
-  <h1>Stencilator</h1>
+<svelte:window
+  onkeydown={keydown}
+  onpaste={paste}
+  ondragenter={dragenter}
+  ondragover={dragover}
+  ondragleave={dragleave}
+  ondrop={drop}
+/>
 
-  <p>
-    <label>
-      Image
-      <input
-        type="file"
-        accept="image/png,image/jpeg,image/webp"
-        onchange={(event) => open(event.currentTarget.files?.[0])}
-      />
-    </label>
-    {#if source}{fileName}, {source.width} × {source.height} px{/if}
-  </p>
+<input
+  bind:this={picker}
+  type="file"
+  accept="image/png,image/jpeg,image/webp"
+  aria-label={text.picture.fileLabel}
+  hidden
+  onchange={(event) => {
+    openFirst(event.currentTarget.files);
+    event.currentTarget.value = '';
+  }}
+/>
 
-  <fieldset>
-    <legend>Canvas</legend>
-    <label>Width (mm) <input type="number" bind:value={canvasWidthMm} step="1" /></label>
-    <label>Height (mm) <input type="number" bind:value={canvasHeightMm} step="1" /></label>
-    <label>Tile (mm) <input type="number" bind:value={tileMm} step="0.1" /></label>
-    <label>DPI <input type="number" bind:value={dpi} step="50" /></label>
-  </fieldset>
+<div class="app">
+  <aside class="side" aria-label={text.picture.heading}>
+    <Sidebar {bench} {theme} {choose} />
+  </aside>
 
-  <fieldset>
-    <legend>Colours</legend>
-    <label>
-      Mode
-      <select bind:value={mode}>
-        <option value="colour">Colour</option>
-        <option value="greyscale">Greyscale</option>
-        <option value="black-white">Black and white</option>
-      </select>
-    </label>
-    <label>
-      Colours <input type="number" bind:value={colours} disabled={mode === 'black-white'} />
-    </label>
-    <label>Background <input type="color" bind:value={background} /></label>
-  </fieldset>
+  <main class="work">
+    <Toolbar {bench} />
+    {#if bench.problem}
+      <p class="problem" role="alert">{bench.problem}</p>
+    {/if}
+    {#if bench.screen === 'files' && bench.chart}
+      <Files {bench} dark={theme.dark} />
+    {:else}
+      <Bench {bench} dark={theme.dark} {choose} />
+    {/if}
+    {#if dragging}
+      <div class="drop" aria-hidden="true"><p>{text.bench.dropping}</p></div>
+    {/if}
+  </main>
 
-  <fieldset>
-    <legend>Grid and stencils</legend>
-    <label>Line width (mm) <input type="number" bind:value={lineMm} step="0.1" /></label>
-    <label>Line colour <input type="color" bind:value={gridColour} /></label>
-    <label>
-      Stencil thickness (mm) <input type="number" bind:value={thicknessMm} step="0.1" />
-    </label>
-  </fieldset>
-
-  {#if problem}<p role="alert">{problem}</p>{/if}
-
-  {#if source}
-    <div class="previews">
-      <figure>
-        <img src={original} alt="The original" />
-        <figcaption>Original</figcaption>
-      </figure>
-      {#if chart}
-        <figure class:stale={!current}>
-          <ChartCanvas {chart} {gridColour} withLines={true} />
-          <figcaption>Chart</figcaption>
-        </figure>
-      {/if}
-    </div>
-  {/if}
-
-  {#if chart}
-    <p class="summary">
-      {chart.tilesX} × {chart.tilesY} tiles ({chart.tilesX * chart.tilesY}), {chart.counts.length}
-      colours. {chart.widthMm.toFixed(1)} × {chart.heightMm.toFixed(1)} mm, tile {chart.tileMm.toFixed(
-        2
-      )} mm, line {chart.lineMm.toFixed(2)} mm.
-      {#if chart.linePx === 0}
-        No grid lines, so no stencils: their holes would merge.
-      {:else if chart.lineMm < MIN_WEB_MM}
-        Grid lines under {MIN_WEB_MM} mm make fragile stencils.
-      {/if}
-    </p>
-
-    <ol class="palette">
-      {#each chart.stencilNames as name, i (name)}
-        <li>
-          <span
-            class="swatch"
-            style:background={rgbToHex(
-              chart.palette[3 * i] ?? 0,
-              chart.palette[3 * i + 1] ?? 0,
-              chart.palette[3 * i + 2] ?? 0
-            )}
-          ></span>
-          {chart.counts[i]} tiles
-          <button
-            disabled={!ready || !stencilsPossible}
-            onclick={() => download(() => engine.stencil(i, thicknessMm), name, 'model/stl')}
-          >
-            STL
-          </button>
-        </li>
-      {/each}
-    </ol>
-
-    <p class="actions">
-      {#each ['png', 'pdf', 'jpeg'] as const as format (format)}
-        <button disabled={!ready} onclick={() => saveChart(format, true)}>
-          Save chart ({format.toUpperCase()})
-        </button>
-      {/each}
-      <button disabled={!ready} onclick={() => saveChart('pdf', false)}>
-        Save tiles only (PDF)
-      </button>
-      <button
-        disabled={!ready || !stencilsPossible}
-        onclick={() =>
-          download(
-            () => engine.stencilsZip(thicknessMm),
-            `${baseName}-stencils.zip`,
-            'application/zip'
-          )}
-      >
-        Save all stencils (zip)
-      </button>
-    </p>
-  {/if}
-
-  <footer>Engine {version}</footer>
-</main>
+  <aside class="settings" aria-label={text.settings.label}>
+    <SettingsPanel {bench} />
+  </aside>
+</div>
 
 <style>
-  main {
-    max-width: 72rem;
-    margin: 0 auto;
-    padding: 1rem;
-  }
-
-  fieldset {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 1rem;
-    margin-bottom: 0.75rem;
-  }
-
-  .previews {
+  .app {
+    height: 100dvh;
     display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 1rem;
+    grid-template-columns: 288px minmax(0, 1fr) 300px;
   }
 
-  figure {
-    margin: 0;
+  .side,
+  .settings {
+    min-height: 0;
+    overflow-y: auto;
   }
 
-  img {
-    width: 100%;
-    image-rendering: pixelated;
-  }
-
-  .stale {
-    opacity: 0.5;
-  }
-
-  .palette {
+  .work {
+    position: relative;
+    min-width: 0;
+    min-height: 0;
     display: flex;
-    flex-wrap: wrap;
-    gap: 0.75rem;
+    flex-direction: column;
+    border-inline: 1px solid var(--line);
   }
 
-  .swatch {
-    display: inline-block;
-    width: 1em;
-    height: 1em;
-    vertical-align: middle;
-    border: 1px solid currentColor;
+  .problem {
+    padding: 10px 16px;
+    border-bottom: 1px solid var(--error-line);
+    background: var(--error);
+    color: var(--error-text);
+    font-size: 13px;
+  }
+
+  .drop {
+    position: absolute;
+    inset: 12px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    border: 2px dashed var(--tint-text);
+    background: color-mix(in srgb, var(--tint) 85%, transparent);
+    color: var(--tint-text);
+    font-family: var(--serif);
+    font-size: 28px;
+    pointer-events: none;
+  }
+
+  @media (max-width: 1099px) {
+    .app {
+      height: auto;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .side,
+    .settings {
+      overflow: visible;
+    }
+
+    .work {
+      height: 85dvh;
+      border-inline: 0;
+      border-block: 1px solid var(--line);
+    }
   }
 </style>

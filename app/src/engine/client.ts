@@ -1,5 +1,6 @@
 /** The interface's way to the engine, which runs in a Web Worker. */
 import type {
+  About,
   ChartFormat,
   ChartSettings,
   ChartSummary,
@@ -11,7 +12,7 @@ import type {
   SourceInfo
 } from './protocol';
 
-export type { ChartFormat, ChartSettings, ChartSummary, Mode, SourceInfo } from './protocol';
+export type { About, ChartFormat, ChartSettings, ChartSummary, Mode, SourceInfo } from './protocol';
 
 interface Waiting {
   resolve: (value: Replies[Kind]) => void;
@@ -47,8 +48,8 @@ export class Engine {
     });
   }
 
-  version(): Promise<string> {
-    return this.#call({ kind: 'version' });
+  about(): Promise<About> {
+    return this.#call({ kind: 'about' });
   }
 
   /** Decodes an image. The chart built before it is gone afterwards. */

@@ -15,6 +15,12 @@ export interface ChartSettings {
   background: number;
 }
 
+/** The engine's version, and the thinnest web between holes it recommends. */
+export interface About {
+  version: string;
+  minWebMm: number;
+}
+
 export interface SourceInfo {
   width: number;
   height: number;
@@ -43,7 +49,7 @@ export interface ChartSummary {
 }
 
 export type Request =
-  | { kind: 'version' }
+  | { kind: 'about' }
   | { kind: 'open'; bytes: ArrayBuffer }
   | { kind: 'chart'; settings: ChartSettings }
   | { kind: 'chartFile'; format: ChartFormat; gridColour: number; withLines: boolean }
@@ -52,7 +58,7 @@ export type Request =
 
 /** What each kind of request answers with. */
 export interface Replies {
-  version: string;
+  about: About;
   open: SourceInfo;
   chart: ChartSummary;
   chartFile: Uint8Array;
