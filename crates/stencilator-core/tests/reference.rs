@@ -1,5 +1,5 @@
 //! The engine against reference results in `fixtures/reference`, computed
-//! independently with NumPy and Pillow.
+//! independently with NumPy and Pillow, and plate meshes as trimesh measures them.
 
 #![allow(clippy::disallowed_methods, clippy::unwrap_used, reason = "tests read their fixtures from disk")]
 
@@ -314,4 +314,89 @@ fn stencils_match() {
         }
     }
     assert_eq!(checked, 15);
+}
+
+#[derive(Deserialize)]
+struct PlateCase {
+    name: String,
+    kind: String,
+    source: String,
+    font_mm: Option<f64>,
+    width_mm: Option<f64>,
+    cell_mm: f64,
+    colours: usize,
+    skip: Vec<String>,
+    plates: Vec<MeasuredPlate>,
+}
+
+/// What trimesh found in a plate's STL.
+#[derive(Deserialize)]
+struct MeasuredPlate {
+    file: String,
+    triangles: usize,
+    watertight: bool,
+    winding_consistent: bool,
+    volume_mm3: f64,
+    bodies: usize,
+    euler: i64,
+    bounds: [[f64; 3]; 2],
+}
+
+#[test]
+fn plates_match_trimesh() {
+    use stencilator_core::artwork::{ArtworkSettings, Size, label_drawing, label_picture};
+    use stencilator_core::drawing::{parse_svg, text_drawing};
+    use stencilator_core::mesh::inspect;
+    use stencilator_core::plate::{PlateSettings, build_plates, check_plate};
+    use stencilator_core::source::decode;
+
+    let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let read = |path: &str| std::fs::read(root.join(path)).unwrap();
+    let font = read("fixtures/fonts/NotoSans-Bold.ttf");
+    let cases: Vec<PlateCase> = fixture("plates.json");
+    let mut checked = 0;
+    for case in &cases {
+        let settings = ArtworkSettings {
+            size: case.width_mm.map_or(Size::Natural, Size::Width),
+            cell_mm: case.cell_mm,
+            n_colours: case.colours,
+            ..ArtworkSettings::default()
+        };
+        let map = match case.kind.as_str() {
+            "svg" => label_drawing(&parse_svg(&read(&case.source), &[&font]).unwrap(), &settings),
+            "picture" => label_picture(&decode(&read(&case.source)).unwrap(), &settings),
+            "text" => {
+                label_drawing(&text_drawing(&case.source, &[&font], case.font_mm.unwrap(), [0; 3]).unwrap(), &settings)
+            }
+            other => panic!("unknown kind {other}"),
+        }
+        .unwrap();
+        let skip: Vec<[u8; 3]> =
+            case.skip.iter().map(|hex| [1, 3, 5].map(|i| u8::from_str_radix(&hex[i..i + 2], 16).unwrap())).collect();
+        let plates = build_plates(&map, &PlateSettings::default(), &skip).unwrap();
+        let names: Vec<String> = plates.iter().map(stencilator_core::plate::Plate::file_name).collect();
+        let expected_names: Vec<&str> = case.plates.iter().map(|p| p.file.as_str()).collect();
+        assert_eq!(names, expected_names, "{}", case.name);
+        for (plate, expected) in plates.iter().zip(&case.plates) {
+            let name = format!("{}, {}", case.name, expected.file);
+            let report = inspect(&plate.mesh(1.2).unwrap());
+            assert!(expected.watertight && expected.winding_consistent, "{name}: trimesh finds it open");
+            assert!(report.is_closed(), "{name}: {report:?}");
+            assert_eq!(report.triangles, expected.triangles, "{name}");
+            assert_eq!(report.pieces, expected.bodies, "{name}");
+            assert_eq!(plate.solid.len(), expected.bodies, "{name}");
+            assert_eq!(report.euler, expected.euler, "{name}");
+            // STL stores single precision.
+            assert!((report.volume_mm3 / expected.volume_mm3 - 1.0).abs() < 1e-6, "{name}: {}", report.volume_mm3);
+            for (ours, theirs) in [report.min_mm, report.max_mm].iter().zip(&expected.bounds) {
+                assert!(ours.iter().zip(theirs).all(|(a, b)| (a - b).abs() < 1e-5), "{name}: {ours:?} {theirs:?}");
+            }
+            checked += 1;
+        }
+        if case.name == "text" {
+            // A, O and 8 have four counters.
+            assert_eq!(check_plate(&plates[0], &PlateSettings::default()).unwrap().islands.len(), 4);
+        }
+    }
+    assert_eq!(checked, 13);
 }

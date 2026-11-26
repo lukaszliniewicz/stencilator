@@ -7,8 +7,9 @@
 //!
 //! Tile mode is complete: a grid of square tiles, a chart to paint from and one
 //! stencil per colour. Free-form mode is being built: pictures, SVG drawings and
-//! typed text become maps of paints at a physical size, and plane geometry, the
-//! slab mesher and outline tracing are in place.
+//! typed text become maps of paints at a physical size, and those become plates
+//! with traced openings, checked for islands, thin webs, narrow openings and bed
+//! size.
 
 #![warn(missing_docs)]
 #![deny(clippy::print_stdout, clippy::print_stderr)]
@@ -23,6 +24,7 @@ pub mod geometry;
 pub mod layout;
 pub mod mesh;
 pub mod paints;
+pub mod plate;
 pub mod quantise;
 mod resample;
 mod rng;

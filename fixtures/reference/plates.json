@@ -1,0 +1,325 @@
+{
+ "trimesh": "4.10.1",
+ "cases": [
+  {
+   "name": "badge",
+   "kind": "svg",
+   "source": "fixtures/svg/badge.svg",
+   "cell_mm": 0.1,
+   "colours": 16,
+   "skip": [],
+   "plates": [
+    {
+     "file": "plate-01-1d2f5c.stl",
+     "triangles": 5324,
+     "watertight": true,
+     "winding_consistent": true,
+     "volume_mm3": 8386.970534552713,
+     "bodies": 8,
+     "euler": -18,
+     "bounds": [
+      [
+       0.0,
+       0.0,
+       0.0
+      ],
+      [
+       90.0,
+       90.0,
+       1.2000000476837158
+      ]
+     ]
+    },
+    {
+     "file": "plate-02-ef7d2d.stl",
+     "triangles": 3704,
+     "watertight": true,
+     "winding_consistent": true,
+     "volume_mm3": 7369.760645725735,
+     "bodies": 16,
+     "euler": 18,
+     "bounds": [
+      [
+       0.0,
+       0.0,
+       0.0
+      ],
+      [
+       90.0,
+       90.0,
+       1.2000000476837158
+      ]
+     ]
+    },
+    {
+     "file": "plate-03-ffffff.stl",
+     "triangles": 3700,
+     "watertight": true,
+     "winding_consistent": true,
+     "volume_mm3": 7523.556553806964,
+     "bodies": 3,
+     "euler": 2,
+     "bounds": [
+      [
+       0.0,
+       0.0,
+       0.0
+      ],
+      [
+       90.0,
+       90.0,
+       1.2000000476837158
+      ]
+     ]
+    }
+   ]
+  },
+  {
+   "name": "text",
+   "kind": "text",
+   "source": "AO8",
+   "font_mm": 25.0,
+   "cell_mm": 0.1,
+   "colours": 16,
+   "skip": [
+    "#ffffff"
+   ],
+   "plates": [
+    {
+     "file": "plate-01-000000.stl",
+     "triangles": 1692,
+     "watertight": true,
+     "winding_consistent": true,
+     "volume_mm3": 2670.515464766269,
+     "bodies": 5,
+     "euler": 4,
+     "bounds": [
+      [
+       0.0,
+       0.0,
+       0.0
+      ],
+      [
+       70.0,
+       38.400001525878906,
+       1.2000000476837158
+      ]
+     ]
+    }
+   ]
+  },
+  {
+   "name": "fox",
+   "kind": "picture",
+   "source": "fixtures/pixel-art/fox.png",
+   "width_mm": 110.0,
+   "cell_mm": 0.25,
+   "colours": 16,
+   "skip": [
+    "#ffffff"
+   ],
+   "plates": [
+    {
+     "file": "plate-01-2b2320.stl",
+     "triangles": 368,
+     "watertight": true,
+     "winding_consistent": true,
+     "volume_mm3": 19801.40387655111,
+     "bodies": 1,
+     "euler": -8,
+     "bounds": [
+      [
+       0.0,
+       0.0,
+       0.0
+      ],
+      [
+       130.0,
+       130.0,
+       1.2000000476837158
+      ]
+     ]
+    },
+    {
+     "file": "plate-02-9c3d17.stl",
+     "triangles": 1048,
+     "watertight": true,
+     "winding_consistent": true,
+     "volume_mm3": 18782.787271991834,
+     "bodies": 1,
+     "euler": -4,
+     "bounds": [
+      [
+       0.0,
+       0.0,
+       0.0
+      ],
+      [
+       130.0,
+       130.0,
+       1.2000000476837158
+      ]
+     ]
+    },
+    {
+     "file": "plate-03-e8772e.stl",
+     "triangles": 920,
+     "watertight": true,
+     "winding_consistent": true,
+     "volume_mm3": 15480.44293329089,
+     "bodies": 3,
+     "euler": 4,
+     "bounds": [
+      [
+       0.0,
+       0.0,
+       0.0
+      ],
+      [
+       130.0,
+       130.0,
+       1.2000000476837158
+      ]
+     ]
+    }
+   ]
+  },
+  {
+   "name": "photo",
+   "kind": "picture",
+   "source": "fixtures/reference/plates-photo.png",
+   "width_mm": 90.0,
+   "cell_mm": 0.15,
+   "colours": 6,
+   "skip": [],
+   "plates": [
+    {
+     "file": "plate-01-783ca4.stl",
+     "triangles": 17044,
+     "watertight": true,
+     "winding_consistent": true,
+     "volume_mm3": 9590.456247226837,
+     "bodies": 106,
+     "euler": -62,
+     "bounds": [
+      [
+       0.0,
+       0.0,
+       0.0
+      ],
+      [
+       110.0,
+       80.0,
+       1.2000000476837158
+      ]
+     ]
+    },
+    {
+     "file": "plate-02-61607e.stl",
+     "triangles": 30376,
+     "watertight": true,
+     "winding_consistent": true,
+     "volume_mm3": 9316.724414858907,
+     "bodies": 184,
+     "euler": -52,
+     "bounds": [
+      [
+       0.0,
+       0.0,
+       0.0
+      ],
+      [
+       110.0,
+       80.0,
+       1.2000000476837158
+      ]
+     ]
+    },
+    {
+     "file": "plate-03-c9587f.stl",
+     "triangles": 15452,
+     "watertight": true,
+     "winding_consistent": true,
+     "volume_mm3": 9615.335215184788,
+     "bodies": 69,
+     "euler": -104,
+     "bounds": [
+      [
+       0.0,
+       0.0,
+       0.0
+      ],
+      [
+       110.0,
+       80.0,
+       1.2000000476837158
+      ]
+     ]
+    },
+    {
+     "file": "plate-04-5fa089.stl",
+     "triangles": 32020,
+     "watertight": true,
+     "winding_consistent": true,
+     "volume_mm3": 9325.566527403409,
+     "bodies": 172,
+     "euler": -112,
+     "bounds": [
+      [
+       0.0,
+       0.0,
+       0.0
+      ],
+      [
+       110.0,
+       80.0,
+       1.2000000476837158
+      ]
+     ]
+    },
+    {
+     "file": "plate-05-54ca72.stl",
+     "triangles": 17100,
+     "watertight": true,
+     "winding_consistent": true,
+     "volume_mm3": 9622.473957513317,
+     "bodies": 102,
+     "euler": -70,
+     "bounds": [
+      [
+       0.0,
+       0.0,
+       0.0
+      ],
+      [
+       110.0,
+       80.0,
+       1.2000000476837158
+      ]
+     ]
+    },
+    {
+     "file": "plate-06-cab882.stl",
+     "triangles": 16276,
+     "watertight": true,
+     "winding_consistent": true,
+     "volume_mm3": 9465.458916216496,
+     "bodies": 88,
+     "euler": -98,
+     "bounds": [
+      [
+       0.0,
+       0.0,
+       0.0
+      ],
+      [
+       110.0,
+       80.0,
+       1.2000000476837158
+      ]
+     ]
+    }
+   ]
+  }
+ ]
+}

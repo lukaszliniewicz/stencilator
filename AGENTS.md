@@ -11,8 +11,8 @@ Notes for anyone changing this repository, people and coding agents alike.
   library's transcendental float functions (use `libm`, which gives the same bits
   natively and in WebAssembly). The shells around it do all input and output.
 - `crates/stencilator-core/tests/reference.rs` checks layouts, colour conversion,
-  palettes, charts, resampling, PDFs and stencils against reference results in
-  `fixtures/reference`, computed independently with NumPy and Pillow. A change that
+  palettes, charts, resampling, PDFs, stencils and free-form plates against reference
+  results in `fixtures/reference`, computed independently with NumPy, Pillow and trimesh. A change that
   alters any of them on purpose says so in its commit message.
 - The app in `app/` reaches the engine only through `src/engine/client.ts`, and only
   the Web Worker loads the WebAssembly build; dependency-cruiser enforces both. Run

@@ -1,0 +1,429 @@
+//! Free-form plates: one per paint, each the artwork's rectangle with a margin around it,
+//! less the openings where that paint goes.
+//!
+//! Every plate has the same outline, so they line up when laid on the same corner. The
+//! openings are the paint's cells traced into smooth outlines ([`crate::trace`]). A plate
+//! is one slab, meshed into a closed solid; parts of it cut off from the rim by openings
+//! (the middle of an O) stay in the mesh as loose pieces, and [`check_plate`] reports them
+//! with everything else that may not print or paint well.
+//!
+//! Plate coordinates are in micrometres from the plate's bottom-left corner, y up, with
+//! the artwork the right way up seen from above.
+
+use std::ops::RangeInclusive;
+
+use crate::Error;
+use crate::artwork::LabelMap;
+use crate::colour::Rgb;
+use crate::geometry::{
+    Corners, Point, Shape, Shapes, UM_PER_MM, area_mm2, bounds, difference, offset, rectangle, translate,
+};
+use crate::mesh::{Mesh, Slab, mesh_slabs};
+use crate::stencil::{RECOMMENDED_MIN_WEB_MM, check_thickness, encode_stl};
+use crate::trace::{TraceSettings, trace_mask};
+
+/// Accepted margins around the artwork, in millimetres.
+pub const MARGIN_MM: RangeInclusive<f64> = 2.0..=100.0;
+
+/// Accepted narrowest webs and openings, in millimetres.
+pub const FEATURE_MM: RangeInclusive<f64> = 0.1..=5.0;
+
+/// Accepted print bed sides, in millimetres.
+pub const BED_MM: RangeInclusive<f64> = 50.0..=2000.0;
+
+/// Narrow parts thinner than twice this, in micrometres, are rounding left over from the
+/// polygon engine, not features: printers cannot resolve them, and tracing makes nothing
+/// that thin.
+const SLIVER_UM: i32 = 10;
+
+/// How plates are made and checked.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PlateSettings {
+    /// Thickness of the plates in millimetres.
+    pub thickness_mm: f64,
+    /// Solid border around the artwork, in millimetres.
+    pub margin_mm: f64,
+    /// Plate material narrower than this, in millimetres, is reported: it prints badly and
+    /// breaks.
+    pub min_web_mm: f64,
+    /// Openings narrower than this, in millimetres, are reported: the printer may close
+    /// them and little paint gets through.
+    pub min_opening_mm: f64,
+    /// Width and depth of the print bed in millimetres; larger plates are reported.
+    pub bed_mm: (f64, f64),
+}
+
+impl Default for PlateSettings {
+    fn default() -> Self {
+        PlateSettings {
+            thickness_mm: 1.2,
+            margin_mm: 10.0,
+            min_web_mm: RECOMMENDED_MIN_WEB_MM,
+            min_opening_mm: 0.5,
+            bed_mm: (256.0, 256.0),
+        }
+    }
+}
+
+impl PlateSettings {
+    /// Checks every setting against its accepted range.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Settings`] naming the first setting out of range, and the range, or
+    /// [`Error::Stencil`] for the thickness, as in tile mode.
+    pub fn check(&self) -> Result<(), Error> {
+        check_thickness(self.thickness_mm)?;
+        let mm = |name: &str, value: f64, range: &RangeInclusive<f64>| {
+            if range.contains(&value) {
+                Ok(())
+            } else {
+                Err(Error::Settings(format!("{name} must be between {} and {} mm.", range.start(), range.end())))
+            }
+        };
+        mm("The margin", self.margin_mm, &MARGIN_MM)?;
+        mm("The narrowest web", self.min_web_mm, &FEATURE_MM)?;
+        mm("The narrowest opening", self.min_opening_mm, &FEATURE_MM)?;
+        mm("The bed width", self.bed_mm.0, &BED_MM)?;
+        mm("The bed depth", self.bed_mm.1, &BED_MM)
+    }
+}
+
+/// One paint's plate.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Plate {
+    /// The paint's place in the label map's palette, from 0.
+    pub paint: usize,
+    /// How many paints the palette has, which sets the width of the number in file names.
+    pub paints: usize,
+    /// The paint's colour.
+    pub colour: Rgb,
+    /// Width and height in micrometres.
+    pub size_um: (i32, i32),
+    /// Area of the paint's cells in square millimetres.
+    pub paint_mm2: f64,
+    /// Where paint goes through.
+    pub openings: Shapes,
+    /// The plate itself: its rectangle less the openings. The first shape is the rim, the
+    /// rest are islands.
+    pub solid: Shapes,
+}
+
+/// A place on a plate: the rectangle around it, in millimetres from the plate's
+/// bottom-left corner, and its area.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Spot {
+    /// Left edge.
+    pub x_mm: f64,
+    /// Bottom edge.
+    pub y_mm: f64,
+    /// Width.
+    pub width_mm: f64,
+    /// Height.
+    pub height_mm: f64,
+    /// Area of the part itself.
+    pub area_mm2: f64,
+}
+
+/// What may not print or paint well on one plate. Warnings only: the plate is made anyway.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PlateReport {
+    /// The paint's place in the palette, from 0.
+    pub paint: usize,
+    /// The paint's colour.
+    pub colour: Rgb,
+    /// Width of the plate.
+    pub width_mm: f64,
+    /// Height of the plate.
+    pub height_mm: f64,
+    /// Separate openings.
+    pub openings: usize,
+    /// Area of the paint's cells.
+    pub paint_mm2: f64,
+    /// Area of the traced openings. Far below the cells' area when much of the paint is in
+    /// detail finer than tracing keeps.
+    pub opening_mm2: f64,
+    /// Pieces of plate cut off from the rim, which fall out unless something holds them.
+    pub islands: Vec<Spot>,
+    /// Plate material narrower than [`PlateSettings::min_web_mm`] for longer than that:
+    /// it prints badly and breaks.
+    pub thin_webs: Vec<Spot>,
+    /// Openings narrower than [`PlateSettings::min_opening_mm`] for longer than that: the
+    /// printer may close them, and little paint gets through.
+    pub narrow_openings: Vec<Spot>,
+    /// Whether the plate fits the bed, turned if need be.
+    pub fits_bed: bool,
+}
+
+/// Whole micrometres from millimetres, for settings already checked to be in range.
+#[allow(clippy::cast_possible_truncation, reason = "settings are checked to be far below 2^31 micrometres")]
+fn um(mm: f64) -> i32 {
+    (mm * UM_PER_MM).round_ties_even() as i32
+}
+
+fn mm(um: i32) -> f64 {
+    f64::from(um) / UM_PER_MM
+}
+
+/// The plate of every paint not in `skip`, in palette order. Skipped paints are those
+/// nobody paints, such as the canvas colour; the others keep their numbers.
+///
+/// # Errors
+///
+/// [`Error::Settings`] or [`Error::Stencil`] when a setting is out of range,
+/// [`Error::Stencil`] when every paint is skipped, and [`Error::Geometry`] when the plates
+/// would be too large to work with.
+pub fn build_plates(map: &LabelMap, settings: &PlateSettings, skip: &[Rgb]) -> Result<Vec<Plate>, Error> {
+    settings.check()?;
+    let too_large = || Error::Geometry("The plates would be too large to work with.".to_owned());
+    let side = |cells: u32| i32::try_from(u64::from(cells) * u64::from(map.cell_um)).map_err(|_| too_large());
+    let margin = um(settings.margin_mm);
+    let grown = |side: i32| side.checked_add(2 * margin).filter(|&s| s < 1 << 30).ok_or_else(too_large);
+    let size_um = (grown(side(map.width)?)?, grown(side(map.height)?)?);
+    let outline = vec![vec![rectangle(0, 0, size_um.0, size_um.1)]];
+    let trace = TraceSettings { cell_um: map.cell_um, ..TraceSettings::default() };
+    let cell_mm = f64::from(map.cell_um) / UM_PER_MM;
+    let cell_mm2 = cell_mm * cell_mm;
+    let counts = map.cell_counts();
+
+    let plates = map
+        .palette
+        .iter()
+        .enumerate()
+        .filter(|(_, colour)| !skip.contains(colour))
+        .map(|(paint, &colour)| {
+            let openings = translate(&trace_mask(&map.mask(paint), map.width, map.height, &trace)?, margin, margin);
+            let mut solid = difference(&outline, &openings);
+            // The rim is the piece that keeps the outline's corner.
+            if let Some(rim) = solid.iter().position(|shape| shape[0].contains(&Point::new(0, 0))) {
+                solid[..=rim].rotate_right(1);
+            }
+            #[allow(clippy::cast_precision_loss, reason = "at most 16 million cells")]
+            let paint_mm2 = counts[paint] as f64 * cell_mm2;
+            Ok(Plate { paint, paints: map.palette.len(), colour, size_um, paint_mm2, openings, solid })
+        })
+        .collect::<Result<Vec<_>, Error>>()?;
+    if plates.is_empty() {
+        return Err(Error::Stencil("Every paint is skipped, so there are no plates to make.".to_owned()));
+    }
+    Ok(plates)
+}
+
+impl Plate {
+    /// The file name, such as `plate-03-c02f34.stl`: the paint's number counted from 1,
+    /// padded so that the names sort in palette order, then its colour.
+    pub fn file_name(&self) -> String {
+        let [r, g, b] = self.colour;
+        let width = self.paints.to_string().len().max(2);
+        format!("plate-{:0width$}-{r:02x}{g:02x}{b:02x}.stl", self.paint + 1)
+    }
+
+    /// The plate as a closed solid, from z = 0 to the thickness.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Stencil`] when the thickness is out of range, [`Error::Geometry`] when the
+    /// mesh cannot be closed, which would be a fault in the engine.
+    pub fn mesh(&self, thickness_mm: f64) -> Result<Mesh, Error> {
+        check_thickness(thickness_mm)?;
+        mesh_slabs(&[Slab { z0: 0, z1: um(thickness_mm), shapes: self.solid.clone() }])
+    }
+
+    /// The plate as binary STL in millimetres.
+    ///
+    /// # Errors
+    ///
+    /// As [`Plate::mesh`].
+    pub fn stl(&self, thickness_mm: f64) -> Result<Vec<u8>, Error> {
+        let [r, g, b] = self.colour;
+        Ok(encode_stl(&self.mesh(thickness_mm)?.triangles_mm(), &format!("plate rgb({r}, {g}, {b})")))
+    }
+}
+
+/// Every plate as binary STL with its [`Plate::file_name`], ready to be zipped.
+///
+/// # Errors
+///
+/// As [`Plate::mesh`].
+pub fn plate_files(plates: &[Plate], thickness_mm: f64) -> Result<Vec<(String, Vec<u8>)>, Error> {
+    plates.iter().map(|plate| Ok((plate.file_name(), plate.stl(thickness_mm)?))).collect()
+}
+
+/// What may not print or paint well on a plate.
+///
+/// # Errors
+///
+/// [`Error::Settings`] or [`Error::Stencil`] when a setting is out of range, and
+/// [`Error::Geometry`] when the plate is too large to work with.
+pub fn check_plate(plate: &Plate, settings: &PlateSettings) -> Result<PlateReport, Error> {
+    settings.check()?;
+    let (width_mm, height_mm) = (mm(plate.size_um.0), mm(plate.size_um.1));
+    let (bed_w, bed_h) = settings.bed_mm;
+    let spots = |shapes: &[Shape]| shapes.iter().filter_map(spot).collect::<Vec<_>>();
+    // A narrow part no longer than the limit is a blunted corner, or the point where two
+    // shapes touch diagonally: it neither breaks nor closes up.
+    let long =
+        |spots: Vec<Spot>, limit: f64| spots.into_iter().filter(|s| s.width_mm.max(s.height_mm) > limit).collect();
+    Ok(PlateReport {
+        paint: plate.paint,
+        colour: plate.colour,
+        width_mm,
+        height_mm,
+        openings: plate.openings.len(),
+        paint_mm2: plate.paint_mm2,
+        opening_mm2: area_mm2(&plate.openings),
+        islands: spots(plate.solid.get(1..).unwrap_or_default()),
+        thin_webs: long(spots(&narrow_parts(&plate.solid, um(settings.min_web_mm))?), settings.min_web_mm),
+        narrow_openings: long(
+            spots(&narrow_parts(&plate.openings, um(settings.min_opening_mm))?),
+            settings.min_opening_mm,
+        ),
+        fits_bed: (width_mm <= bed_w && height_mm <= bed_h) || (width_mm <= bed_h && height_mm <= bed_w),
+    })
+}
+
+fn spot(shape: &Shape) -> Option<Spot> {
+    let shapes = std::slice::from_ref(shape);
+    let (lo, hi) = bounds(shapes)?;
+    Some(Spot {
+        x_mm: mm(lo.x),
+        y_mm: mm(lo.y),
+        width_mm: mm(hi.x - lo.x),
+        height_mm: mm(hi.y - lo.y),
+        area_mm2: area_mm2(shapes),
+    })
+}
+
+/// The parts of `shapes` narrower than `width_um`.
+///
+/// Shrinking by half the width removes them; growing back restores the rest. With sharp
+/// corners, rather than round ones, growing back restores corners exactly, so only narrow
+/// parts and corners sharper than 1/32 turn are left over; it is also several times faster,
+/// since round corners add many points.
+fn narrow_parts(shapes: &Shapes, width_um: i32) -> Result<Shapes, Error> {
+    let half = width_um / 2;
+    let kept = offset(&offset(shapes, -half, Corners::Sharp)?, half, Corners::Sharp)?;
+    let left_over = difference(shapes, &kept);
+    offset(&offset(&left_over, -SLIVER_UM, Corners::Sharp)?, SLIVER_UM, Corners::Sharp)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::mesh::inspect;
+
+    const INK: Rgb = [20, 20, 20];
+    const PAPER: Rgb = [250, 250, 250];
+
+    /// A map of `width` by `height` cells of 0.1 mm, ink where `ink` says.
+    fn map(width: u32, height: u32, ink: impl Fn(u32, u32) -> bool) -> LabelMap {
+        let labels = (0..height).flat_map(|y| (0..width).map(move |x| (x, y))).map(|(x, y)| u8::from(!ink(x, y)));
+        LabelMap { width, height, cell_um: 100, palette: vec![INK, PAPER], labels: labels.collect() }
+    }
+
+    fn ring(x: u32, y: u32) -> bool {
+        let (dx, dy) = (f64::from(x) - 99.5, f64::from(y) - 59.5);
+        (30.0 * 30.0..50.0 * 50.0).contains(&(dx * dx + dy * dy))
+    }
+
+    #[test]
+    fn a_ring_leaves_an_island() {
+        let map = map(200, 120, ring);
+        let plates = build_plates(&map, &PlateSettings::default(), &[PAPER]).unwrap();
+        assert_eq!(plates.len(), 1);
+        let plate = &plates[0];
+        assert_eq!((plate.paint, plate.size_um), (0, (40_000, 32_000)));
+        assert_eq!(plate.file_name(), "plate-01-141414.stl");
+        let report = check_plate(plate, &PlateSettings::default()).unwrap();
+        assert_eq!((report.width_mm, report.height_mm, report.openings), (40.0, 32.0, 1));
+        // The disc inside the ring, 6 mm across, centred on the artwork's centre.
+        assert_eq!(report.islands.len(), 1);
+        let disc = report.islands[0];
+        assert!((disc.x_mm + disc.width_mm / 2.0 - 20.0).abs() < 0.02, "{disc:?}");
+        assert!((disc.width_mm - 6.0).abs() < 0.1, "{disc:?}");
+        // The traced ring is within a percent of its cells; nothing is narrow; it fits.
+        assert!((report.opening_mm2 / report.paint_mm2 - 1.0).abs() < 0.01, "{report:?}");
+        assert!(report.thin_webs.is_empty() && report.narrow_openings.is_empty(), "{report:?}");
+        assert!(report.fits_bed);
+    }
+
+    #[test]
+    fn the_mesh_is_the_plate_less_its_openings() {
+        let map = map(200, 120, ring);
+        let plates = build_plates(&map, &PlateSettings::default(), &[]).unwrap();
+        assert_eq!(plates.len(), 2);
+        for plate in &plates {
+            let report = inspect(&plate.mesh(1.2).unwrap());
+            assert!(report.is_closed(), "{report:?}");
+            assert_eq!(report.pieces, plate.solid.len());
+            let area = 40.0 * 32.0 - area_mm2(&plate.openings);
+            assert!((report.volume_mm3 - area * 1.2).abs() < 1e-6, "{} {}", report.volume_mm3, area * 1.2);
+            assert_eq!((report.min_mm, report.max_mm), ([0.0; 3], [40.0, 32.0, 1.2]));
+        }
+        // The paper's plate: the ring itself is cut off by the paper inside and outside it.
+        assert_eq!(plates[1].solid.len(), 2);
+        let files = plate_files(&plates, 1.2).unwrap();
+        assert_eq!(
+            files.iter().map(|f| f.0.as_str()).collect::<Vec<_>>(),
+            ["plate-01-141414.stl", "plate-02-fafafa.stl"]
+        );
+        assert!(files[1].1.starts_with(b"stencilator plate rgb(250, 250, 250)"));
+    }
+
+    #[test]
+    fn thin_webs_and_narrow_openings_are_found_and_corners_are_not() {
+        // Two square openings 0.3 mm apart, two 0.8 mm apart, and a slit 0.3 mm wide.
+        let ink = |x: u32, y: u32| {
+            let square = |x0: u32| (x0..x0 + 40).contains(&x) && (20..60).contains(&y);
+            square(10) || square(53) || square(101) || ((150..190).contains(&x) && (38..41).contains(&y))
+        };
+        let plate = &build_plates(&map(200, 80, ink), &PlateSettings::default(), &[PAPER]).unwrap()[0];
+        let report = check_plate(plate, &PlateSettings::default()).unwrap();
+        assert_eq!(report.thin_webs.len(), 1, "{report:?}");
+        let web = report.thin_webs[0];
+        // Between x = 5 and 5.3 mm on the artwork, 10 mm in from the plate's edge.
+        assert!((web.x_mm + web.width_mm / 2.0 - 15.15).abs() < 0.05, "{web:?}");
+        assert!((web.height_mm - 4.0).abs() < 0.3, "{web:?}");
+        assert_eq!(report.narrow_openings.len(), 1, "{report:?}");
+        assert!((report.narrow_openings[0].width_mm - 4.0).abs() < 0.2, "{report:?}");
+        // Squares that touch at a corner make a point narrower than anything, but a harmless one.
+        let corners = |x: u32, y: u32| {
+            let square = |x0: u32, y0: u32| (x0..x0 + 40).contains(&x) && (y0..y0 + 40).contains(&y);
+            square(10, 10) || square(50, 50) || square(90, 10)
+        };
+        let touching = &build_plates(&map(140, 100, corners), &PlateSettings::default(), &[]).unwrap();
+        for plate in touching {
+            let report = check_plate(plate, &PlateSettings::default()).unwrap();
+            assert!(report.thin_webs.is_empty() && report.narrow_openings.is_empty(), "{report:?}");
+        }
+        // With lower limits nothing is reported.
+        let lenient = PlateSettings { min_web_mm: 0.2, min_opening_mm: 0.2, ..PlateSettings::default() };
+        let report = check_plate(plate, &lenient).unwrap();
+        assert!(report.thin_webs.is_empty() && report.narrow_openings.is_empty(), "{report:?}");
+    }
+
+    #[test]
+    fn large_plates_do_not_fit_the_bed() {
+        let map = LabelMap { width: 2400, height: 1000, cell_um: 100, palette: vec![INK], labels: vec![0; 2_400_000] };
+        let settings = PlateSettings::default();
+        let plate = &build_plates(&map, &settings, &[]).unwrap()[0];
+        // 260 by 120 mm with the margins.
+        assert!(!check_plate(plate, &settings).unwrap().fits_bed);
+        assert!(check_plate(plate, &PlateSettings { bed_mm: (150.0, 300.0), ..settings }).unwrap().fits_bed);
+    }
+
+    #[test]
+    fn mistakes_are_explained() {
+        let map = map(10, 10, |x, _| x < 5);
+        let message =
+            |settings: PlateSettings, skip: &[Rgb]| build_plates(&map, &settings, skip).unwrap_err().to_string();
+        assert_eq!(
+            message(PlateSettings::default(), &[INK, PAPER]),
+            "Every paint is skipped, so there are no plates to make."
+        );
+        let narrow = PlateSettings { margin_mm: 1.0, ..PlateSettings::default() };
+        assert_eq!(message(narrow, &[]), "The margin must be between 2 and 100 mm.");
+        let thin = PlateSettings { thickness_mm: 0.1, ..PlateSettings::default() };
+        assert_eq!(message(thin, &[]), "The stencil thickness must be between 0.2 and 20 mm.");
+    }
+}

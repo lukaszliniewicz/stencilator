@@ -30,6 +30,10 @@ pub type Shapes = Vec<Shape>;
 /// integers like everything else.
 const ROUND_CORNERS: ArcOptions = ArcOptions { max_step: Angle::from_bits(1 << 26), rotation_precision: 5 };
 
+/// Corners whose inside angle is below 1/32 turn (11.25 degrees) are cut rather than
+/// extended to a point.
+const SHARPEST_CORNER: Angle = Angle::from_bits(1 << 27);
+
 /// A rectangle, counter-clockwise.
 pub fn rectangle(x0: i32, y0: i32, x1: i32, y1: i32) -> Contour {
     vec![Point::new(x0, y0), Point::new(x1, y0), Point::new(x1, y1), Point::new(x0, y1)]
@@ -70,6 +74,9 @@ pub enum Corners {
     Round,
     /// A straight cut across each corner: fewer points, slightly closer in.
     Bevel,
+    /// The edges carried on until they meet, as the corner was; corners sharper than
+    /// 1/32 turn are cut.
+    Sharp,
 }
 
 /// Shapes grown by `distance_um`, or shrunk when it is negative. Shrinking can make thin
@@ -87,6 +94,7 @@ pub fn offset(shapes: &Shapes, distance_um: i32, corners: Corners) -> Result<Sha
     let join = match corners {
         Corners::Round => IntLineJoin::Round(ROUND_CORNERS),
         Corners::Bevel => IntLineJoin::Bevel,
+        Corners::Sharp => IntLineJoin::Miter(SHARPEST_CORNER),
     };
     let style = IntOutlineStyle::new(distance_um).line_join(join);
     cleaned.outline(&style).map_err(|_| Error::Geometry("The drawing is too large to work with.".to_owned()))
@@ -104,15 +112,23 @@ fn double_area(contour: &Contour) -> i128 {
         .sum()
 }
 
+/// The shapes moved by `dx`, `dy`.
+pub fn translate(shapes: &[Shape], dx: i32, dy: i32) -> Shapes {
+    shapes
+        .iter()
+        .map(|shape| shape.iter().map(|c| c.iter().map(|p| Point::new(p.x + dx, p.y + dy)).collect()).collect())
+        .collect()
+}
+
 /// Area in square millimetres, holes subtracted.
 #[allow(clippy::cast_precision_loss, reason = "a plate's area in square micrometres is far below 2^53")]
-pub fn area_mm2(shapes: &Shapes) -> f64 {
+pub fn area_mm2(shapes: &[Shape]) -> f64 {
     let double: i128 = shapes.iter().flatten().map(double_area).sum();
     double as f64 / 2.0 / (UM_PER_MM * UM_PER_MM)
 }
 
 /// The smallest rectangle around every point, as `(min, max)`, or `None` for no points.
-pub fn bounds(shapes: &Shapes) -> Option<(Point, Point)> {
+pub fn bounds(shapes: &[Shape]) -> Option<(Point, Point)> {
     let mut points = shapes.iter().flatten().flatten();
     let first = *points.next()?;
     Some(points.fold((first, first), |(lo, hi), p| {
@@ -159,6 +175,12 @@ mod tests {
         assert!((area_mm2(&grown) - expected).abs() < 0.01, "{}", area_mm2(&grown));
         let shrunk = offset(&square(0, 0, 10_000), -1000, Corners::Round).unwrap();
         assert!((area_mm2(&shrunk) - 64.0).abs() < 1e-9);
+        // Grown back with sharp corners, the square is whole again.
+        let whole = offset(&shrunk, 1000, Corners::Sharp).unwrap();
+        assert_eq!(whole[0][0].len(), 4);
+        assert!((area_mm2(&whole) - 100.0).abs() < 1e-12);
+        assert_eq!(bounds(&whole), Some((Point::new(0, 0), Point::new(10_000, 10_000))));
+        assert_eq!(translate(&square(0, 0, 10), 5, -5), square(5, -5, 10));
     }
 
     #[test]
