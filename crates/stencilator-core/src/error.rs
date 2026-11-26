@@ -15,13 +15,20 @@ pub enum Error {
     Stencil(String),
     /// The result cannot be written in the requested format.
     Export(String),
+    /// Plate geometry could not be built.
+    Geometry(String),
 }
 
 impl Error {
     /// The message alone.
     pub fn message(&self) -> &str {
         match self {
-            Error::Layout(m) | Error::Settings(m) | Error::Image(m) | Error::Stencil(m) | Error::Export(m) => m,
+            Error::Layout(m)
+            | Error::Settings(m)
+            | Error::Image(m)
+            | Error::Stencil(m)
+            | Error::Export(m)
+            | Error::Geometry(m) => m,
         }
     }
 }

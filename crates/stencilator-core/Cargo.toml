@@ -8,6 +8,8 @@ license.workspace = true
 publish.workspace = true
 
 [dependencies]
+earcutr = "0.5.0"
+i_overlay = "9.2.0"
 image = { version = "0.25.10", default-features = false, features = ["jpeg", "png", "webp"] }
 jpeg-encoder = { version = "0.7.1", default-features = false, features = ["std"] }
 libm = "0.2.16"
