@@ -141,8 +141,10 @@ fn build(args: &Build) -> Result<(), String> {
     match &args.stencils {
         Some(path) if is_zip(path) => destinations.push(("--stencils".to_owned(), path.clone())),
         Some(dir) => {
-            for &colour in &chart.palette {
-                destinations.push((format!("the stencil for {}", hex(colour)), dir.join(stencil_filename(colour))));
+            let count = chart.palette.len();
+            for (index, &colour) in (0..).zip(&chart.palette) {
+                let name = stencil_filename(index, count, colour);
+                destinations.push((format!("the stencil for {}", hex(colour)), dir.join(name)));
             }
         }
         None => {}

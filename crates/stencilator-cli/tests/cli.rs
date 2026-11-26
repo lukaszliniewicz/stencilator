@@ -45,9 +45,7 @@ fn writes_the_chart_and_one_stencil_per_colour() {
     let plates = names(&dir.join("plates/a"));
     assert!(
         !plates.is_empty()
-            && plates
-                .iter()
-                .all(|n| n.starts_with("stencil_color_") && Path::new(n).extension().is_some_and(|e| e == "stl"))
+            && plates.iter().all(|n| n.starts_with("stencil-") && Path::new(n).extension().is_some_and(|e| e == "stl"))
     );
     fs::remove_dir_all(&dir).unwrap();
 }

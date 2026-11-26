@@ -305,7 +305,8 @@ impl Chart {
     #[wasm_bindgen(js_name = stencilNames)]
     #[must_use]
     pub fn stencil_names(&self) -> Vec<String> {
-        self.chart.palette.iter().map(|&c| stencil_filename(c)).collect()
+        let count = self.chart.palette.len();
+        (0..).zip(&self.chart.palette).map(|(index, &colour)| stencil_filename(index, count, colour)).collect()
     }
 
     /// One colour's stencil as binary STL.

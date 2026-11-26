@@ -30,10 +30,13 @@ pub type Triangle = [[f64; 3]; 3];
 type Point2 = (u32, u32);
 type Point3 = (u32, u32, u32);
 
-/// The file name of a colour's stencil, such as `stencil_color_007_065_200.stl`.
-pub fn stencil_filename(colour: Rgb) -> String {
+/// The file name of stencil `index` out of `count`, such as `stencil-06-c02f34.stl`: its
+/// number in palette order counted from 1, padded so that the names sort in that order,
+/// then its colour.
+pub fn stencil_filename(index: u32, count: usize, colour: Rgb) -> String {
     let [r, g, b] = colour;
-    format!("stencil_color_{r:03}_{g:03}_{b:03}.stl")
+    let width = count.to_string().len().max(2);
+    format!("stencil-{:0width$}-{r:02x}{g:02x}{b:02x}.stl", u64::from(index) + 1)
 }
 
 /// The stencil of palette colour `index` as binary STL, with its [`stencil_filename`].
@@ -48,7 +51,10 @@ pub fn stencil_file(chart: &TileChart, index: u32, thickness_mm: f64) -> Result<
         .ok_or_else(|| Error::Stencil(format!("There is no colour {} in the palette.", u64::from(index) + 1)))?;
     let holes: Vec<bool> = chart.labels.iter().map(|&l| l == index).collect();
     let triangles = stencil_triangles(&holes, &chart.layout, thickness_mm)?;
-    Ok((stencil_filename([r, g, b]), encode_stl(&triangles, &format!("stencil rgb({r}, {g}, {b})"))))
+    Ok((
+        stencil_filename(index, chart.palette.len(), [r, g, b]),
+        encode_stl(&triangles, &format!("stencil rgb({r}, {g}, {b})")),
+    ))
 }
 
 /// Every colour's stencil, in palette order, as by [`stencil_file`].
@@ -313,7 +319,10 @@ mod tests {
     }
 
     #[test]
-    fn file_names_carry_the_colour() {
-        assert_eq!(stencil_filename([7, 65, 200]), "stencil_color_007_065_200.stl");
+    fn file_names_carry_the_number_and_colour() {
+        assert_eq!(stencil_filename(5, 10, [0xc0, 0x2f, 0x34]), "stencil-06-c02f34.stl");
+        assert_eq!(stencil_filename(0, 3, [7, 65, 200]), "stencil-01-0741c8.stl");
+        assert_eq!(stencil_filename(99, 256, [0, 0, 0]), "stencil-100-000000.stl");
+        assert_eq!(stencil_filename(0, 256, [255, 255, 255]), "stencil-001-ffffff.stl");
     }
 }
