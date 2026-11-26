@@ -16,6 +16,7 @@
 #![deny(clippy::print_stdout, clippy::print_stderr)]
 
 pub mod artwork;
+mod bridges;
 pub mod chart;
 pub mod colour;
 pub mod drawing;

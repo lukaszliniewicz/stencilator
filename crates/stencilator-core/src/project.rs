@@ -6,6 +6,7 @@
 //! out and take the engine's defaults. A drawing or typed text defaults to free-form mode
 //! at its own size; a picture to tile mode, and to 200 mm wide in free-form mode. Use the
 //! extension `.stencilator` to open the file in the web app.
+//! Projects using flat bridges use format 2; all others can still be saved as format 1.
 //!
 //! ```json
 //! {
@@ -27,8 +28,11 @@ use crate::plate::PlateSettings;
 use crate::quantise::ColourMode;
 use crate::{Error, VERSION};
 
-/// The version of the format this engine writes, and the newest it reads.
-pub const FORMAT: u32 = 1;
+/// The newest format this engine reads and writes.
+pub const FORMAT: u32 = 2;
+
+/// The format still understood by versions without flat bridges.
+const BASE_FORMAT: u32 = 1;
 
 /// The extension of project files, without the dot.
 pub const EXTENSION: &str = "stencilator";
@@ -79,7 +83,7 @@ pub struct Project {
 }
 
 fn format() -> u32 {
-    FORMAT
+    BASE_FORMAT
 }
 
 /// Which kind of stencils a project makes.
@@ -305,6 +309,9 @@ pub struct Freeform {
     pub min_web_mm: f64,
     /// Narrowest opening not reported, in millimetres.
     pub min_opening_mm: f64,
+    /// Width of flat bridges in millimetres, when requested.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub bridge_width_mm: Option<f64>,
 }
 
 impl Default for Freeform {
@@ -317,6 +324,7 @@ impl Default for Freeform {
             margin_mm: plates.margin_mm,
             min_web_mm: plates.min_web_mm,
             min_opening_mm: plates.min_opening_mm,
+            bridge_width_mm: plates.bridge_width_mm,
         }
     }
 }
@@ -412,7 +420,7 @@ impl Project {
     /// A project of `source` with every setting at the engine's default.
     pub fn new(source: Source) -> Project {
         let mut project = Project {
-            stencilator: FORMAT,
+            stencilator: BASE_FORMAT,
             written_by: VERSION.to_owned(),
             mode: Mode::default(),
             source,
@@ -497,6 +505,7 @@ impl Project {
             min_web_mm: f.min_web_mm,
             min_opening_mm: f.min_opening_mm,
             bed_mm: (self.stencils.bed_mm[0], self.stencils.bed_mm[1]),
+            bridge_width_mm: f.bridge_width_mm,
         }
     }
 
@@ -507,6 +516,7 @@ impl Project {
         self.freeform.margin_mm = settings.margin_mm;
         self.freeform.min_web_mm = settings.min_web_mm;
         self.freeform.min_opening_mm = settings.min_opening_mm;
+        self.freeform.bridge_width_mm = settings.bridge_width_mm;
     }
 
     /// The merges, as the engine takes them.
@@ -624,7 +634,8 @@ impl Project {
     /// Stencilator. A drawing or text that names no font names the built-in one, so the
     /// file says which font it was cut in. The same project always gives the same bytes.
     pub fn to_json(&self) -> Vec<u8> {
-        let mut stamped = Project { stencilator: FORMAT, written_by: VERSION.to_owned(), ..self.clone() };
+        let stencilator = if self.freeform.bridge_width_mm.is_some() { FORMAT } else { BASE_FORMAT };
+        let mut stamped = Project { stencilator, written_by: VERSION.to_owned(), ..self.clone() };
         if stamped.is_drawn() && stamped.fonts.is_empty() {
             stamped.fonts.push(Font { name: BUILT_IN_FONT.to_owned(), data: None });
         }
@@ -661,13 +672,16 @@ pub fn read_project(bytes: &[u8]) -> Result<Project, Error> {
         Some(format) if format > u64::from(FORMAT) => {
             return Err(Error::Project(format!(
                 "This project was saved by a newer version of Stencilator (format {format}); this one \
-                 opens format {FORMAT}. Update Stencilator to open it."
+                 opens up to format {FORMAT}. Update Stencilator to open it."
             )));
         }
         _ => return Err(Error::Project("This is not a Stencilator project.".to_owned())),
     }
     let given = Given::of(&value);
     let mut project: Project = serde_json::from_value(value).map_err(damaged)?;
+    if project.stencilator == BASE_FORMAT && project.freeform.bridge_width_mm.is_some() {
+        return Err(Error::Project("A project with flat bridges needs format 2.".to_owned()));
+    }
     project.drawn_defaults(given);
     project.check()?;
     Ok(project)
@@ -864,8 +878,8 @@ mod tests {
         assert!(message("not json").starts_with("The project could not be read: expected"));
         assert_eq!(message(r#"{"source": {}}"#), "This is not a Stencilator project.");
         assert_eq!(
-            message(r#"{"stencilator": 2}"#),
-            "This project was saved by a newer version of Stencilator (format 2); this one opens format 1. \
+            message(r#"{"stencilator": 3}"#),
+            "This project was saved by a newer version of Stencilator (format 3); this one opens up to format 2. \
              Update Stencilator to open it."
         );
         let text = |colour: &str| {

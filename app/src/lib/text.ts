@@ -260,6 +260,9 @@ export const text = {
     detailNote:
       'Smaller cells follow edges more closely. Patches below the area you set take the paints around them. Set it to 0 to keep every patch.',
     margin: 'Margin (mm)',
+    flatBridges: 'Flat bridges for brush work',
+    bridgeWidth: 'Bridge width (mm)',
+    bridgeNote: 'Bridges hold loose pieces in place and leave unpainted lines across the openings.',
     bed: 'Print bed',
     bedWidth: 'Bed width (mm)',
     bedDepth: 'Bed depth (mm)',
@@ -271,6 +274,10 @@ export const text = {
     webLayer: 'Thin webs',
     openingLayer: 'Narrow openings',
     islands: (n: number) => plural(n, 'loose island', 'loose islands'),
+    singleBridgeIslands: (n: number) =>
+      `${plural(n, 'island', 'islands')} with one bridge towards the rim`,
+    flatBridgesAdded: (n: number, area: number) =>
+      `${plural(n, 'flat bridge', 'flat bridges')} · ${num(area, 1)} mm² masked`,
     thinWebs: (n: number) => plural(n, 'thin web', 'thin webs'),
     narrowOpenings: (n: number) => plural(n, 'narrow opening', 'narrow openings'),
     openings: (n: number) => plural(n, 'opening', 'openings'),

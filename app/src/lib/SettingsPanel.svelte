@@ -234,6 +234,27 @@
       {/if}
     </div>
     {#if bench.isFreeform}
+      <label class="bridge-option">
+        <input
+          type="checkbox"
+          checked={s.bridgeWidthMm !== null}
+          onchange={(event) => {
+            bench.change('bridgeWidthMm', event.currentTarget.checked ? 1.2 : null);
+          }}
+        />
+        {free.flatBridges}
+      </label>
+      {#if s.bridgeWidthMm !== null}
+        <div class="pair">
+          <NumberField
+            label={free.bridgeWidth}
+            value={s.bridgeWidthMm}
+            step={0.1}
+            onchange={set('bridgeWidthMm')}
+          />
+        </div>
+        <p class="note">{free.bridgeNote}</p>
+      {/if}
       <p class="label">{free.bed}</p>
       <div class="pair">
         <NumberField label={free.bedWidth} value={s.bedWidthMm} onchange={set('bedWidthMm')} />
@@ -283,5 +304,16 @@
 
   .mode {
     gap: 8px;
+  }
+
+  .bridge-option {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+  }
+
+  .bridge-option input {
+    accent-color: var(--tint-text);
   }
 </style>

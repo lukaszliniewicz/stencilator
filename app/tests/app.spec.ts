@@ -277,6 +277,41 @@ test('typed text uses the selected font and can be saved with every paint untick
   expect(problems).toEqual([]);
 });
 
+test('flat bridges hold a text island and stay with the saved project', async ({ page }) => {
+  const problems = watchForProblems(page);
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Type text', exact: true }).click();
+  await page.getByRole('textbox', { name: 'Text', exact: true }).fill('O');
+  const loose = page.getByText('1 loose island', { exact: true });
+  await expect(loose).toBeVisible();
+
+  const bridges = page.getByRole('checkbox', { name: 'Flat bridges for brush work' });
+  const added = page.getByText(/^2 flat bridges ·/);
+  const width = page.getByLabel('Bridge width (mm)');
+  await bridges.check();
+  await expect(added).toBeVisible();
+  await expect(loose).toHaveCount(0);
+  await width.fill('1.4');
+
+  const saved = page.waitForEvent('download');
+  await page.getByRole('button', { name: 'Save project', exact: true }).click();
+  const design = await saved;
+  const buffer = await readFile(await design.path());
+  expect(buffer.toString('utf8')).toContain('"bridge_width_mm": 1.4');
+  await page.reload();
+  await page.getByLabel('Stencilator project file', { exact: true }).setInputFiles({
+    name: design.suggestedFilename(),
+    mimeType: 'application/json',
+    buffer
+  });
+  await expect(bridges).toBeChecked();
+  await expect(width).toHaveValue('1.4');
+  await expect(added).toBeVisible();
+  await bridges.uncheck();
+  await expect(loose).toBeVisible();
+  expect(problems).toEqual([]);
+});
+
 test('a picture can switch modes and be saved with an unfinished setting in the other mode', async ({
   page
 }) => {

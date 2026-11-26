@@ -3,9 +3,9 @@
 //!
 //! Every plate has the same outline, so they line up when laid on the same corner. The
 //! openings are the paint's cells traced into smooth outlines ([`crate::trace`]). A plate
-//! is one slab, meshed into a closed solid; parts of it cut off from the rim by openings
-//! (the middle of an O) stay in the mesh as loose pieces, and [`check_plate`] reports them
-//! with everything else that may not print or paint well.
+//! is one slab, meshed into a closed solid. Flat bridges can hold parts of it cut off from
+//! the rim. Any pieces still loose stay in the mesh, and [`check_plate`] reports them with
+//! everything else that may not print or paint well.
 //!
 //! Plate coordinates are in micrometres from the plate's bottom-left corner, y up, with
 //! the artwork the right way up seen from above.
@@ -16,6 +16,7 @@ use serde::{Serialize, Serializer};
 
 use crate::Error;
 use crate::artwork::LabelMap;
+use crate::bridges::flat_bridges;
 use crate::colour::Rgb;
 use crate::geometry::{
     Corners, Point, Shape, Shapes, UM_PER_MM, area_mm2, bounds, difference, offset, rectangle, svg_path, translate,
@@ -33,6 +34,9 @@ pub const FEATURE_MM: RangeInclusive<f64> = 0.1..=5.0;
 
 /// Accepted print bed sides, in millimetres.
 pub const BED_MM: RangeInclusive<f64> = 50.0..=2000.0;
+
+/// Accepted flat bridge widths in millimetres.
+pub const BRIDGE_MM: RangeInclusive<f64> = RECOMMENDED_MIN_WEB_MM..=5.0;
 
 /// Space between plates laid out in a 3MF file, in micrometres.
 const LAYOUT_GAP_UM: i32 = 10_000;
@@ -57,6 +61,8 @@ pub struct PlateSettings {
     pub min_opening_mm: f64,
     /// Width and depth of the print bed in millimetres; larger plates are reported.
     pub bed_mm: (f64, f64),
+    /// Width of flat bridges in millimetres, or `None` to leave the openings as traced.
+    pub bridge_width_mm: Option<f64>,
 }
 
 impl Default for PlateSettings {
@@ -67,6 +73,7 @@ impl Default for PlateSettings {
             min_web_mm: RECOMMENDED_MIN_WEB_MM,
             min_opening_mm: 0.5,
             bed_mm: (256.0, 256.0),
+            bridge_width_mm: None,
         }
     }
 }
@@ -91,7 +98,11 @@ impl PlateSettings {
         mm("The narrowest web", self.min_web_mm, &FEATURE_MM)?;
         mm("The narrowest opening", self.min_opening_mm, &FEATURE_MM)?;
         mm("The bed width", self.bed_mm.0, &BED_MM)?;
-        mm("The bed depth", self.bed_mm.1, &BED_MM)
+        mm("The bed depth", self.bed_mm.1, &BED_MM)?;
+        if let Some(width) = self.bridge_width_mm {
+            mm("The flat bridge width", width, &BRIDGE_MM)?;
+        }
+        Ok(())
     }
 }
 
@@ -113,6 +124,8 @@ pub struct Plate {
     /// The plate itself: its rectangle less the openings. The first shape is the rim, the
     /// rest are islands.
     pub solid: Shapes,
+    /// What the optional flat bridges changed.
+    pub flat_bridges: Option<FlatBridgeReport>,
 }
 
 /// A place on a plate: the rectangle around it, in millimetres from the plate's
@@ -134,6 +147,18 @@ pub struct Spot {
     /// Area of the part itself.
     #[serde(serialize_with = "thousandths")]
     pub area_mm2: f64,
+}
+
+/// What changed when flat bridges were requested.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct FlatBridgeReport {
+    /// Number of bridges added to the plate.
+    pub count: usize,
+    /// Area of the opening covered by bridges, in square millimetres.
+    #[serde(serialize_with = "thousandths")]
+    pub covered_mm2: f64,
+    /// Islands with just one bridge towards the rim, which may still be fragile.
+    pub single_bridge_islands: Vec<Spot>,
 }
 
 /// What may not print or paint well on one plate. Warnings only: the plate is made anyway.
@@ -171,6 +196,9 @@ pub struct PlateReport {
     pub narrow_openings: Vec<Spot>,
     /// Whether the plate fits the bed, turned if need be.
     pub fits_bed: bool,
+    /// What the optional flat bridges changed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub flat_bridges: Option<FlatBridgeReport>,
 }
 
 /// A report with its plate's file name, as the command line prints it and the app reads it.
@@ -242,19 +270,50 @@ pub fn build_plates(map: &LabelMap, settings: &PlateSettings, skip: &[Rgb]) -> R
         .filter(|(_, colour)| !skip.contains(colour))
         .map(|(paint, &colour)| {
             let openings = translate(&trace_mask(&map.mask(paint), map.width, map.height, &trace)?, margin, margin);
-            let mut solid = difference(&outline, &openings);
-            // The rim is the piece that keeps the outline's corner.
-            if let Some(rim) = solid.iter().position(|shape| shape[0].contains(&Point::new(0, 0))) {
-                solid[..=rim].rotate_right(1);
-            }
             #[allow(clippy::cast_precision_loss, reason = "at most 16 million cells")]
             let paint_mm2 = counts[paint] as f64 * cell_mm2;
-            Ok(Plate { paint, paints: map.palette.len(), colour, size_um, paint_mm2, openings, solid })
+            let solid = plate_solid(&outline, &openings);
+            let mut plate = Plate {
+                paint,
+                paints: map.palette.len(),
+                colour,
+                size_um,
+                paint_mm2,
+                openings,
+                solid,
+                flat_bridges: None,
+            };
+            if let Some(width) = settings.bridge_width_mm {
+                plate.add_flat_bridges(&outline, um(width));
+            }
+            Ok(plate)
         })
         .collect()
 }
 
+fn plate_solid(outline: &Shapes, openings: &Shapes) -> Shapes {
+    let mut solid = difference(outline, openings);
+    // The rim is the piece that keeps the outline's corner.
+    if let Some(rim) = solid.iter().position(|shape| shape[0].contains(&Point::new(0, 0))) {
+        solid[..=rim].rotate_right(1);
+    }
+    solid
+}
+
 impl Plate {
+    fn add_flat_bridges(&mut self, outline: &Shapes, width: i32) {
+        let (bridges, singly_held) = flat_bridges(&self.solid, self.size_um, width);
+        let single_bridge_islands = singly_held.into_iter().filter_map(|i| spot(&self.solid[i])).collect();
+        let mut covered_mm2 = 0.0;
+        if !bridges.is_empty() {
+            let openings = difference(&self.openings, &bridges);
+            covered_mm2 = (area_mm2(&self.openings) - area_mm2(&openings)).max(0.0);
+            self.solid = plate_solid(outline, &openings);
+            self.openings = openings;
+        }
+        self.flat_bridges = Some(FlatBridgeReport { count: bridges.len(), covered_mm2, single_bridge_islands });
+    }
+
     /// The name, such as `plate-03-c02f34`: the paint's number counted from 1, padded so
     /// that the names sort in palette order, then its colour.
     pub fn name(&self) -> String {
@@ -389,6 +448,7 @@ pub fn inspect_plate(plate: &Plate, settings: &PlateSettings) -> Result<(PlateRe
         thin_webs: web_spots,
         narrow_openings: narrow_spots,
         fits_bed: (width_mm <= bed_w && height_mm <= bed_h) || (width_mm <= bed_h && height_mm <= bed_w),
+        flat_bridges: plate.flat_bridges.clone(),
     };
     Ok((report, PlateProblems { islands, thin_webs, narrow_openings }))
 }
@@ -543,6 +603,42 @@ mod tests {
         let xml = String::from_utf8(xml).unwrap();
         assert!(xml.contains(r#"<item objectid="2" transform="1 0 0 0 1 0 0 0 1 0 0 0"/>"#));
         assert!(xml.contains(r#"<item objectid="3" transform="1 0 0 0 1 0 0 0 1 50 0 0"/>"#));
+    }
+
+    #[test]
+    fn flat_bridges_hold_nested_islands_in_one_solid() {
+        let nested = map(300, 240, |x, y| {
+            let r = x.abs_diff(149).max(y.abs_diff(119));
+            (15..35).contains(&r) || (60..100).contains(&r)
+        });
+        let settings = PlateSettings::default();
+        let original = &build_plates(&nested, &settings, &[PAPER]).unwrap()[0];
+        assert_eq!(original.solid.len(), 3);
+        let settings = PlateSettings { bridge_width_mm: Some(1.2), ..settings };
+        let plate = &build_plates(&nested, &settings, &[PAPER]).unwrap()[0];
+        let report = check_plate(plate, &settings).unwrap();
+        let bridges = report.flat_bridges.unwrap();
+        assert!(report.islands.is_empty() && bridges.single_bridge_islands.is_empty(), "{bridges:?}");
+        assert_eq!(bridges.count, 4, "{bridges:?}");
+        assert!(bridges.covered_mm2 > 0.0, "{bridges:?}");
+        assert_eq!(plate.size_um, original.size_um);
+        assert!((report.opening_mm2 + bridges.covered_mm2 - area_mm2(&original.openings)).abs() < 1e-6, "{bridges:?}");
+        let mesh = inspect(&plate.mesh(settings.thickness_mm).unwrap());
+        assert!(mesh.is_closed() && mesh.pieces == 1, "{mesh:?}");
+        let area = report.width_mm * report.height_mm - report.opening_mm2;
+        assert!((mesh.volume_mm3 - area * settings.thickness_mm).abs() < 1e-6, "{mesh:?}");
+    }
+
+    #[test]
+    fn a_flat_bridge_needs_material_across_its_full_width() {
+        let tiny = map(200, 120, |x, y| {
+            (20..180).contains(&x) && (20..100).contains(&y) && !((98..102).contains(&x) && (58..62).contains(&y))
+        });
+        let settings = PlateSettings { bridge_width_mm: Some(1.2), ..PlateSettings::default() };
+        let plate = &build_plates(&tiny, &settings, &[PAPER]).unwrap()[0];
+        let report = check_plate(plate, &settings).unwrap();
+        assert_eq!(report.flat_bridges.unwrap().count, 0);
+        assert_eq!(report.islands.len(), 1);
     }
 
     #[test]

@@ -131,6 +131,12 @@ const freeform = [
     args: [badge],
   },
   {
+    name: "badge with flat bridges",
+    project: () => engine.Project.svg("badge.svg", readFileSync(badge)),
+    settings: { freeform: { bridge_width_mm: 1.2 } },
+    args: [badge, "--flat-bridges"],
+  },
+  {
     name: "badge, every paint skipped",
     project: () => engine.Project.svg("badge.svg", readFileSync(badge)),
     settings: { stencils: { skipped: ["#1d2f5c", "#ef7d2d"] } },

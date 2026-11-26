@@ -28,6 +28,7 @@ export interface ProjectSettings {
     margin_mm: number;
     min_web_mm: number;
     min_opening_mm: number;
+    bridge_width_mm?: number;
   };
   stencils: {
     thickness_mm: number;
@@ -135,6 +136,7 @@ export interface PlateReport {
   thin_webs: Spot[];
   narrow_openings: Spot[];
   fits_bed: boolean;
+  flat_bridges?: { count: number; covered_mm2: number; single_bridge_islands: Spot[] };
   stencil: string;
 }
 

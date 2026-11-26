@@ -101,6 +101,19 @@ view highlights islands, thin webs and narrow openings. **Files** offers 3MF, a 
 STLs, or a single plate. Save a `.stencilator` project to reopen the artwork and all its
 settings in the app or on the command line.
 
+#### Flat bridges for brush work
+
+Add `--flat-bridges` to hold islands in place with 1.2 mm-wide bars that print flat
+with the plate. Set another width with `--flat-bridges=1.6` (0.6 to 5 mm), or use
+`--flat-bridges=0` to turn them off in a saved project. Each bridge leaves a line
+unpainted. The report shows how much of the opening they cover and flags loose islands
+and islands with just one bridge towards the rim. Small or awkward islands may have
+nowhere for a bridge to land.
+
+In a local build of the app, turn on **Flat bridges for brush work** under **Plates**
+and inspect the result in **Plate** view. Projects saved with bridges use format 2;
+the hosted app still uses the preceding release, which opens format 1.
+
 ### In both modes
 
 - The canvas colour (`--background`, white by default) gets no stencil, since the canvas
@@ -119,9 +132,9 @@ settings in the app or on the command line.
 
 ## Roadmap
 
-The next phase focuses on holding islands in place and adding a keyed registration frame
-that keeps plates aligned between colours. A local MCP server follows, so that an AI
-assistant can prepare stencils for you.
+Raised connectors for spray painting and a keyed registration frame for keeping plates
+aligned between colours are next. A local MCP server follows, so that an AI assistant can
+prepare stencils for you.
 
 ## Development
 

@@ -76,6 +76,17 @@ pub(crate) struct FreeformArgs {
     /// Report openings narrower than this, in millimetres [default: 0.5]
     #[arg(long, value_name = "MM", help_heading = "Plates")]
     min_opening: Option<f64>,
+    /// Hold islands with flat bridges (1.2 mm by default). Pass =MM to set their width,
+    /// or =0 to turn them off in a saved project.
+    #[arg(
+        long,
+        value_name = "MM",
+        num_args = 0..=1,
+        require_equals = true,
+        default_missing_value = "1.2",
+        help_heading = "Plates"
+    )]
+    flat_bridges: Option<f64>,
 
     #[command(flatten)]
     colours: ColourArgs,
@@ -146,6 +157,9 @@ impl FreeformArgs {
             if let Some(value) = value {
                 *field = value;
             }
+        }
+        if let Some(width) = self.flat_bridges {
+            f.bridge_width_mm = (width != 0.0).then_some(width);
         }
         self.colours.apply(project);
         self.stencil_settings.apply(project);
@@ -290,14 +304,17 @@ impl Report<'_> {
         for report in self.reports {
             let name = Self::plate_name(report);
             if !report.islands.is_empty() {
+                let islands = report.islands.len();
                 let largest = report.islands.iter().max_by(|a, b| a.area_mm2.total_cmp(&b.area_mm2));
                 let largest = largest.map_or(String::new(), |s| {
                     format!("; the largest, {:.1} x {:.1} mm, is at {}", s.width_mm, s.height_mm, place(s))
                 });
-                warnings.push(format!(
-                    "{name}: {} fall out unless something holds them{largest}",
-                    count(report.islands.len(), "island", "islands")
-                ));
+                let falls = if islands == 1 {
+                    "1 island falls out unless something holds it".to_owned()
+                } else {
+                    format!("{islands} islands fall out unless something holds them")
+                };
+                warnings.push(format!("{name}: {falls}{largest}"));
             }
             if !report.thin_webs.is_empty() {
                 warnings.push(format!(
@@ -315,10 +332,22 @@ impl Report<'_> {
                     places(&report.narrow_openings)
                 ));
             }
-            if report.paint_mm2 > 0.0 && report.opening_mm2 < TRACED_ENOUGH * report.paint_mm2 {
+            let mut traced_mm2 = report.opening_mm2;
+            if let Some(bridges) = &report.flat_bridges {
+                traced_mm2 += bridges.covered_mm2;
+                let single = &bridges.single_bridge_islands;
+                if !single.is_empty() {
+                    warnings.push(format!(
+                        "{name}: {} only one flat bridge towards the rim, {}",
+                        count(single.len(), "island has", "islands have"),
+                        places(single)
+                    ));
+                }
+            }
+            if report.paint_mm2 > 0.0 && traced_mm2 < TRACED_ENOUGH * report.paint_mm2 {
                 warnings.push(format!(
                     "{name}: only {:.0} % of the paint's area could be traced; detail finer than the {} mm cells is lost",
-                    100.0 * report.opening_mm2 / report.paint_mm2,
+                    100.0 * traced_mm2 / report.paint_mm2,
                     f64::from(self.map.cell_um) / 1000.0
                 ));
             }
@@ -391,8 +420,11 @@ impl Report<'_> {
             println!("plates   none (every paint is skipped)");
         }
         for r in self.reports {
+            let bridges = r.flat_bridges.as_ref().map_or_else(String::new, |flat| {
+                format!(", {} covering {:.1} mm²", count(flat.count, "flat bridge", "flat bridges"), flat.covered_mm2)
+            });
             println!(
-                "  {:>2}  {}  {}, {}, {}, {}",
+                "  {:>2}  {}  {}, {}, {}, {}{bridges}",
                 r.paint + 1,
                 hex(r.colour),
                 count(r.openings, "opening", "openings"),

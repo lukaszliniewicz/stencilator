@@ -34,6 +34,7 @@ describe('settings', () => {
       marginMm: 10,
       minWebMm: 0.6,
       minOpeningMm: 0.5,
+      bridgeWidthMm: null,
       thicknessMm: 1.2,
       bedWidthMm: 256,
       bedDepthMm: 256,
@@ -123,6 +124,7 @@ describe('settings', () => {
       sizeMode: 'within',
       artWidthMm: 175,
       artHeightMm: 135,
+      bridgeWidthMm: 1.4,
       bedDepthMm: 210,
       skipped: ['#202030']
     } as const;

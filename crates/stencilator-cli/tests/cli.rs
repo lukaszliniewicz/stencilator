@@ -208,6 +208,39 @@ fn typed_text_is_saved_as_a_project_that_opens_again() {
 }
 
 #[test]
+fn flat_bridges_survive_project_save_and_can_be_turned_off() {
+    let dir = workspace("flat-bridges");
+    let original = report(&dir, &["freeform", "--text", "O", "--3mf", "original.3mf"]);
+    assert_eq!(original["plates"][0]["islands"].as_array().unwrap().len(), 1);
+    let bridged = report(
+        &dir,
+        &["freeform", "--text", "O", "--flat-bridges", "--3mf", "bridged.3mf", "--save", "bridged.stencilator"],
+    );
+    let plate = &bridged["plates"][0];
+    assert_eq!(plate["islands"], serde_json::json!([]));
+    assert_eq!(plate["flat_bridges"]["count"], 2);
+    assert!(bridged["warnings"].as_array().unwrap().iter().all(|w| !w.as_str().unwrap().contains("could be traced")));
+    let saved: serde_json::Value = serde_json::from_slice(&fs::read(dir.join("bridged.stencilator")).unwrap()).unwrap();
+    assert_eq!(saved["stencilator"], 2);
+    assert_eq!(saved["freeform"]["bridge_width_mm"], 1.2);
+    let again = report(&dir, &["freeform", "bridged.stencilator", "--3mf", "reopened.3mf"]);
+    let print = |name| fs::read(dir.join(name)).unwrap();
+    assert_eq!(again["plates"], bridged["plates"]);
+    assert_eq!(print("reopened.3mf"), print("bridged.3mf"));
+    assert_ne!(print("bridged.3mf"), print("original.3mf"));
+
+    let plain = report(
+        &dir,
+        &["freeform", "bridged.stencilator", "--flat-bridges=0", "--3mf", "plain.3mf", "--save", "plain.stencilator"],
+    );
+    let saved: serde_json::Value = serde_json::from_slice(&print("plain.stencilator")).unwrap();
+    assert_eq!(saved["stencilator"], 1);
+    assert_eq!(plain["plates"], original["plates"]);
+    assert_eq!(print("plain.3mf"), print("original.3mf"));
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
 fn a_project_saved_without_an_extension_can_be_reopened() {
     let dir = workspace("project-name");
     let first = report(&dir, &["freeform", "--text", "AO", "--save", "design"]);
@@ -267,6 +300,7 @@ fn freeform_settings_out_of_range_are_refused_before_reading_the_file() {
     for (args, message) in [
         (&["missing.svg", "--cell", "1"][..], "The cell size must be between"),
         (&["missing.svg", "--margin", "0.5"], "The margin must be between"),
+        (&["missing.svg", "--flat-bridges=0.2"], "The flat bridge width must be between"),
         (&["missing.png", "--width", "1e9"], "The width must be between"),
     ] {
         let (ok, _, stderr) = run(&dir, &[&["freeform"][..], args].concat());
