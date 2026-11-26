@@ -17,10 +17,9 @@ and, later, behind an AI assistant, giving the same result everywhere.
 
 ## Status
 
-Early, but usable. Both modes work on the command line and in the web app built from
-this repository. The [hosted app](https://stencilator.liniewicz.eu) currently serves tile
-mode. The app runs entirely in your browser, so your artwork is never uploaded.
-There are no prebuilt releases of the command yet.
+Early, but usable. Both modes work on the command line and in the
+[web app](https://stencilator.liniewicz.eu). The app runs entirely in your browser,
+so your artwork is never uploaded. There are no prebuilt releases of the command yet.
 
 ## Trying it
 
