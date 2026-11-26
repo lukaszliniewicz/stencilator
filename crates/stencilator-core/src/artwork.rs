@@ -1,5 +1,11 @@
-//! Free-form artwork: a picture laid on the canvas colour at a physical size, as a map of
-//! square cells each holding one paint.
+//! Free-form artwork: a picture, an SVG drawing or typed text laid on the canvas colour at
+//! a physical size, as a map of square cells each holding one paint.
+//!
+//! A drawing whose fills and strokes are all solid colours, in colour mode and with no
+//! more of them than the paints allowed, keeps exactly those colours and the canvas
+//! colour; it is drawn onto the cells without anti-aliasing, so every cell is one of them.
+//! Any other drawing is drawn the same way and then treated as a picture of that size.
+//! Pictures:
 //!
 //! 1. The palette is fitted on a copy of the picture at most [`FIT_SIDE`] pixels a side, as
 //!    tile mode reduces colours: exactly when there are few, otherwise by clustering.
@@ -21,6 +27,7 @@ use std::ops::RangeInclusive;
 use crate::Error;
 use crate::chart::{CANVAS_MM, COLOURS};
 use crate::colour::Rgb;
+use crate::drawing::Drawing;
 use crate::paints::merge_plan;
 use crate::quantise::{ColourMode, Fit, darkest_first};
 use crate::resample::{Filter, flatten, resize, resize_box};
@@ -51,6 +58,9 @@ const DOMINANT_SHARE: f64 = 0.5;
 /// How large the artwork is made.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Size {
+    /// As large as the artwork itself: a drawing at its own width and height, typed text
+    /// at its font size. A picture has no size of its own.
+    Natural,
     /// This wide, in millimetres; the height follows.
     Width(f64),
     /// This tall, in millimetres; the width follows.
@@ -104,6 +114,7 @@ impl ArtworkSettings {
             }
         };
         match self.size {
+            Size::Natural => {}
             Size::Width(w) => mm("The width", w, &CANVAS_MM)?,
             Size::Height(h) => mm("The height", h, &CANVAS_MM)?,
             Size::Within(w, h) => {
@@ -183,19 +194,31 @@ impl LabelMap {
 ///
 /// # Errors
 ///
-/// [`Error::Settings`] when a setting is out of range or there would be too many cells.
+/// [`Error::Settings`] when a setting is out of range, the size is [`Size::Natural`] or
+/// there would be too many cells.
 pub fn cell_grid(width: u32, height: u32, settings: &ArtworkSettings) -> Result<(u32, u32, u32), Error> {
-    settings.check()?;
     if width == 0 || height == 0 {
         return Err(Error::Image("The image is empty.".to_owned()));
     }
-    let (w, h) = (f64::from(width), f64::from(height));
+    if settings.size == Size::Natural {
+        return Err(Error::Settings(
+            "A picture has no size of its own: give its width, its height or a box to fit it in.".to_owned(),
+        ));
+    }
+    grid(f64::from(width), f64::from(height), settings)
+}
+
+/// The cells of artwork `width` by `height` across, in millimetres for [`Size::Natural`],
+/// otherwise in any unit, since only the proportions count.
+fn grid(width: f64, height: f64, settings: &ArtworkSettings) -> Result<(u32, u32, u32), Error> {
+    settings.check()?;
     let (width_mm, height_mm) = match settings.size {
-        Size::Width(mm) => (mm, mm * h / w),
-        Size::Height(mm) => (mm * w / h, mm),
+        Size::Natural => (width, height),
+        Size::Width(mm) => (mm, mm * height / width),
+        Size::Height(mm) => (mm * width / height, mm),
         Size::Within(bw, bh) => {
-            let scale = (bw / w).min(bh / h);
-            (w * scale, h * scale)
+            let scale = (bw / width).min(bh / height);
+            (width * scale, height * scale)
         }
     };
     let cell_um = settings.cell_um();
@@ -205,10 +228,10 @@ pub fn cell_grid(width: u32, height: u32, settings: &ArtworkSettings) -> Result<
     #[allow(clippy::cast_precision_loss, reason = "a small constant")]
     let too_many = total > MAX_CELLS as f64;
     if too_many {
-        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, reason = "positive and below 10^12")]
+        #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, reason = "positive and far below 2^64")]
         let total = total as u64;
         return Err(Error::Settings(format!(
-            "At {} mm cells, a {width_mm:.0} by {height_mm:.0} mm picture makes {} cells; the limit is {}. \
+            "At {} mm cells, {width_mm:.0} by {height_mm:.0} mm makes {} cells; the limit is {}. \
              Choose larger cells or a smaller size.",
             settings.cell_mm,
             thousands(total),
@@ -232,7 +255,39 @@ pub fn sample_cells(image: &Image, width: u32, height: u32, background: Rgb) -> 
 /// As [`cell_grid`], and [`Error::Settings`] from the colour reduction.
 pub fn label_picture(image: &Image, settings: &ArtworkSettings) -> Result<LabelMap, Error> {
     let (width, height, cell_um) = cell_grid(image.width, image.height, settings)?;
+    let fit = fit_paints(image, settings)?;
+    let cells = sample_cells(image, width, height, settings.background);
+    Ok(label_cells(&fit, &cells, width, height, cell_um))
+}
 
+/// The label map of an SVG drawing or typed text.
+///
+/// # Errors
+///
+/// [`Error::Settings`] when a setting is out of range or there would be too many cells,
+/// and from the colour reduction.
+pub fn label_drawing(drawing: &Drawing, settings: &ArtworkSettings) -> Result<LabelMap, Error> {
+    let (width_mm, height_mm) = drawing.size_mm();
+    let (width, height, cell_um) = grid(width_mm, height_mm, settings)?;
+    let drawn = drawing.render(width, height)?;
+    let exact = drawing.solid_paints().filter(|_| settings.mode == ColourMode::Colour).and_then(|mut paints| {
+        if !paints.contains(&settings.background) {
+            paints.push(settings.background);
+        }
+        (paints.len() <= settings.n_colours).then(|| Fit::of(&paints, settings.mode))
+    });
+    let fit = match exact {
+        Some(fit) => fit,
+        None => fit_paints(&drawn, settings)?,
+    };
+    let cells = flatten(&drawn, settings.background);
+    drop(drawn);
+    Ok(label_cells(&fit, &cells, width, height, cell_um))
+}
+
+/// Fits the paints on a copy of the picture at most [`FIT_SIDE`] pixels a side, without
+/// the blends anti-aliasing leaves and, in colour mode, in the picture's exact colours.
+fn fit_paints(image: &Image, settings: &ArtworkSettings) -> Result<Fit, Error> {
     let longest = image.width.max(image.height);
     let (fit_w, fit_h) = if longest > FIT_SIDE {
         let shrink =
@@ -247,9 +302,13 @@ pub fn label_picture(image: &Image, settings: &ArtworkSettings) -> Result<LabelM
     if settings.mode == ColourMode::Colour {
         take_exact_colours(&mut fit, &fit_rgb);
     }
+    Ok(fit)
+}
 
-    let cells = classify(&fit, &sample_cells(image, width, height, settings.background));
-    // Paints no cell took are left out; paints that round to the same colour become one.
+/// Gives every cell its paint. Paints no cell took are left out, paints that round to the
+/// same colour become one, and the rest are numbered darkest first.
+fn label_cells(fit: &Fit, cells: &[Rgb], width: u32, height: u32, cell_um: u32) -> LabelMap {
+    let cells = classify(fit, cells);
     let mut used = vec![false; fit.len()];
     for &c in &cells {
         used[usize::from(c)] = true;
@@ -261,7 +320,7 @@ pub fn label_picture(image: &Image, settings: &ArtworkSettings) -> Result<LabelM
         rank[i] = to_u8(moved[k]);
     }
     let labels = cells.iter().map(|&c| rank[usize::from(c)]).collect();
-    Ok(LabelMap { width, height, cell_um, palette, labels })
+    LabelMap { width, height, cell_um, palette, labels }
 }
 
 fn to_u8(index: usize) -> u8 {
@@ -502,12 +561,16 @@ mod tests {
         let message = grid(Size::Width(1000.0)).unwrap_err().to_string();
         assert_eq!(
             message,
-            "At 0.1 mm cells, a 1000 by 500 mm picture makes 50,000,000 cells; the limit is 16,000,000. \
+            "At 0.1 mm cells, 1000 by 500 mm makes 50,000,000 cells; the limit is 16,000,000. \
              Choose larger cells or a smaller size."
         );
         let fine = ArtworkSettings { cell_mm: 0.01, ..ArtworkSettings::default() };
         assert_eq!(cell_grid(10, 10, &fine).unwrap_err().to_string(), "The cell size must be between 0.05 and 0.5 mm.");
         assert!(grid(Size::Width(0.0)).is_err());
+        assert_eq!(
+            grid(Size::Natural).unwrap_err().to_string(),
+            "A picture has no size of its own: give its width, its height or a box to fit it in."
+        );
     }
 
     #[test]
@@ -535,5 +598,48 @@ mod tests {
         let photo = Image { width: 160, height: 120, rgba };
         let map = label_picture(&photo, &ArtworkSettings { size: Size::Width(40.0), ..ArtworkSettings::default() });
         assert_eq!(map.unwrap().palette.len(), 16);
+    }
+
+    const FONT: &[u8] = include_bytes!("../../../fixtures/fonts/NotoSans-Bold.ttf");
+
+    #[test]
+    fn a_flat_drawing_keeps_its_own_colours() {
+        let badge = crate::drawing::parse_svg(include_bytes!("../../../fixtures/svg/badge.svg"), &[FONT]).unwrap();
+        let natural = ArtworkSettings { size: Size::Natural, cell_mm: 0.2, ..ArtworkSettings::default() };
+        let map = label_drawing(&badge, &natural).unwrap();
+        assert_eq!((map.width, map.height, map.cell_um), (350, 350, 200));
+        assert_eq!(map.palette, [[0x1d, 0x2f, 0x5c], [0xef, 0x7d, 0x2d], WHITE]);
+        // Twice the size, the same paints; on a dark canvas the canvas colour joins them.
+        let large = label_drawing(&badge, &ArtworkSettings { size: Size::Width(140.0), ..natural }).unwrap();
+        assert_eq!((large.width, large.palette.len()), (700, 3));
+        let dark = ArtworkSettings { background: [10, 10, 10], ..natural };
+        assert_eq!(label_drawing(&badge, &dark).unwrap().palette[0], [10, 10, 10]);
+        // Too few paints allowed: fitted as a picture would be.
+        let two = label_drawing(&badge, &ArtworkSettings { n_colours: 2, ..natural }).unwrap();
+        assert_eq!(two.palette.len(), 2);
+    }
+
+    #[test]
+    fn a_drawing_with_masks_and_gradients_is_fitted() {
+        let svg = include_bytes!("../../../fixtures/svg/clip-mask-text.svg");
+        let drawing = crate::drawing::parse_svg(svg, &[FONT]).unwrap();
+        let settings = ArtworkSettings { size: Size::Width(60.0), n_colours: 6, ..ArtworkSettings::default() };
+        let map = label_drawing(&drawing, &settings).unwrap();
+        assert!((2..=6).contains(&map.palette.len()), "{:?}", map.palette);
+        assert!(map.cell_counts().iter().all(|&n| n > 0));
+    }
+
+    #[test]
+    fn text_is_cut_at_its_font_size() {
+        let text = crate::drawing::text_drawing("Hi", &[FONT], 20.0, BLUE).unwrap();
+        let map = label_drawing(&text, &ArtworkSettings { size: Size::Natural, ..ArtworkSettings::default() }).unwrap();
+        assert_eq!(map.palette, [BLUE, WHITE]);
+        // The dot of the i is the top, 761 thousandths of an em up: 15.22 mm, 152 cells.
+        assert_eq!(map.height, 152);
+        // The letters touch every side of the map.
+        let ink = map.mask(0);
+        let row = |y: u32| (0..map.width).any(|x| ink[(y * map.width + x) as usize]);
+        let column = |x: u32| (0..map.height).any(|y| ink[(y * map.width + x) as usize]);
+        assert!(row(0) && row(map.height - 1) && column(0) && column(map.width - 1));
     }
 }

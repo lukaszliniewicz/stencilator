@@ -179,6 +179,11 @@ impl Fit {
         Ok(Fit { mode, centres, colours })
     }
 
+    /// Exactly these paints, nothing fitted.
+    pub(crate) fn of(colours: &[Rgb], mode: ColourMode) -> Fit {
+        Fit { mode, centres: colours.iter().map(|&c| features(mode, c)).collect(), colours: colours.to_vec() }
+    }
+
     /// The paint a colour belongs to: the nearest centre, the first on a tie.
     pub(crate) fn nearest(&self, colour: Rgb) -> usize {
         nearest(&features(self.mode, colour), &self.centres)

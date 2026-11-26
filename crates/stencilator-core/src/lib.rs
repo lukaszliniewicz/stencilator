@@ -6,9 +6,9 @@
 //! `clippy.toml` in this crate enforces that.
 //!
 //! Tile mode is complete: a grid of square tiles, a chart to paint from and one
-//! stencil per colour. Free-form mode is being built: pictures become maps of
-//! paints at a physical size, and plane geometry, the slab mesher and outline
-//! tracing are in place.
+//! stencil per colour. Free-form mode is being built: pictures, SVG drawings and
+//! typed text become maps of paints at a physical size, and plane geometry, the
+//! slab mesher and outline tracing are in place.
 
 #![warn(missing_docs)]
 #![deny(clippy::print_stdout, clippy::print_stderr)]
@@ -16,6 +16,7 @@
 pub mod artwork;
 pub mod chart;
 pub mod colour;
+pub mod drawing;
 mod error;
 pub mod export;
 pub mod geometry;
