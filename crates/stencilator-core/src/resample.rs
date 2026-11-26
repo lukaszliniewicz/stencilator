@@ -1,7 +1,9 @@
-//! Shrinking an image to one pixel per tile, exactly as Pillow does it.
+//! Resizing images exactly as Pillow does it: to one pixel per tile with the box filter,
+//! and to free-form cells with the bilinear one.
 //!
 //! Pillow's box filter averages, with equal weights, the source pixels whose centres fall
-//! inside each output pixel. It works in premultiplied alpha, in 22-bit fixed point, one
+//! inside each output pixel; its bilinear filter weighs them by distance, which also makes
+//! smooth edges when enlarging. Both work in premultiplied alpha, in 22-bit fixed point, one
 //! axis at a time with rounding to 8 bits between the passes. Matching a widely used
 //! implementation to the bit makes the result easy to check; the steps follow Pillow 13's
 //! `Resample.c`, `Convert.c` and `AlphaComposite.c`.
@@ -10,6 +12,41 @@ use crate::colour::Rgb;
 use crate::source::Image;
 
 const PRECISION_BITS: u32 = 32 - 8 - 2;
+
+/// Pillow's resampling filters that the engine uses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Filter {
+    /// Equal weights over each output pixel's footprint.
+    Box,
+    /// Weights falling linearly with distance (a triangle).
+    Bilinear,
+}
+
+impl Filter {
+    /// Half the filter's width at scale 1, in source pixels.
+    fn support(self) -> f64 {
+        match self {
+            Filter::Box => 0.5,
+            Filter::Bilinear => 1.0,
+        }
+    }
+
+    fn weight(self, x: f64) -> f64 {
+        match self {
+            Filter::Box => {
+                if x > -0.5 && x <= 0.5 {
+                    1.0
+                } else {
+                    0.0
+                }
+            }
+            Filter::Bilinear => {
+                let x = x.abs();
+                if x < 1.0 { 1.0 - x } else { 0.0 }
+            }
+        }
+    }
+}
 
 /// `(a * b + 127) / 255`, as Pillow computes it.
 fn mul_div_255(a: u32, b: u32) -> u32 {
@@ -21,7 +58,7 @@ fn shift_for_div_255(a: u32) -> u32 {
     ((a >> 8) + a) >> 8
 }
 
-/// Box-filter weights for one axis: for each output pixel, the first source pixel and the
+/// Filter weights for one axis: for each output pixel, the first source pixel and the
 /// fixed-point weights of the pixels from there on.
 #[allow(
     clippy::cast_possible_truncation,
@@ -29,22 +66,17 @@ fn shift_for_div_255(a: u32) -> u32 {
     clippy::cast_precision_loss,
     reason = "C casts, reproduced on purpose; sizes are far below 2^24"
 )]
-fn coefficients(in_size: u32, out_size: u32) -> Vec<(usize, Vec<i32>)> {
+fn coefficients(in_size: u32, out_size: u32, filter: Filter) -> Vec<(usize, Vec<i32>)> {
     let scale = f64::from(in_size as f32) / f64::from(out_size);
     let filter_scale = scale.max(1.0);
-    let support = 0.5 * filter_scale;
+    let support = filter.support() * filter_scale;
     let inverse = 1.0 / filter_scale;
     (0..out_size)
         .map(|xx| {
             let center = (f64::from(xx) + 0.5) * scale;
             let xmin = ((center - support + 0.5) as i64).max(0);
             let xmax = ((center + support + 0.5) as i64).min(i64::from(in_size));
-            let weights: Vec<f64> = (xmin..xmax)
-                .map(|x| {
-                    let t = (x as f64 - center + 0.5) * inverse;
-                    if t > -0.5 && t <= 0.5 { 1.0 } else { 0.0 }
-                })
-                .collect();
+            let weights: Vec<f64> = (xmin..xmax).map(|x| filter.weight((x as f64 - center + 0.5) * inverse)).collect();
             let total: f64 = weights.iter().sum();
             let fixed = weights
                 .iter()
@@ -64,10 +96,16 @@ fn clip8(sum: i32) -> u8 {
 }
 
 /// One pass along rows (`horizontal`) or columns, on four-channel pixels.
-fn pass(pixels: &[u8], width: usize, height: usize, out_size: u32, horizontal: bool) -> (Vec<u8>, usize, usize) {
+fn pass(
+    pixels: &[u8],
+    (width, height): (usize, usize),
+    out_size: u32,
+    horizontal: bool,
+    filter: Filter,
+) -> (Vec<u8>, usize, usize) {
     let in_size = if horizontal { width } else { height };
     #[allow(clippy::cast_possible_truncation, reason = "image sides fit u32")]
-    let coeffs = coefficients(in_size as u32, out_size);
+    let coeffs = coefficients(in_size as u32, out_size, filter);
     let (out_w, out_h) = if horizontal { (out_size as usize, height) } else { (width, out_size as usize) };
     let mut out = vec![0_u8; out_w * out_h * 4];
     for y in 0..out_h {
@@ -91,8 +129,13 @@ fn pass(pixels: &[u8], width: usize, height: usize, out_size: u32, horizontal: b
 }
 
 /// Resizes with Pillow's box filter, alpha premultiplied, rounding as Pillow does.
-#[allow(clippy::cast_possible_truncation, reason = "results are 8-bit by construction")]
 pub(crate) fn resize_box(image: &Image, width: u32, height: u32) -> Image {
+    resize(image, width, height, Filter::Box)
+}
+
+/// Resizes with one of Pillow's filters, alpha premultiplied, rounding as Pillow does.
+#[allow(clippy::cast_possible_truncation, reason = "results are 8-bit by construction")]
+pub(crate) fn resize(image: &Image, width: u32, height: u32, filter: Filter) -> Image {
     if (image.width, image.height) == (width, height) {
         return image.clone();
     }
@@ -118,7 +161,7 @@ pub(crate) fn resize_box(image: &Image, width: u32, height: u32) -> Image {
     for horizontal in order {
         let (needed, size) = if horizontal { (width != image.width, width) } else { (height != image.height, height) };
         if needed {
-            (pixels, w, h) = pass(&pixels, w, h, size, horizontal);
+            (pixels, w, h) = pass(&pixels, (w, h), size, horizontal, filter);
         }
     }
     for p in pixels.as_chunks_mut::<4>().0 {

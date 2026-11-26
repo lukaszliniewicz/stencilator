@@ -239,6 +239,24 @@ fn box_filter_and_compositing_match_pillow() {
     }
 }
 
+#[derive(Deserialize)]
+struct Bilinear {
+    image: String,
+    cases: Vec<ResampleCase>,
+}
+
+#[test]
+fn bilinear_filter_and_compositing_match_pillow() {
+    let resamples: Bilinear = fixture("bilinear.json");
+    let bytes = std::fs::read(fixture_path(&resamples.image)).unwrap();
+    let image = stencilator_core::source::decode(&bytes).unwrap();
+    assert_eq!(resamples.cases.len(), 16);
+    for case in resamples.cases {
+        let got = stencilator_core::artwork::sample_cells(&image, case.size.0, case.size.1, case.background);
+        assert_eq!(got, case.rgb, "{:?} on {:?}", case.size, case.background);
+    }
+}
+
 fn pdf_parts(pdf: &[u8]) -> PdfParts {
     let text = String::from_utf8_lossy(pdf);
     let start = text.find("/MediaBox [").unwrap() + "/MediaBox [".len();

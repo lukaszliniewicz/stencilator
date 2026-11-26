@@ -83,87 +83,141 @@ pub struct Palette {
 ///
 /// [`Error::Settings`] when there are no colours or no colours are requested.
 pub fn quantise(rgb: &[Rgb], mode: ColourMode, n_colours: usize, seed: u64) -> Result<Palette, Error> {
-    if rgb.is_empty() {
-        return Err(Error::Settings("There are no colours to reduce.".to_owned()));
-    }
-    if n_colours < 1 {
-        return Err(Error::Settings("At least one colour is required.".to_owned()));
-    }
-    let k = if mode == ColourMode::BlackWhite { 2 } else { n_colours };
-    let mut rng = Rng::new(seed);
-
-    // Cluster distinct values weighted by how often they occur: same result, less work.
-    // Greyscale and black and white cluster lightness alone; a and b stay zero.
-    let mut by_colour: BTreeMap<Rgb, u64> = BTreeMap::new();
+    let fit = Fit::new(rgb, mode, n_colours, seed)?;
+    let mut nearest: BTreeMap<Rgb, usize> = BTreeMap::new();
     for &c in rgb {
-        *by_colour.entry(c).or_default() += 1;
+        nearest.entry(c).or_insert_with(|| fit.nearest(c));
     }
-    let features = |c: Rgb| {
-        let lab = srgb_to_lab(c);
-        if mode == ColourMode::Colour { lab } else { [lab[0], 0.0, 0.0] }
-    };
-    let mut distinct: Vec<(Lab, f64)> = Vec::new();
-    let mut colour_index: BTreeMap<Rgb, usize> = BTreeMap::new();
-    {
-        let mut keyed: Vec<(Lab, Rgb, u64)> = by_colour.iter().map(|(&c, &n)| (features(c), c, n)).collect();
-        keyed.sort_by(|a, b| compare(&a.0, &b.0));
-        for (lab, c, n) in keyed {
-            #[allow(clippy::cast_precision_loss, reason = "tile counts are far below 2^52")]
-            let n = n as f64;
-            match distinct.last_mut() {
-                Some((last, count)) if compare(last, &lab).is_eq() => *count += n,
-                _ => distinct.push((lab, n)),
-            }
-            colour_index.insert(c, distinct.len() - 1);
+    Ok(canonical(&fit.colours, rgb.iter().map(|c| nearest[c])))
+}
+
+/// Paints fitted to a set of colours, which can then take any colour in: each paint is a
+/// cluster centre in the mode's colour space, and a colour belongs to the nearest one.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct Fit {
+    mode: ColourMode,
+    /// Cluster centres, in CIELAB or, for the grey modes, lightness alone.
+    centres: Vec<Lab>,
+    /// The paint each centre stands for.
+    pub(crate) colours: Vec<Rgb>,
+}
+
+impl Fit {
+    /// Fits at most `n_colours` paints to `rgb`, as [`quantise`] does.
+    pub(crate) fn new(rgb: &[Rgb], mode: ColourMode, n_colours: usize, seed: u64) -> Result<Fit, Error> {
+        if rgb.is_empty() {
+            return Err(Error::Settings("There are no colours to reduce.".to_owned()));
         }
+        if n_colours < 1 {
+            return Err(Error::Settings("At least one colour is required.".to_owned()));
+        }
+        let k = if mode == ColourMode::BlackWhite { 2 } else { n_colours };
+        let mut rng = Rng::new(seed);
+
+        // Cluster distinct values weighted by how often they occur: same result, less work.
+        // Greyscale and black and white cluster lightness alone; a and b stay zero.
+        let mut by_colour: BTreeMap<Rgb, u64> = BTreeMap::new();
+        for &c in rgb {
+            *by_colour.entry(c).or_default() += 1;
+        }
+        let mut distinct: Vec<(Lab, f64)> = Vec::new();
+        {
+            let mut keyed: Vec<(Lab, u64)> = by_colour.iter().map(|(&c, &n)| (features(mode, c), n)).collect();
+            keyed.sort_by(|a, b| compare(&a.0, &b.0));
+            for (lab, n) in keyed {
+                #[allow(clippy::cast_precision_loss, reason = "tile counts are far below 2^52")]
+                let n = n as f64;
+                match distinct.last_mut() {
+                    Some((last, count)) if compare(last, &lab).is_eq() => *count += n,
+                    _ => distinct.push((lab, n)),
+                }
+            }
+        }
+
+        let centres: Vec<Lab> = if distinct.len() <= k {
+            // Nothing to reduce: keep every colour exactly, however rare.
+            distinct.iter().map(|d| d.0).collect()
+        } else {
+            let mut fit: Vec<(Lab, f64)> = distinct.clone();
+            if mode != ColourMode::Colour {
+                // Lightness only: snapping to 0.1 (far below a visible step) leaves at most
+                // about a thousand values, so every tile is counted and no rare tone is lost.
+                let mut snapped: BTreeMap<i64, f64> = BTreeMap::new();
+                for (lab, n) in &fit {
+                    #[allow(clippy::cast_possible_truncation, reason = "lightness is 0 to 100")]
+                    let tenths = (lab[0] * 10.0).round_ties_even() as i64;
+                    *snapped.entry(tenths).or_default() += n;
+                }
+                #[allow(clippy::cast_precision_loss, reason = "at most about a thousand values")]
+                let snapped = snapped.into_iter().map(|(t, n)| ([t as f64 / 10.0, 0.0, 0.0], n));
+                fit = snapped.collect();
+            } else if fit.len() > FIT_SAMPLE {
+                // Fit on a uniform sample of the distinct colours, each keeping its tile
+                // count, so a rare colour is as likely to be seen as a common one.
+                fit = rng.sample(fit.len(), FIT_SAMPLE).into_iter().map(|i| distinct[i]).collect();
+            }
+            let points: Vec<Lab> = fit.iter().map(|f| f.0).collect();
+            let weights: Vec<f64> = fit.iter().map(|f| f.1).collect();
+            kmeans(&points, &weights, k, &mut rng).0
+        };
+
+        let colours: Vec<Rgb> = match mode {
+            ColourMode::Colour => centres.iter().map(|&c| lab_to_srgb(c)).collect(),
+            ColourMode::Greyscale => centres.iter().map(|c| [lab_to_srgb([c[0], 0.0, 0.0])[1]; 3]).collect(),
+            ColourMode::BlackWhite => {
+                let lightest = centres.iter().map(|c| c[0]).fold(f64::NEG_INFINITY, f64::max);
+                centres
+                    .iter()
+                    .map(|c| {
+                        let light =
+                            if centres.len() == 1 { c[0] >= MID_LIGHTNESS } else { c[0].total_cmp(&lightest).is_eq() };
+                        if light { WHITE } else { BLACK }
+                    })
+                    .collect()
+            }
+        };
+        Ok(Fit { mode, centres, colours })
     }
 
-    let (centroids, distinct_labels): (Vec<Lab>, Vec<usize>) = if distinct.len() <= k {
-        // Nothing to reduce: keep every colour exactly, however rare.
-        (distinct.iter().map(|d| d.0).collect(), (0..distinct.len()).collect())
-    } else {
-        let mut fit: Vec<(Lab, f64)> = distinct.clone();
-        if mode != ColourMode::Colour {
-            // Lightness only: snapping to 0.1 (far below a visible step) leaves at most
-            // about a thousand values, so every tile is counted and no rare tone is lost.
-            let mut snapped: BTreeMap<i64, f64> = BTreeMap::new();
-            for (lab, n) in &fit {
-                #[allow(clippy::cast_possible_truncation, reason = "lightness is 0 to 100")]
-                let tenths = (lab[0] * 10.0).round_ties_even() as i64;
-                *snapped.entry(tenths).or_default() += n;
-            }
-            #[allow(clippy::cast_precision_loss, reason = "at most about a thousand values")]
-            let snapped = snapped.into_iter().map(|(t, n)| ([t as f64 / 10.0, 0.0, 0.0], n));
-            fit = snapped.collect();
-        } else if fit.len() > FIT_SAMPLE {
-            // Fit on a uniform sample of the distinct colours, each keeping its tile count,
-            // so a rare colour is as likely to be seen as a common one.
-            fit = rng.sample(fit.len(), FIT_SAMPLE).into_iter().map(|i| distinct[i]).collect();
-        }
-        let points: Vec<Lab> = fit.iter().map(|f| f.0).collect();
-        let weights: Vec<f64> = fit.iter().map(|f| f.1).collect();
-        let (centroids, _) = kmeans(&points, &weights, k, &mut rng);
-        let labels = distinct.iter().map(|d| nearest(&d.0, &centroids)).collect();
-        (centroids, labels)
-    };
+    /// The paint a colour belongs to: the nearest centre, the first on a tie.
+    pub(crate) fn nearest(&self, colour: Rgb) -> usize {
+        nearest(&features(self.mode, colour), &self.centres)
+    }
 
-    let colours: Vec<Rgb> = match mode {
-        ColourMode::Colour => centroids.iter().map(|&c| lab_to_srgb(c)).collect(),
-        ColourMode::Greyscale => centroids.iter().map(|c| [lab_to_srgb([c[0], 0.0, 0.0])[1]; 3]).collect(),
-        ColourMode::BlackWhite => {
-            let lightest = centroids.iter().map(|c| c[0]).fold(f64::NEG_INFINITY, f64::max);
-            centroids
-                .iter()
-                .map(|c| {
-                    let light =
-                        if centroids.len() == 1 { c[0] >= MID_LIGHTNESS } else { c[0].total_cmp(&lightest).is_eq() };
-                    if light { WHITE } else { BLACK }
-                })
-                .collect()
-        }
-    };
-    let labels = rgb.iter().map(|c| distinct_labels[colour_index[c]]);
-    Ok(canonical(&colours, labels))
+    /// Takes paint `index` away; its colours go to the nearest of the others.
+    pub(crate) fn remove(&mut self, index: usize) {
+        self.centres.remove(index);
+        self.colours.remove(index);
+    }
+
+    /// Gives paint `index` another colour, and moves its centre there.
+    pub(crate) fn set_colour(&mut self, index: usize, colour: Rgb) {
+        self.colours[index] = colour;
+        self.centres[index] = features(self.mode, colour);
+    }
+
+    /// How many paints there are.
+    pub(crate) fn len(&self) -> usize {
+        self.colours.len()
+    }
+}
+
+/// Where a colour sits in the mode's colour space.
+fn features(mode: ColourMode, colour: Rgb) -> Lab {
+    let lab = srgb_to_lab(colour);
+    if mode == ColourMode::Colour { lab } else { [lab[0], 0.0, 0.0] }
+}
+
+/// Paints sorted from dark to light, ties by RGB, with duplicates dropped, and where each of
+/// the given colours went.
+pub(crate) fn darkest_first(colours: &[Rgb]) -> (Vec<Rgb>, Vec<usize>) {
+    let mut sorted = colours.to_vec();
+    sorted.sort_unstable();
+    sorted.dedup();
+    sorted.sort_by(|a, b| lightness(*a).total_cmp(&lightness(*b)).then(a.cmp(b)));
+    let rank: BTreeMap<Rgb, usize> = sorted.iter().enumerate().map(|(i, &c)| (c, i)).collect();
+    let moved = colours.iter().map(|c| rank[c]).collect();
+    (sorted, moved)
 }
 
 /// Lexicographic order on CIELAB values, as `numpy.unique` sorts rows.

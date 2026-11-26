@@ -5,6 +5,7 @@ use std::ops::RangeInclusive;
 use crate::Error;
 use crate::colour::Rgb;
 use crate::layout::{GridLayout, fit_layout, pixel_layout};
+use crate::paints::merge_plan;
 use crate::quantise::{ColourMode, quantise};
 use crate::resample::{flatten, resize_box};
 use crate::source::{Image, pixel_grid};
@@ -168,36 +169,11 @@ pub fn build_chart(image: &Image, settings: &ChartSettings) -> Result<TileChart,
     Ok(TileChart { layout, palette: palette.colours, labels: palette.labels })
 }
 
-/// Merges paints the person chose to merge. Each `(from, to)` pair moves every tile of
-/// colour `from` to colour `to`, in order, so a later pair sees the earlier ones and chains
-/// work. A pair naming a colour that is not, or no longer, in the palette changes nothing,
-/// which keeps a list of merges valid while other settings change. The palette keeps its
-/// order, less the colours merged away.
+/// The chart with paints merged, as [`merge_plan`] describes.
 #[must_use]
 pub fn merge_paints(chart: &TileChart, merges: &[(Rgb, Rgb)]) -> TileChart {
-    let index = |colour: Rgb| chart.palette.iter().position(|&c| c == colour);
-    // The palette entry each entry's tiles now belong to.
-    let mut owner: Vec<usize> = (0..chart.palette.len()).collect();
-    for &(from, to) in merges {
-        let (Some(f), Some(t)) = (index(from), index(to)) else { continue };
-        if f == t || owner[f] != f || owner[t] != t {
-            continue;
-        }
-        for o in &mut owner {
-            if *o == f {
-                *o = t;
-            }
-        }
-    }
-    let mut palette = Vec::new();
-    let mut renumber = vec![0_u32; owner.len()];
-    for (i, &colour) in chart.palette.iter().enumerate() {
-        if owner[i] == i {
-            renumber[i] = u32::try_from(palette.len()).unwrap_or(u32::MAX);
-            palette.push(colour);
-        }
-    }
-    let labels = chart.labels.iter().map(|&l| renumber[owner[l as usize]]).collect();
+    let (palette, moved) = merge_plan(&chart.palette, merges);
+    let labels = chart.labels.iter().map(|&l| u32::try_from(moved[l as usize]).unwrap_or(u32::MAX)).collect();
     TileChart { layout: chart.layout, palette, labels }
 }
 
