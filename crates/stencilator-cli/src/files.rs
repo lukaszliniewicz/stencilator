@@ -20,13 +20,19 @@ fn sibling(path: &Path, tag: &str) -> PathBuf {
     path.with_file_name(name)
 }
 
-/// A key that is equal for two paths that may name the same file: the real parent
-/// folder and the file name in lower case, so that a case-insensitive file system
-/// cannot make two different-looking names collide.
+/// The named directory entry: the real parent folder and the file name in lower case,
+/// so differently cased names cannot collide on a case-insensitive file system.
 fn identity(path: &Path) -> PathBuf {
     let parent = path.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(Path::new("."));
     let parent = fs::canonicalize(parent).unwrap_or_else(|_| parent.to_path_buf());
     parent.join(path.file_name().unwrap_or_default().to_string_lossy().to_lowercase())
+}
+
+/// Protect both a symbolic link's directory entry and the file it resolves to.
+fn identities(path: &Path) -> impl Iterator<Item = PathBuf> {
+    let named = identity(path);
+    let target = fs::canonicalize(path).ok().map(|real| identity(&real)).filter(|real| *real != named);
+    std::iter::once(named).chain(target)
 }
 
 /// Refuses two outputs with the same destination, and an output that would replace the
@@ -37,14 +43,16 @@ pub(crate) fn check_destinations(outputs: &[(String, PathBuf)], input: &Input) -
     let project = matches!(input, Input::Project(_));
     let input_name = if project { "the input project" } else { "the input file" };
     if let Some(path) = input.path() {
-        seen.insert(identity(path), input_name);
+        seen.extend(identities(path).map(|key| (key, input_name)));
     }
     for (what, path) in outputs {
-        if let Some(other) = seen.insert(identity(path), what) {
-            if project && what == "--save" && other == input_name {
-                continue;
+        for key in identities(path) {
+            if let Some(other) = seen.insert(key, what) {
+                if project && what == "--save" && other == input_name {
+                    continue;
+                }
+                return Err(format!("{what} and {other} would both be {}; choose different names", path.display()));
             }
-            return Err(format!("{what} and {other} would both be {}; choose different names", path.display()));
         }
     }
     Ok(())
@@ -213,6 +221,25 @@ mod tests {
                 dir.join("art.stencilator").display()
             )
         );
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_linked_input_and_its_target_are_protected() {
+        let dir = scratch("symlink");
+        let source = dir.join("source.stencilator");
+        let alias = dir.join("alias.stencilator");
+        let input = dir.join("input.stencilator");
+        fs::write(&source, b"project").unwrap();
+        std::os::unix::fs::symlink(&source, &alias).unwrap();
+        std::os::unix::fs::symlink(&alias, &input).unwrap();
+        let project = Input::Project(input.clone());
+        for path in [input, alias, source.clone()] {
+            let result = check_destinations(&[("--3mf".to_owned(), path.clone())], &project);
+            assert!(result.is_err(), "{} must be protected", path.display());
+        }
+        assert!(check_destinations(&[("--save".to_owned(), source)], &project).is_ok());
         fs::remove_dir_all(&dir).unwrap();
     }
 

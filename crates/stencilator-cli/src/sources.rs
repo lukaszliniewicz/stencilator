@@ -1,6 +1,8 @@
 //! Where a project comes from: a project file, a picture, an SVG drawing or typed text,
 //! and the fonts its text needs.
 
+use std::fs::File;
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use stencilator_core::project::{BUILT_IN_FONT, EXTENSION, Font, Project, STENCIL_FONT, Source, read_project};
@@ -25,7 +27,9 @@ pub(crate) enum Input {
 impl Input {
     pub(crate) fn new(path: Option<&PathBuf>, text: &[String]) -> Input {
         match path {
-            Some(path) if has_extension(path, EXTENSION) => Input::Project(path.clone()),
+            Some(path) if has_extension(path, EXTENSION) || starts_with_json_object(path) => {
+                Input::Project(path.clone())
+            }
             Some(path) => Input::File(path.clone()),
             None => Input::Text(text.to_vec()),
         }
@@ -69,6 +73,19 @@ impl Input {
 
 fn has_extension(path: &Path, extension: &str) -> bool {
     path.extension().is_some_and(|e| e.eq_ignore_ascii_case(extension))
+}
+
+/// The CLI has always let `--save` use any name. A JSON object starts differently from
+/// every supported image; `read_project` checks its marker and version.
+fn starts_with_json_object(path: &Path) -> bool {
+    // A pipe must only be read once, by the artwork loader.
+    if !path.is_file() {
+        return false;
+    }
+    let mut prefix = [0; 256];
+    File::open(path)
+        .and_then(|mut file| file.read(&mut prefix))
+        .is_ok_and(|length| prefix[..length].iter().find(|byte| !byte.is_ascii_whitespace()) == Some(&b'{'))
 }
 
 pub(crate) fn read(path: &Path) -> Result<Vec<u8>, String> {

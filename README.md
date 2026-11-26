@@ -93,7 +93,8 @@ The artwork is traced on a grid of 0.1 mm cells (`--cell`), and patches of one p
 smaller than 1 mm² (`--min-patch`) take the paints around them, so a speck in a photo
 does not become an opening of its own. Typed text uses the built-in Noto Sans Bold by
 default. Try `--font "Allerta Stencil"` for letters with bridges already drawn in, or
-give `--font` a font file for text or SVG artwork.
+give `--font` a font file for text or SVG artwork. Adding a font to an SVG project keeps
+its existing fonts unless you supply a file with the same name.
 
 In the web app, pick **Free-form** to use an image, an SVG or typed text. The **Plate**
 view highlights islands, thin webs and narrow openings. **Files** offers 3MF, a zip of
@@ -110,7 +111,8 @@ settings in the app or on the command line.
 - `--save design.stencilator` saves a project: the artwork, any fonts given with `--font`,
   and every setting. Give the project instead of a picture to carry on where you left
   off; options you add change only what they name. The project holds the fonts you
-  embed, so mind their licences when you share it.
+  embed, so mind their licences when you share it. Use the `.stencilator` extension
+  to open the file in the web app.
 - Nothing is written unless everything can be, and no output may replace the input, other
   than a project saved over the one it came from.
 

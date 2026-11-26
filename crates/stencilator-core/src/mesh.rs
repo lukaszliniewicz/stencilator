@@ -71,9 +71,10 @@ pub const ALIGN_UM: i32 = 3;
 ///
 /// # Errors
 ///
-/// [`Error::Geometry`] when the slabs leave gaps or have no height, or when the surface
-/// cannot be closed, which would be a fault in the engine.
+/// [`Error::Geometry`] when there are no slabs, when the slabs leave gaps or have no
+/// height, or when the surface cannot be closed, which would be a fault in the engine.
 pub fn mesh_slabs(slabs: &[Slab]) -> Result<Mesh, Error> {
+    let Some(top) = slabs.last() else { return Err(fault("the plate has no layers")) };
     if slabs.windows(2).any(|pair| pair[0].z1 != pair[1].z0) || slabs.iter().any(|slab| slab.z1 <= slab.z0) {
         return Err(fault("the layers of the plate do not stack"));
     }
@@ -89,7 +90,7 @@ pub fn mesh_slabs(slabs: &[Slab]) -> Result<Mesh, Error> {
     for level in 0..=slabs.len() {
         let below = level.checked_sub(1).map_or(&empty, |i| &cleaned[i]);
         let above = cleaned.get(level).unwrap_or(&empty);
-        let z = slabs.get(level).map_or_else(|| slabs[level - 1].z1, |slab| slab.z0);
+        let z = slabs.get(level).map_or(top.z1, |slab| slab.z0);
         cap(&difference(below, above), z, true, &mut corners)?;
         cap(&difference(above, below), z, false, &mut corners)?;
     }
@@ -554,6 +555,7 @@ mod tests {
 
     #[test]
     fn slabs_must_stack() {
+        assert!(matches!(mesh_slabs(&[]), Err(Error::Geometry(_))));
         let square = vec![vec![rectangle(0, 0, 1000, 1000)]];
         let gap = [Slab { z0: 0, z1: 100, shapes: square.clone() }, Slab { z0: 200, z1: 300, shapes: square.clone() }];
         assert!(matches!(mesh_slabs(&gap), Err(Error::Geometry(_))));

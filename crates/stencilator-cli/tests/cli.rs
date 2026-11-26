@@ -208,6 +208,60 @@ fn typed_text_is_saved_as_a_project_that_opens_again() {
 }
 
 #[test]
+fn a_project_saved_without_an_extension_can_be_reopened() {
+    let dir = workspace("project-name");
+    let first = report(&dir, &["freeform", "--text", "AO", "--save", "design"]);
+    let again = report(&dir, &["freeform", "design"]);
+    assert_eq!(again["plates"], first["plates"]);
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn a_project_can_keep_all_paints_without_making_any_plates() {
+    let dir = workspace("skipped");
+    let first = report(&dir, &["freeform", "--text", "AO", "--skip", "000000", "--save", "project.stencilator"]);
+    assert_eq!(first["plates"], serde_json::json!([]));
+    let palette = first["palette"].as_array().unwrap();
+    assert_eq!(palette.len(), 2);
+    assert!(palette.iter().all(|paint| paint["stencil"].is_null()));
+    let again = report(&dir, &["freeform", "project.stencilator", "--save", "copy.stencilator"]);
+    assert_eq!(again["palette"], first["palette"]);
+    for (flag, path) in [("--3mf", "plates.3mf"), ("--stencils", "plates"), ("--stencils", "plates.zip")] {
+        let (ok, _, stderr) =
+            run(&dir, &["freeform", "project.stencilator", flag, path, "--save", "another.stencilator"]);
+        assert!(!ok && stderr.contains("Every paint is skipped"), "{stderr}");
+    }
+    assert_eq!(names(&dir), ["copy.stencilator", "in.png", "project.stencilator"]);
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn adding_a_font_to_a_drawing_keeps_its_embedded_font() {
+    let dir = workspace("drawing-fonts");
+    fs::write(
+        dir.join("word.svg"),
+        br#"<svg xmlns="http://www.w3.org/2000/svg" width="40mm" height="20mm" viewBox="0 0 40 20">
+        <text x="5" y="15" font-family="Allerta Stencil" font-size="12">AO</text></svg>"#,
+    )
+    .unwrap();
+    let font = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../fonts/AllertaStencil-Regular.ttf");
+    let first =
+        report(&dir, &["freeform", "word.svg", "--font", font.to_str().unwrap(), "--save", "first.stencilator"]);
+    let again =
+        report(&dir, &["freeform", "first.stencilator", "--font", "Noto Sans Bold", "--save", "added.stencilator"]);
+    let project =
+        |name: &str| -> serde_json::Value { serde_json::from_slice(&fs::read(dir.join(name)).unwrap()).unwrap() };
+    let original = project("first.stencilator");
+    let added = project("added.stencilator");
+    assert!(original["fonts"][0]["data"].is_string());
+    assert_eq!(added["fonts"][0]["name"], original["fonts"][0]["name"]);
+    assert!(added["fonts"][0]["data"] == original["fonts"][0]["data"], "the embedded font changed");
+    assert_eq!(added["fonts"][1]["name"], "NotoSans-Bold.ttf");
+    assert_eq!(again["plates"], first["plates"]);
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
 fn freeform_settings_out_of_range_are_refused_before_reading_the_file() {
     let dir = workspace("freeform-range");
     for (args, message) in [

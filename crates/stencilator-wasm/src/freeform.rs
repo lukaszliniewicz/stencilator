@@ -431,9 +431,6 @@ impl Labels {
     /// can still show and edit the paints, with an empty list of plates.
     pub fn plates(&self, project: &Project) -> Result<Plates, JsError> {
         let (settings, skip) = (project.project.plate_settings(), project.project.stencil_skip());
-        if self.map.palette.iter().all(|paint| skip.contains(paint)) {
-            return Ok(Plates { built: Vec::new(), reports: Vec::new(), problems: Vec::new() });
-        }
         let plates = build_plates(&self.map, &settings, &skip).map_err(|e| error(&e))?;
         let (reports, problems) = plates
             .iter()

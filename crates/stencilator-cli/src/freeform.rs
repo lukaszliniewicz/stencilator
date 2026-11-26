@@ -40,8 +40,8 @@ pub(crate) struct FreeformArgs {
     text_colour: Option<Rgb>,
     /// A TrueType or OpenType file, or a built-in font: "Noto Sans Bold", the default, or
     /// "Allerta Stencil", whose letters have bridges so their middles stay put. It sets
-    /// typed text and stands in for any font a drawing names but does not carry; repeat
-    /// for more. Letters a font lacks come from Noto Sans Bold.
+    /// typed text or adds a font to a drawing. Repeat for more. A drawing keeps the
+    /// fonts it carries unless given another file of the same name.
     #[arg(long, value_name = "FILE|NAME", help_heading = "Text")]
     font: Vec<PathBuf>,
 
@@ -113,7 +113,18 @@ impl FreeformArgs {
             return Err("--font-size and --text-colour are for typed text".to_owned());
         }
         if !self.font.is_empty() {
-            project.fonts = embed_fonts(&self.font)?;
+            let fonts = embed_fonts(&self.font)?;
+            if matches!(project.source, Source::Svg { .. }) {
+                for font in fonts {
+                    if let Some(existing) = project.fonts.iter_mut().find(|existing| existing.name == font.name) {
+                        *existing = font;
+                    } else {
+                        project.fonts.push(font);
+                    }
+                }
+            } else {
+                project.fonts = fonts;
+            }
         }
         let f = &mut project.freeform;
         if let Some(size) = match (self.width, self.height, self.within) {
@@ -156,6 +167,9 @@ pub(crate) fn run(args: &FreeformArgs) -> Result<(), String> {
     let map = label(&project)?.merged(&project.merges());
     let skip = project.stencil_skip();
     let plates = build_plates(&map, &plate_settings, &skip).map_err(|e| e.to_string())?;
+    if plates.is_empty() && (args.three_mf.is_some() || args.stencils.is_some()) {
+        return Err("Every paint is skipped, so there are no plates to make.".to_owned());
+    }
     let reports = plates
         .iter()
         .map(|plate| check_plate(plate, &plate_settings))
@@ -373,6 +387,8 @@ impl Report<'_> {
                 "plates   {:.1} x {:.1} mm, {} mm thick",
                 first.width_mm, first.height_mm, self.project.stencils.thickness_mm
             );
+        } else {
+            println!("plates   none (every paint is skipped)");
         }
         for r in self.reports {
             println!(

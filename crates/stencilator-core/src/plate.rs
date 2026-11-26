@@ -213,15 +213,18 @@ fn mm(um: i32) -> f64 {
 }
 
 /// The plate of every paint not in `skip`, in palette order. Skipped paints are those
-/// nobody paints, such as the canvas colour; the others keep their numbers.
+/// nobody paints, such as the canvas colour; the others keep their numbers. If every
+/// paint is skipped, there are no plates.
 ///
 /// # Errors
 ///
-/// [`Error::Settings`] or [`Error::Stencil`] when a setting is out of range,
-/// [`Error::Stencil`] when every paint is skipped, and [`Error::Geometry`] when the plates
-/// would be too large to work with.
+/// [`Error::Settings`] or [`Error::Stencil`] when a setting is out of range, and
+/// [`Error::Geometry`] when the plates would be too large to work with.
 pub fn build_plates(map: &LabelMap, settings: &PlateSettings, skip: &[Rgb]) -> Result<Vec<Plate>, Error> {
     settings.check()?;
+    if map.palette.iter().all(|colour| skip.contains(colour)) {
+        return Ok(Vec::new());
+    }
     let too_large = || Error::Geometry("The plates would be too large to work with.".to_owned());
     let side = |cells: u32| i32::try_from(u64::from(cells) * u64::from(map.cell_um)).map_err(|_| too_large());
     let margin = um(settings.margin_mm);
@@ -233,8 +236,7 @@ pub fn build_plates(map: &LabelMap, settings: &PlateSettings, skip: &[Rgb]) -> R
     let cell_mm2 = cell_mm * cell_mm;
     let counts = map.cell_counts();
 
-    let plates = map
-        .palette
+    map.palette
         .iter()
         .enumerate()
         .filter(|(_, colour)| !skip.contains(colour))
@@ -249,11 +251,7 @@ pub fn build_plates(map: &LabelMap, settings: &PlateSettings, skip: &[Rgb]) -> R
             let paint_mm2 = counts[paint] as f64 * cell_mm2;
             Ok(Plate { paint, paints: map.palette.len(), colour, size_um, paint_mm2, openings, solid })
         })
-        .collect::<Result<Vec<_>, Error>>()?;
-    if plates.is_empty() {
-        return Err(Error::Stencil("Every paint is skipped, so there are no plates to make.".to_owned()));
-    }
-    Ok(plates)
+        .collect()
 }
 
 impl Plate {
@@ -597,14 +595,11 @@ mod tests {
     #[test]
     fn mistakes_are_explained() {
         let map = map(10, 10, |x, _| x < 5);
+        assert_eq!(build_plates(&map, &PlateSettings::default(), &[INK, PAPER]).unwrap(), Vec::<Plate>::new());
         let message =
             |settings: PlateSettings, skip: &[Rgb]| build_plates(&map, &settings, skip).unwrap_err().to_string();
-        assert_eq!(
-            message(PlateSettings::default(), &[INK, PAPER]),
-            "Every paint is skipped, so there are no plates to make."
-        );
         let narrow = PlateSettings { margin_mm: 1.0, ..PlateSettings::default() };
-        assert_eq!(message(narrow, &[]), "The margin must be between 2 and 100 mm.");
+        assert_eq!(message(narrow, &[INK, PAPER]), "The margin must be between 2 and 100 mm.");
         let thin = PlateSettings { thickness_mm: 0.1, ..PlateSettings::default() };
         assert_eq!(message(thin, &[]), "The stencil thickness must be between 0.2 and 20 mm.");
     }

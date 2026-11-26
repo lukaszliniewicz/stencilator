@@ -1,13 +1,13 @@
 // Runs the browser build under Node and the command line on the same work, and checks
 // that every file they write is identical, byte for byte: tile charts and stencils for
-// the reference charts and a pixel-art case with merged and skipped paints, and free-form
-// plates, 3MF files, reports and projects for an SVG drawing, typed text and a picture.
+// the reference charts, pixel art with merged and skipped paints, and a photo with a
+// 64-bit seed; free-form plates, 3MF files, reports and projects for SVG, text and pictures.
 // Usage: node parity.mjs <wasm-pkg-dir> <stencilator-binary> <repo-root>
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { pathToFileURL } from "node:url";
 
 const [pkg, cli, root] = process.argv.slice(2);
@@ -28,32 +28,47 @@ const cases = [
     merges: [[[0x9c, 0x3d, 0x17], [0xe8, 0x77, 0x2e]]],
     skip: [[255, 255, 255]],
   },
+  {
+    name: "photo with a 64-bit seed",
+    image: join(root, "fixtures/reference/plates-photo.png"),
+    settings: { ...reference[0].settings, n_colours: 7 },
+    seed: "18446744073709551615",
+    merges: [],
+    skip: [],
+  },
 ];
 const work = mkdtempSync(join(tmpdir(), "stencilator-parity-"));
 let failures = 0;
 const number = (colour) => parseInt(hex(colour), 16);
+const colour = (rgb) => `#${hex(rgb)}`;
 
 for (const [n, fixture] of cases.entries()) {
   const s = fixture.settings;
   const image = fixture.image;
   const pixels = s.sizing === "pixels";
-
-  const settings = new engine.Settings();
-  if (pixels) settings.sizing = "pixels";
-  else {
-    settings.canvasWidthMm = s.canvas_mm[0];
-    settings.canvasHeightMm = s.canvas_mm[1];
+  const bytes = readFileSync(image);
+  let project = engine.Project.picture(basename(image), bytes);
+  if (fixture.seed) {
+    const saved = new TextDecoder().decode(project.file()).replace(/"seed": \d+/, `"seed": ${fixture.seed}`);
+    project.free();
+    project = engine.Project.open(new TextEncoder().encode(saved));
   }
-  settings.tileMm = s.tile_mm;
-  settings.lineMm = s.line_mm;
-  settings.dpi = s.dpi;
-  settings.mode = s.mode;
-  settings.colours = s.n_colours;
-  settings.background = number(s.background);
-  const source = new engine.Source(readFileSync(image));
-  const chart = source.chart(settings, Uint32Array.from(fixture.merges.flat().map(number)));
+  project.setSettings(JSON.stringify({
+    mode: "tiles",
+    colours: { mode: s.mode, count: s.n_colours, background: colour(s.background) },
+    tiles: {
+      sizing: s.sizing ?? "canvas", canvas_mm: s.canvas_mm, tile_mm: s.tile_mm, line_mm: s.line_mm,
+      dpi: s.dpi, grid_colour: colour(GRID),
+    },
+    stencils: {
+      merges: fixture.merges.map((pair) => pair.map(colour)), skipped: fixture.skip.map(colour),
+      stencil_canvas_colour: true,
+    },
+  }), true);
+  const source = new engine.Source(bytes);
+  const chart = project.tileChart(source);
 
-  const browser = {};
+  const browser = { "project.stencilator": project.file() };
   for (const format of ["png", "jpeg", "pdf"]) {
     browser[`chart.${format}`] = chart.chartFile(format, number(GRID), true);
     browser[`tiles.${format}`] = chart.chartFile(format, number(GRID), false);
@@ -78,13 +93,15 @@ for (const [n, fixture] of cases.entries()) {
     "--tile", String(s.tile_mm), "--line", String(s.line_mm), "--dpi", String(s.dpi),
     "--mode", s.mode, "--colours", String(s.n_colours),
     "--background", hex(s.background), "--grid-colour", hex(GRID),
+    ...(fixture.seed ? ["--seed", fixture.seed] : []),
     ...fixture.merges.flatMap(([from, to]) => ["--merge", `${hex(from)}=${hex(to)}`]),
     ...fixture.skip.flatMap((colour) => ["--skip", hex(colour)]),
   ];
   for (const format of ["png", "jpeg", "pdf"]) {
     const extra = stencils && format === "png" ? ["--stencils", join(dir, "stencils.zip")] : [];
     const folder = stencils && format === "pdf" ? ["--stencils", join(dir, "stencils")] : [];
-    execFileSync(cli, [...common, "--chart", join(dir, `chart.${format}`), "--tiles", join(dir, `tiles.${format}`), ...extra, ...folder], {
+    const saved = format === "png" ? ["--save", join(dir, "project.stencilator")] : [];
+    execFileSync(cli, [...common, "--chart", join(dir, `chart.${format}`), "--tiles", join(dir, `tiles.${format}`), ...extra, ...folder, ...saved], {
       stdio: ["ignore", "ignore", "inherit"],
     });
   }
@@ -97,7 +114,7 @@ for (const [n, fixture] of cases.entries()) {
   }
   chart.free();
   source.free();
-  settings.free();
+  project.free();
 }
 
 // Free-form: each case makes a project in the browser build and the same with the
@@ -105,12 +122,19 @@ for (const [n, fixture] of cases.entries()) {
 // The built-in fonts, as every shell gives them to the engine.
 const fonts = new engine.Fonts();
 for (const name of engine.Fonts.builtIn()) fonts.add(name, readFileSync(join(root, "fonts", name)));
+const badge = join(root, "fixtures/svg/badge.svg");
 const FOX = readFileSync(join(root, "fixtures/pixel-art/fox.png"));
 const freeform = [
   {
     name: "badge drawing",
-    project: () => engine.Project.svg("badge.svg", readFileSync(join(root, "fixtures/svg/badge.svg"))),
-    args: [join(root, "fixtures/svg/badge.svg")],
+    project: () => engine.Project.svg("badge.svg", readFileSync(badge)),
+    args: [badge],
+  },
+  {
+    name: "badge, every paint skipped",
+    project: () => engine.Project.svg("badge.svg", readFileSync(badge)),
+    settings: { stencils: { skipped: ["#1d2f5c", "#ef7d2d"] } },
+    args: [badge, "--skip", "1d2f5c", "--skip", "ef7d2d"],
   },
   {
     name: "two lines of text",
@@ -153,30 +177,28 @@ for (const [n, fixture] of freeform.entries()) {
   const project = fixture.project();
   if (fixture.before) project.setSettings(JSON.stringify(fixture.before));
   const artwork = new engine.Artwork(project, fonts);
-  if (fixture.before) {
-    artwork.labels(project).free();
-    project.setSettings(JSON.stringify(fixture.settings));
-  }
+  if (fixture.before) artwork.labels(project).free();
+  if (fixture.settings) project.setSettings(JSON.stringify(fixture.settings));
   const labels = artwork.labels(project);
   const plates = labels.plates(project);
   const names = plates.names();
-  const browser = {
-    "plates.3mf": plates.threeMf(project),
-    "plates.zip": plates.zip(project),
-    "project.stencilator": project.file(),
-    [`plates/${names[0]}`]: plates.stl(0, project),
-    [`plates/${names.at(-1)}`]: plates.stl(names.length - 1, project),
-  };
+  const browser = { "project.stencilator": project.file() };
+  if (names.length) {
+    Object.assign(browser, {
+      "plates.3mf": plates.threeMf(project),
+      "plates.zip": plates.zip(project),
+      [`plates/${names[0]}`]: plates.stl(0, project),
+      [`plates/${names.at(-1)}`]: plates.stl(names.length - 1, project),
+    });
+  }
 
   const dir = join(work, `freeform-${n}`);
   mkdirSync(dir);
   // Its warnings are the report's, compared below; a failure still shows them.
   const run = (extra) => execFileSync(cli, ["freeform", ...fixture.args, ...extra], { stdio: ["ignore", "pipe", "pipe"] });
-  const report = JSON.parse(run([
-    "--3mf", join(dir, "plates.3mf"), "--stencils", join(dir, "plates.zip"),
-    "--save", join(dir, "project.stencilator"), "--json",
-  ]));
-  run(["--stencils", join(dir, "plates")]);
+  const printFiles = names.length ? ["--3mf", join(dir, "plates.3mf"), "--stencils", join(dir, "plates.zip")] : [];
+  const report = JSON.parse(run([...printFiles, "--save", join(dir, "project.stencilator"), "--json"]));
+  if (names.length) run(["--stencils", join(dir, "plates")]);
 
   // The same paints and plates, and the same report.
   const palette = [...labels.palette()];

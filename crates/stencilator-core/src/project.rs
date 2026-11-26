@@ -1,11 +1,11 @@
 //! Project files: everything needed to make the same stencils again, in one JSON file.
 //!
 //! The artwork is embedded, with any fonts it needs that Stencilator does not bundle, next
-//! to the settings of both modes and the paint choices, which name paints by colour. Any
-//! field but the source may be left out and takes the engine's default, so a short
-//! hand-written project opens too. A drawing or typed text defaults to free-form mode at
-//! its own size; a picture to tile mode, and to 200 mm wide in free-form mode. The field `stencilator` holds the format's version and
-//! marks the file as a project; files use the extension `.stencilator`.
+//! to the settings of both modes and the paint choices, which name paints by colour. A
+//! file needs `stencilator`, the format version, and `source`. Other settings can be left
+//! out and take the engine's defaults. A drawing or typed text defaults to free-form mode
+//! at its own size; a picture to tile mode, and to 200 mm wide in free-form mode. Use the
+//! extension `.stencilator` to open the file in the web app.
 //!
 //! ```json
 //! {
