@@ -1,6 +1,6 @@
 <script lang="ts">
   // The left column: the name, the theme, the picture, and once there is a chart, its
-  // paints with the stencil of the one picked.
+  // paints: which get stencils, merging the picked one into another, and its stencil.
   import TileCanvas from './TileCanvas.svelte';
   import { num, text } from './text';
   import { THEMES, type Theme } from './theme.svelte';
@@ -17,6 +17,8 @@
   let previewWidth = $state(0);
   const chart = $derived(bench.chart);
   const picked = $derived(bench.selected);
+  const pickedColour = $derived(bench.colours[picked] ?? '');
+  const merges = $derived(bench.settings.merges);
 </script>
 
 <div class="sidebar">
@@ -82,7 +84,7 @@
       </h2>
       <ul class="paints">
         {#each bench.colours as colour, i (i)}
-          <li>
+          <li class:off={bench.unstencilled.includes(colour)}>
             <button
               type="button"
               aria-pressed={picked === i}
@@ -95,11 +97,82 @@
               <span class="mono hex">{colour.toUpperCase()}</span>
               <span class="count">{num(chart.counts[i] ?? 0)}</span>
             </button>
+            {#if bench.stencilsPossible}
+              <input
+                type="checkbox"
+                checked={!bench.unstencilled.includes(colour)}
+                aria-label={text.paints.stencil(i, colour)}
+                onchange={() => {
+                  bench.toggleStencil(colour);
+                }}
+              />
+            {/if}
           </li>
         {/each}
       </ul>
+      {#if bench.stencilsPossible}<p class="note">{text.paints.stencilNote}</p>{/if}
+
+      {#if bench.colours.length > 1}
+        <div class="merge">
+          <p class="label">{text.paints.mergeInto(pickedColour)}</p>
+          <div class="targets">
+            {#each bench.colours as colour, i (i)}
+              {#if i !== picked}
+                <button
+                  type="button"
+                  class="target"
+                  style:background={colour}
+                  title={colour.toUpperCase()}
+                  aria-label={text.paints.mergeTarget(picked, pickedColour, i, colour)}
+                  onclick={() => {
+                    bench.merge(pickedColour, colour);
+                  }}
+                ></button>
+              {/if}
+            {/each}
+          </div>
+        </div>
+      {/if}
+
+      {#if merges.length > 0}
+        <div class="merge">
+          <p class="label">{text.paints.merged}</p>
+          <ul class="merged">
+            {#each merges as [from, to], i (i)}
+              <li>
+                <span class="swatch small" style:background={from}></span>
+                <span class="mono">{from.toUpperCase()}</span>
+                <span class="into">{text.paints.into}</span>
+                <span class="swatch small" style:background={to}></span>
+                <span class="mono">{to.toUpperCase()}</span>
+                <button
+                  type="button"
+                  class="remove"
+                  aria-label={text.paints.unmerge(from, to)}
+                  onclick={() => {
+                    bench.unmerge(i);
+                  }}
+                >
+                  <svg
+                    width="12"
+                    height="12"
+                    viewBox="0 0 12 12"
+                    stroke="currentColor"
+                    stroke-width="1.5"
+                    aria-hidden="true"
+                  >
+                    <path d="M2.5 2.5l7 7M9.5 2.5l-7 7" />
+                  </svg>
+                </button>
+              </li>
+            {/each}
+          </ul>
+        </div>
+      {/if}
+
       {#if bench.stencilsPossible}
-        <figure class="preview">
+        {@const off = bench.unstencilled.includes(pickedColour)}
+        <figure class="preview" class:off>
           <div class="measure" bind:clientWidth={previewWidth}>
             <TileCanvas
               {chart}
@@ -115,7 +188,9 @@
             />
           </div>
           <figcaption class="note">
-            {text.stencil.name(picked)} · {text.stencil.holes(chart.counts[picked] ?? 0)}
+            {text.stencil.name(picked)} · {off
+              ? text.stencil.none
+              : text.stencil.holes(chart.counts[picked] ?? 0)}
           </figcaption>
         </figure>
       {/if}
@@ -255,18 +330,37 @@
     list-style: none;
   }
 
+  .paints li {
+    display: flex;
+    align-items: center;
+    border-bottom: 1px solid var(--line);
+  }
+
   .paints button {
-    width: 100%;
+    flex: 1;
+    min-width: 0;
     min-height: 34px;
     padding: 0 8px;
     display: flex;
     align-items: center;
     gap: 10px;
     border: 0;
-    border-bottom: 1px solid var(--line);
     background: transparent;
     font-size: 13px;
     text-align: left;
+  }
+
+  .paints input {
+    width: 15px;
+    height: 15px;
+    margin: 0 8px 0 10px;
+    flex: none;
+    accent-color: var(--tint-text);
+  }
+
+  .off .hex,
+  .off .count {
+    color: var(--text-3);
   }
 
   .paints button:hover {
@@ -285,6 +379,73 @@
     box-shadow: inset 0 0 0 1px rgb(0 0 0 / 0.2);
   }
 
+  .swatch.small {
+    width: 12px;
+    height: 12px;
+  }
+
+  .merge {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .targets {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+
+  .target {
+    width: 26px;
+    height: 26px;
+    padding: 0;
+    border: 0;
+    box-shadow: inset 0 0 0 1px rgb(0 0 0 / 0.2);
+  }
+
+  .target:hover,
+  .target:focus-visible {
+    outline: 2px solid var(--tint-text);
+    outline-offset: 1px;
+  }
+
+  .merged {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    font-size: 12px;
+  }
+
+  .merged li {
+    min-height: 30px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .into {
+    color: var(--text-3);
+  }
+
+  .remove {
+    margin-left: auto;
+    width: 26px;
+    height: 26px;
+    padding: 0;
+    display: grid;
+    place-items: center;
+    border: 0;
+    background: transparent;
+    color: var(--text-2);
+  }
+
+  .remove:hover {
+    color: var(--text);
+    background: var(--surface);
+  }
+
   .hex {
     flex: 1;
   }
@@ -299,6 +460,10 @@
     display: flex;
     flex-direction: column;
     gap: 8px;
+  }
+
+  .preview.off .measure {
+    opacity: 0.4;
   }
 
   .steps {

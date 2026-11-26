@@ -12,7 +12,15 @@ import type {
   SourceInfo
 } from './protocol';
 
-export type { About, ChartFormat, ChartSettings, ChartSummary, Mode, SourceInfo } from './protocol';
+export type {
+  About,
+  ChartFormat,
+  ChartSettings,
+  ChartSummary,
+  Mode,
+  Sizing,
+  SourceInfo
+} from './protocol';
 
 interface Waiting {
   resolve: (value: Replies[Kind]) => void;
@@ -72,8 +80,8 @@ export class Engine {
     return this.#call({ kind: 'stencil', index, thicknessMm });
   }
 
-  /** Every colour's stencil, as STL files in one zip. */
-  stencilsZip(thicknessMm: number): Promise<Uint8Array> {
-    return this.#call({ kind: 'stencilsZip', thicknessMm });
+  /** Every colour's stencil but the skipped ones, as STL files in one zip. */
+  stencilsZip(thicknessMm: number, skip: number[]): Promise<Uint8Array> {
+    return this.#call({ kind: 'stencilsZip', thicknessMm, skip });
   }
 }

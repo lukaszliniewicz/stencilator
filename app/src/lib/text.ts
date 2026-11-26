@@ -21,6 +21,7 @@ const plural = (n: number, one: string, other: string): string =>
   `${num(n)} ${n === 1 ? one : other}`;
 const size = (w: string, h: string, unit: string): string => `${w} × ${h} ${unit}`;
 const hex = (colour: string): string => colour.toUpperCase();
+const list = new Intl.ListFormat(LOCALE, { type: 'conjunction' });
 
 export const text = {
   wordmark: 'Stencilator',
@@ -44,7 +45,7 @@ export const text = {
     steps: [
       {
         title: 'Picture.',
-        body: 'PNG, JPEG or WebP. Flat artwork works best; photos are reduced to a few paints.'
+        body: 'PNG, JPEG or WebP. Pixel art works best, a tile per pixel; photos are reduced to a few paints.'
       },
       {
         title: 'Chart.',
@@ -61,12 +62,23 @@ export const text = {
     heading: 'Paints',
     order: (n: number) => `${num(n)} · darkest first`,
     item: (index: number, colour: string, tiles: number) =>
-      `Paint ${num(index + 1)}, ${hex(colour)}, ${plural(tiles, 'tile', 'tiles')}`
+      `Paint ${num(index + 1)}, ${hex(colour)}, ${plural(tiles, 'tile', 'tiles')}`,
+    stencil: (index: number, colour: string) =>
+      `Stencil for paint ${num(index + 1)}, ${hex(colour)}`,
+    stencilNote:
+      'Ticked paints get a stencil. The canvas colour needs none, so it starts unticked.',
+    mergeInto: (colour: string) => `Merge ${hex(colour)} into`,
+    mergeTarget: (fromIndex: number, from: string, toIndex: number, to: string) =>
+      `Merge paint ${num(fromIndex + 1)}, ${hex(from)}, into paint ${num(toIndex + 1)}, ${hex(to)}`,
+    merged: 'Merged',
+    into: 'into',
+    unmerge: (from: string, to: string) => `Undo merging ${hex(from)} into ${hex(to)}`
   },
 
   stencil: {
     name: (index: number) => `Stencil ${num(index + 1)}`,
     holes: (n: number) => plural(n, 'hole', 'holes'),
+    none: 'Unticked, so no stencil',
     label: (index: number, colour: string, holes: number) =>
       `Stencil ${num(index + 1)} for ${hex(colour)}, with ${plural(holes, 'hole', 'holes')}`
   },
@@ -82,15 +94,17 @@ export const text = {
 
   bench: {
     canvas: (w: number, h: number) => `Your canvas · ${size(num(w, 1), num(h, 1), 'mm')}`,
+    perPixel: 'A tile per pixel',
     tiles: (mm: number) => `Tiles of ${num(mm, 2)} mm`,
     drop: 'Drop a picture.',
     dropBody:
-      'PNG, JPEG or WebP. It is fitted into your canvas as a grid of tiles, keeping its proportions. You can also paste one.',
+      'PNG, JPEG or WebP. Pixel art gets a tile per pixel; a larger picture is fitted into your canvas. You can also paste one.',
     choose: 'Choose a picture',
     example: 'Try the example',
     dropping: 'Drop the picture to open it',
     chart: (w: number, h: number) => `Chart · ${size(num(w, 1), num(h, 1), 'mm')}`,
     onCanvas: (w: number, h: number) => `On a ${size(num(w, 1), num(h, 1), 'mm')} canvas`,
+    fromPixels: (x: number, y: number) => `${size(num(x), num(y), 'pixels')}, a tile each`,
     chartLabel: (x: number, y: number) => `The chart, ${num(x)} by ${num(y)} tiles`,
     stencilCaption: (index: number, colour: string) => `Stencil ${num(index + 1)} · ${hex(colour)}`,
     status: (x: number, y: number, paints: number, tileMm: number, lineMm: number) =>
@@ -106,9 +120,14 @@ export const text = {
   settings: {
     label: 'Settings',
     canvas: 'Canvas',
+    sizing: 'Tiles',
+    sizings: { pixels: 'Per pixel', canvas: 'Fit to canvas' },
     width: 'Width (mm)',
     height: 'Height (mm)',
     canvasNote: 'The grid keeps the picture’s proportions and stays inside the canvas.',
+    pixelNote: (x: number, y: number) =>
+      `The picture reads as ${size(num(x), num(y), 'pixels')}; each becomes one tile, so the tile size sets the canvas.`,
+    pixelNoteEmpty: 'Each pixel of the picture becomes one tile, so the tile size sets the canvas.',
     grid: 'Grid',
     tile: 'Tile (mm)',
     line: 'Line (mm)',
@@ -123,7 +142,7 @@ export const text = {
     modeNames: { colour: 'Colour', greyscale: 'Greyscale', 'black-white': 'Black and white' },
     colours: 'Most paints',
     twoPaints: 'Black and white always uses two paints.',
-    background: 'Behind transparency',
+    background: 'Canvas colour',
     stencils: 'Stencils',
     thickness: 'Thickness (mm)',
     chartFile: 'Chart file',
@@ -148,8 +167,11 @@ export const text = {
     jpegBody: 'The same pixels, for apps that take nothing else.',
     save: (format: string) => `Save ${format}`,
     saving: 'Saving…',
-    stencils: 'Stencils, one per paint',
+    stencils: 'Stencils, one per ticked paint',
     all: (n: number) => `All ${plural(n, 'stencil', 'stencils')}`,
+    skipped: (colours: string[]) =>
+      `No stencil for ${list.format(colours.map(hex))}: tick a paint in the list to add one.`,
+    noneTicked: 'Every paint is unticked, so there are no stencils. Tick the paints that need one.',
     allBody: (thicknessMm: number) =>
       `STL files in one zip, each ${num(thicknessMm, 2)} mm thick, with the holes cut right through.`,
     saveAll: 'Save all stencils',

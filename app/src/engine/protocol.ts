@@ -1,10 +1,13 @@
 /** Messages between the interface and the engine's Web Worker. */
 
 export type Mode = 'colour' | 'greyscale' | 'black-white';
+/** One tile for each of the picture's own pixels, or the picture fitted to a canvas. */
+export type Sizing = 'pixels' | 'canvas';
 export type ChartFormat = 'png' | 'jpeg' | 'pdf';
 
 /** Everything that decides the grid and the palette. Colours are `0xRRGGBB`. */
 export interface ChartSettings {
+  sizing: Sizing;
   canvasWidthMm: number;
   canvasHeightMm: number;
   tileMm: number;
@@ -13,6 +16,8 @@ export interface ChartSettings {
   mode: Mode;
   colours: number;
   background: number;
+  /** Paints to merge, in pairs: every tile of the first colour takes the second. */
+  merges: number[];
 }
 
 /** The engine's version, and the thinnest web between holes it recommends. */
@@ -24,6 +29,9 @@ export interface About {
 export interface SourceInfo {
   width: number;
   height: number;
+  /** The picture's own pixels, where a block of one colour drawn larger counts as one. */
+  pixelsX: number;
+  pixelsY: number;
 }
 
 /** A built chart, as the interface draws and describes it. */
@@ -54,7 +62,7 @@ export type Request =
   | { kind: 'chart'; settings: ChartSettings }
   | { kind: 'chartFile'; format: ChartFormat; gridColour: number; withLines: boolean }
   | { kind: 'stencil'; index: number; thicknessMm: number }
-  | { kind: 'stencilsZip'; thicknessMm: number };
+  | { kind: 'stencilsZip'; thicknessMm: number; skip: number[] };
 
 /** What each kind of request answers with. */
 export interface Replies {

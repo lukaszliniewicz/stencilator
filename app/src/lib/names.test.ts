@@ -4,7 +4,7 @@ import { baseName, chartFileName, stencilFileName, stencilsZipName } from './nam
 
 describe('file names', () => {
   it('start from the picture without its extension', () => {
-    expect(baseName('lighthouse.png')).toBe('lighthouse');
+    expect(baseName('fox.png')).toBe('fox');
     expect(baseName('my.holiday.photo.jpeg')).toBe('my.holiday.photo');
     expect(baseName('README')).toBe('README');
     expect(baseName('.png')).toBe('stencilator');
@@ -12,12 +12,10 @@ describe('file names', () => {
   });
 
   it('say what each file is', () => {
-    expect(chartFileName('lighthouse', 'pdf', true)).toBe('lighthouse-chart.pdf');
-    expect(chartFileName('lighthouse', 'jpeg', true)).toBe('lighthouse-chart.jpg');
-    expect(chartFileName('lighthouse', 'png', false)).toBe('lighthouse-tiles.png');
-    expect(stencilsZipName('lighthouse')).toBe('lighthouse-stencils.zip');
-    expect(stencilFileName('lighthouse', 'stencil-06-c02f34.stl')).toBe(
-      'lighthouse-stencil-06-c02f34.stl'
-    );
+    expect(chartFileName('fox', 'pdf', true)).toBe('fox-chart.pdf');
+    expect(chartFileName('fox', 'jpeg', true)).toBe('fox-chart.jpg');
+    expect(chartFileName('fox', 'png', false)).toBe('fox-tiles.png');
+    expect(stencilsZipName('fox')).toBe('fox-stencils.zip');
+    expect(stencilFileName('fox', 'stencil-06-c02f34.stl')).toBe('fox-stencil-06-c02f34.stl');
   });
 });

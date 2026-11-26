@@ -181,6 +181,7 @@ fn load_chart(case: &ChartCase) -> stencilator_core::chart::TileChart {
     let image = stencilator_core::source::decode(&bytes).unwrap();
     let s = &case.settings;
     let settings = ChartSettings {
+        sizing: stencilator_core::chart::Sizing::Canvas,
         canvas_mm: s.canvas_mm,
         tile_mm: s.tile_mm,
         line_mm: s.line_mm,

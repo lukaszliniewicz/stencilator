@@ -38,6 +38,20 @@ STL file per colour into `stencils/`. Leave out `--chart`, `--tiles` and `--sten
 see what it would make without writing anything, and add `--json` when another program
 will read the summary. `stencilator build --help` lists every option.
 
+Pixel art can have one tile per pixel instead:
+
+```sh
+target/release/stencilator build fixtures/pixel-art/fox.png --pixels --tile 10 \
+    --merge 9c3d17=e8772e --skip ffffff --stencils stencils/
+```
+
+A block of one colour drawn larger, as in pixel art scaled up for the screen, still counts
+as one pixel, so this fox makes 22 by 22 tiles. `--merge` gives every tile of one colour to
+another, which saves a stencil and a pot of paint, and `--skip` leaves out the stencil of
+a colour that needs no painting, such as the canvas showing through. The web app guesses
+which way suits a picture, and leaves the canvas colour without a stencil until you tick
+it.
+
 All sizes are in millimetres. They are rounded to whole pixels at the chart's resolution
 (300 DPI unless you choose otherwise), so the printed chart and the stencils always line
 up.

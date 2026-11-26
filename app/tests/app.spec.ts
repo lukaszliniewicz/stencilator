@@ -1,4 +1,5 @@
 import { readFileSync } from 'node:fs';
+import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 
 import { expect, test, type Page } from '@playwright/test';
@@ -27,6 +28,14 @@ async function savedName(page: Page, click: () => Promise<void>): Promise<string
   return (await download).suggestedFilename();
 }
 
+/** Files in a downloaded zip, counted by their entries in its central directory. */
+async function zipEntries(page: Page, click: () => Promise<void>): Promise<number> {
+  const download = page.waitForEvent('download');
+  await click();
+  const zip = await readFile(await (await download).path());
+  return zip.toString('latin1').split('PK\x01\x02').length - 1;
+}
+
 test('a picture becomes a chart and files', async ({ page }) => {
   const problems = watchForProblems(page);
   await page.goto('/');
@@ -35,8 +44,11 @@ test('a picture becomes a chart and files', async ({ page }) => {
 
   await openPicture(page);
   await expect(page.getByText('chart-0.png', { exact: true })).toBeVisible();
-  await page.getByLabel('Width (mm)', { exact: true }).fill('47');
-  await page.getByLabel('Height (mm)', { exact: true }).fill('40');
+  // Drawn in blocks of 5 pixels, it is pixel art of 8 by 6.
+  await expect(page.getByRole('button', { name: 'Per pixel' })).toHaveAttribute(
+    'aria-pressed',
+    'true'
+  );
   await expect(page.getByText('8 × 6 tiles · 48 in all · 5 paints')).toBeVisible();
   await expect(page.getByRole('img', { name: 'The chart, 8 by 6 tiles' })).toBeVisible();
 
@@ -63,6 +75,7 @@ test('a mistake is explained and can be undone', async ({ page }) => {
   const problems = watchForProblems(page);
   await page.goto('/');
   await openPicture(page);
+  await page.getByRole('button', { name: 'Fit to canvas' }).click();
   const width = page.getByLabel('Width (mm)', { exact: true });
   const undo = page.getByRole('button', { name: 'Undo (Ctrl+Z)' });
 
@@ -98,8 +111,8 @@ test('the example, a dropped picture and the theme', async ({ page }) => {
   await page.goto('/');
 
   await page.getByRole('button', { name: 'Try the example' }).click();
-  await expect(page.getByText('lighthouse.png', { exact: true })).toBeVisible();
-  await expect(page.getByRole('img', { name: /^The chart, \d+ by \d+ tiles$/ })).toBeVisible();
+  await expect(page.getByText('fox.png', { exact: true })).toBeVisible();
+  await expect(page.getByRole('img', { name: 'The chart, 22 by 22 tiles' })).toBeVisible();
 
   const bytes = readFileSync(IMAGE).toString('base64');
   await page.evaluate((base64) => {
@@ -122,6 +135,47 @@ test('the example, a dropped picture and the theme', async ({ page }) => {
   await expect(root).toHaveAttribute('data-theme', 'dark');
   await page.getByRole('button', { name: 'Auto' }).click();
   await expect(root).toHaveAttribute('data-theme', 'auto');
+
+  expect(problems).toEqual([]);
+});
+
+test('pixel art, with paints merged and the canvas colour left without a stencil', async ({
+  page
+}) => {
+  const problems = watchForProblems(page);
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Try the example' }).click();
+  await expect(page.getByText('22 × 22 tiles · 484 in all · 4 paints')).toBeVisible();
+
+  // White is the canvas colour, so it starts without a stencil.
+  // Found by colour: merging renumbers the paints after the one merged away.
+  const white = page.getByRole('checkbox', { name: /^Stencil for paint \d+, #FFFFFF$/ });
+  await expect(white).not.toBeChecked();
+  await expect(page.getByRole('checkbox', { name: 'Stencil for paint 1, #2B2320' })).toBeChecked();
+
+  await page.getByRole('button', { name: /^Paint 2, #9C3D17,/ }).click();
+  await page.getByRole('button', { name: 'Merge paint 2, #9C3D17, into paint 3, #E8772E' }).click();
+  await expect(page.getByText('22 × 22 tiles · 484 in all · 3 paints')).toBeVisible();
+  await expect(page.getByRole('button', { name: /^Paint 2, #E8772E,/ })).toHaveAttribute(
+    'aria-pressed',
+    'true'
+  );
+
+  await page.getByRole('button', { name: 'Files' }).click();
+  await expect(page.getByText('All 2 stencils')).toBeVisible();
+  await expect(page.getByRole('button', { name: /^Save stencil 3,/ })).toHaveCount(0);
+  expect(
+    await zipEntries(page, () => page.getByRole('button', { name: 'Save all stencils' }).click())
+  ).toBe(2);
+  await page.getByRole('button', { name: 'Back to the chart' }).click();
+
+  await white.check();
+  await page.getByRole('button', { name: 'Files' }).click();
+  await expect(page.getByText('All 3 stencils')).toBeVisible();
+  await page.getByRole('button', { name: 'Back to the chart' }).click();
+
+  await page.getByRole('button', { name: 'Undo merging #9C3D17 into #E8772E' }).click();
+  await expect(page.getByText('22 × 22 tiles · 484 in all · 4 paints')).toBeVisible();
 
   expect(problems).toEqual([]);
 });

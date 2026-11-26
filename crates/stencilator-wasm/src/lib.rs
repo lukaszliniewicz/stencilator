@@ -5,11 +5,11 @@
 //! errors as JavaScript `Error`s carrying the engine's message. Objects made here live in
 //! WebAssembly memory until JavaScript calls `free()` on them.
 
-use stencilator_core::chart::{ChartSettings, TileChart, build_chart};
+use stencilator_core::chart::{ChartSettings, Sizing as CoreSizing, TileChart, build_chart, merge_paints};
 use stencilator_core::colour::Rgb;
 use stencilator_core::export::{ChartFormat, encode_chart};
 use stencilator_core::quantise::ColourMode;
-use stencilator_core::source::{Image, decode};
+use stencilator_core::source::{Image, decode, pixel_grid};
 use stencilator_core::stencil::{RECOMMENDED_MIN_WEB_MM, stencil_file, stencil_filename, stencil_files};
 use stencilator_core::zip::zip;
 use wasm_bindgen::prelude::{JsError, wasm_bindgen};
@@ -50,6 +50,16 @@ pub enum Mode {
     BlackWhite = "black-white",
 }
 
+/// How the number of tiles is decided.
+#[wasm_bindgen]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Sizing {
+    /// As many tiles as fit the canvas.
+    Canvas = "canvas",
+    /// One tile per pixel of the picture; the canvas follows.
+    Pixels = "pixels",
+}
+
 /// A chart file format.
 #[wasm_bindgen]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -66,6 +76,8 @@ pub enum Format {
 #[wasm_bindgen]
 #[derive(Clone, Copy, Debug)]
 pub struct Settings {
+    /// How the number of tiles is decided.
+    pub sizing: Sizing,
     /// Canvas width in millimetres.
     #[wasm_bindgen(js_name = canvasWidthMm)]
     pub canvas_width_mm: f64,
@@ -100,6 +112,7 @@ impl Settings {
         let d = ChartSettings::default();
         let [r, g, b] = d.background;
         Settings {
+            sizing: Sizing::Canvas,
             canvas_width_mm: d.canvas_mm.0,
             canvas_height_mm: d.canvas_mm.1,
             tile_mm: d.tile_mm,
@@ -124,6 +137,11 @@ impl TryFrom<&Settings> for ChartSettings {
 
     fn try_from(s: &Settings) -> Result<ChartSettings, JsError> {
         Ok(ChartSettings {
+            sizing: match s.sizing {
+                Sizing::Canvas => CoreSizing::Canvas,
+                Sizing::Pixels => CoreSizing::Pixels,
+                Sizing::__Invalid => return Err(JsError::new("Unknown sizing; use canvas or pixels.")),
+            },
             canvas_mm: (s.canvas_width_mm, s.canvas_height_mm),
             tile_mm: s.tile_mm,
             line_mm: s.line_mm,
@@ -148,6 +166,7 @@ impl TryFrom<&Settings> for ChartSettings {
 #[wasm_bindgen]
 pub struct Source {
     image: Image,
+    grid: (u32, u32),
 }
 
 #[wasm_bindgen]
@@ -159,7 +178,9 @@ impl Source {
     /// When the bytes are not such an image, or it is too large.
     #[wasm_bindgen(constructor)]
     pub fn new(bytes: &[u8]) -> Result<Source, JsError> {
-        Ok(Source { image: decode(bytes).map_err(|e| error(&e))? })
+        let image = decode(bytes).map_err(|e| error(&e))?;
+        let grid = pixel_grid(&image);
+        Ok(Source { image, grid })
     }
 
     /// Width in pixels.
@@ -176,13 +197,36 @@ impl Source {
         self.image.height
     }
 
-    /// Lays out the grid and reduces the colours.
+    /// Columns of the picture's own pixel grid: the width, or for pixel art scaled up by
+    /// a whole factor, the width it was drawn at.
+    #[wasm_bindgen(getter, js_name = pixelsX)]
+    #[must_use]
+    pub fn pixels_x(&self) -> u32 {
+        self.grid.0
+    }
+
+    /// Rows of the picture's own pixel grid.
+    #[wasm_bindgen(getter, js_name = pixelsY)]
+    #[must_use]
+    pub fn pixels_y(&self) -> u32 {
+        self.grid.1
+    }
+
+    /// Lays out the grid, reduces the colours, then merges paints: `merges` holds pairs
+    /// of colours, `0xRRGGBB` from and to, applied in order.
     ///
     /// # Errors
     ///
-    /// When a setting is out of range or the settings cannot produce a grid.
-    pub fn chart(&self, settings: &Settings) -> Result<Chart, JsError> {
-        Ok(Chart { chart: build_chart(&self.image, &settings.try_into()?).map_err(|e| error(&e))? })
+    /// When a setting is out of range, the settings cannot produce a grid, or `merges`
+    /// has an odd length.
+    pub fn chart(&self, settings: &Settings, merges: &[u32]) -> Result<Chart, JsError> {
+        let (pairs, rest) = merges.as_chunks::<2>();
+        if !rest.is_empty() {
+            return Err(JsError::new("Merges come in pairs of colours."));
+        }
+        let pairs: Vec<(Rgb, Rgb)> = pairs.iter().map(|&[from, to]| (rgb(from), rgb(to))).collect();
+        let chart = build_chart(&self.image, &settings.try_into()?).map_err(|e| error(&e))?;
+        Ok(Chart { chart: merge_paints(&chart, &pairs) })
     }
 }
 
@@ -319,14 +363,17 @@ impl Chart {
         Ok(stencil_file(&self.chart, index, thickness_mm).map_err(|e| error(&e))?.1)
     }
 
-    /// Every colour's stencil, as STL files in one zip.
+    /// The stencil of every colour not in `skip` (`0xRRGGBB` each), as STL files in one
+    /// zip.
     ///
     /// # Errors
     ///
-    /// When the grid has no lines or the thickness is out of range.
+    /// When the grid has no lines, the thickness is out of range, or every colour is
+    /// skipped.
     #[wasm_bindgen(js_name = stencilsZip)]
-    pub fn stencils_zip(&self, thickness_mm: f64) -> Result<Vec<u8>, JsError> {
-        let files = stencil_files(&self.chart, thickness_mm).map_err(|e| error(&e))?;
+    pub fn stencils_zip(&self, thickness_mm: f64, skip: &[u32]) -> Result<Vec<u8>, JsError> {
+        let skip: Vec<Rgb> = skip.iter().map(|&c| rgb(c)).collect();
+        let files = stencil_files(&self.chart, thickness_mm, &skip).map_err(|e| error(&e))?;
         zip(&files).map_err(|e| error(&e))
     }
 }

@@ -1,6 +1,6 @@
 <script lang="ts">
   // Everything there is to save: the chart in three formats, with or without grid lines,
-  // and the stencils, together or one at a time.
+  // and the stencils of the ticked paints, together or one at a time.
   import type { ChartFormat } from '../engine/client';
   import { chartFileName, stencilFileName, stencilsZipName } from './names';
   import Segmented from './Segmented.svelte';
@@ -116,12 +116,17 @@
 
       <section class="column" aria-labelledby="stencil-files-heading">
         <h2 id="stencil-files-heading" class="group">{text.files.stencils}</h2>
-        {#if bench.stencilsPossible}
+        {#if bench.stencilsPossible && bench.stencilCount === 0}
+          <p class="notice">{text.files.noneTicked}</p>
+        {:else if bench.stencilsPossible}
           {@const zip = stencilsZipName(bench.base)}
           <div class="all">
             <div class="about">
-              <p class="what"><strong>{text.files.all(chart.counts.length)}</strong></p>
+              <p class="what"><strong>{text.files.all(bench.stencilCount)}</strong></p>
               <p class="body">{text.files.allBody(s.thicknessMm)}</p>
+              {#if bench.unstencilled.length > 0}
+                <p class="body">{text.files.skipped(bench.unstencilled)}</p>
+              {/if}
               <p class="mono name">{zip}</p>
             </div>
             <button
@@ -137,32 +142,34 @@
           <ul class="cards">
             {#each bench.colours as colour, i (i)}
               {@const name = stencilFileName(bench.base, chart.stencilNames[i] ?? '')}
-              <li>
-                <div class="measure" bind:clientWidth={cardWidth}>
-                  <TileCanvas
-                    {chart}
-                    colours={bench.colours}
-                    width={cardWidth}
-                    stencil={i}
-                    {dark}
-                    label={text.stencil.label(i, colour, chart.counts[i] ?? 0)}
-                  />
-                </div>
-                <p class="card-line">
-                  <span class="swatch" style:background={colour}></span>
-                  <span class="mono hex">{colour.toUpperCase()}</span>
-                  <span class="holes">{text.stencil.holes(chart.counts[i] ?? 0)}</span>
-                </p>
-                <button
-                  type="button"
-                  class="button small"
-                  aria-label={text.files.saveOne(i, colour)}
-                  disabled={!bench.ready}
-                  onclick={() => void bench.saveStencil(i)}
-                >
-                  {bench.saving === name ? text.files.saving : text.files.saveStl}
-                </button>
-              </li>
+              {#if !bench.unstencilled.includes(colour)}
+                <li>
+                  <div class="measure" bind:clientWidth={cardWidth}>
+                    <TileCanvas
+                      {chart}
+                      colours={bench.colours}
+                      width={cardWidth}
+                      stencil={i}
+                      {dark}
+                      label={text.stencil.label(i, colour, chart.counts[i] ?? 0)}
+                    />
+                  </div>
+                  <p class="card-line">
+                    <span class="swatch" style:background={colour}></span>
+                    <span class="mono hex">{colour.toUpperCase()}</span>
+                    <span class="holes">{text.stencil.holes(chart.counts[i] ?? 0)}</span>
+                  </p>
+                  <button
+                    type="button"
+                    class="button small"
+                    aria-label={text.files.saveOne(i, colour)}
+                    disabled={!bench.ready}
+                    onclick={() => void bench.saveStencil(i)}
+                  >
+                    {bench.saving === name ? text.files.saving : text.files.saveStl}
+                  </button>
+                </li>
+              {/if}
             {/each}
           </ul>
         {:else}

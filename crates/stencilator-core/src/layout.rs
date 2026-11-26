@@ -124,11 +124,7 @@ pub fn fit_layout(
         return Err(Error::Layout("Sizes must be finite numbers.".to_owned()));
     }
 
-    let tile_px = mm_to_px(tile_mm, dpi);
-    if tile_px < 1 {
-        return Err(Error::Layout("The tile is smaller than one pixel at this DPI.".to_owned()));
-    }
-    let line_px = if line_mm > 0.0 { mm_to_px(line_mm, dpi).max(1) } else { 0 };
+    let (tile_px, line_px) = tile_and_line_px(tile_mm, line_mm, dpi)?;
 
     // Floor, so that the finished grid never exceeds the physical canvas.
     let canvas_w_px = (canvas_mm.0 / MM_PER_INCH * f64::from(dpi) + 1e-9).floor() as i64;
@@ -153,10 +149,51 @@ pub fn fit_layout(
             thousands(MAX_TILES)
         )));
     }
-    let px = |value: i64| {
-        u32::try_from(value).map_err(|_| Error::Layout("The tile or line is too large at this DPI.".to_owned()))
-    };
     Ok(GridLayout { tiles_x: px(tiles_x)?, tiles_y: px(tiles_y)?, tile_px: px(tile_px)?, line_px: px(line_px)?, dpi })
+}
+
+/// One tile per cell of a `grid` of columns and rows, such as a picture's own pixels; the
+/// canvas follows from the tile and line sizes.
+///
+/// # Errors
+///
+/// [`Error::Layout`] when the grid is empty, a size is not a number, the tile is under a
+/// pixel, or the grid would exceed [`MAX_TILES`].
+pub fn pixel_layout(grid: (u32, u32), tile_mm: f64, line_mm: f64, dpi: u32) -> Result<GridLayout, Error> {
+    let (tiles_x, tiles_y) = grid;
+    if tiles_x < 1 || tiles_y < 1 {
+        return Err(Error::Layout("The image is empty.".to_owned()));
+    }
+    if dpi < 1 {
+        return Err(Error::Layout("DPI must be positive.".to_owned()));
+    }
+    if !tile_mm.is_finite() || !line_mm.is_finite() {
+        return Err(Error::Layout("Sizes must be finite numbers.".to_owned()));
+    }
+    let (tile_px, line_px) = tile_and_line_px(tile_mm, line_mm, dpi)?;
+    let tiles = u64::from(tiles_x) * u64::from(tiles_y);
+    if tiles > MAX_TILES {
+        return Err(Error::Layout(format!(
+            "The picture is {tiles_x} by {tiles_y} pixels, which makes {} tiles; the limit is {}. Fit it to a canvas instead.",
+            thousands(tiles),
+            thousands(MAX_TILES)
+        )));
+    }
+    Ok(GridLayout { tiles_x, tiles_y, tile_px: px(tile_px)?, line_px: px(line_px)?, dpi })
+}
+
+/// The tile and line widths in whole device pixels. A non-zero line is at least one pixel.
+fn tile_and_line_px(tile_mm: f64, line_mm: f64, dpi: u32) -> Result<(i64, i64), Error> {
+    let tile_px = mm_to_px(tile_mm, dpi);
+    if tile_px < 1 {
+        return Err(Error::Layout("The tile is smaller than one pixel at this DPI.".to_owned()));
+    }
+    let line_px = if line_mm > 0.0 { mm_to_px(line_mm, dpi).max(1) } else { 0 };
+    Ok((tile_px, line_px))
+}
+
+fn px(value: i64) -> Result<u32, Error> {
+    u32::try_from(value).map_err(|_| Error::Layout("The tile or line is too large at this DPI.".to_owned()))
 }
 
 #[cfg(test)]
@@ -181,6 +218,23 @@ mod tests {
     fn non_finite_sizes_are_refused() {
         assert!(fit_layout((10, 10), (f64::NAN, 100.0), 5.0, 0.8, 300).is_err());
         assert!(fit_layout((10, 10), (100.0, 100.0), f64::INFINITY, 0.8, 300).is_err());
+    }
+
+    #[test]
+    fn pixel_layouts_take_the_grid_as_it_is() {
+        let g = pixel_layout((22, 22), 10.0, 0.8, 300).unwrap();
+        assert_eq!((g.tiles_x, g.tiles_y, g.tile_px, g.line_px), (22, 22, 118, 9));
+        assert!((g.width_mm() - 237.32).abs() < 0.01, "{}", g.width_mm());
+        assert_eq!(pixel_layout((3, 2), 5.0, 0.0, 300).unwrap().line_px, 0);
+    }
+
+    #[test]
+    fn pixel_layouts_refuse_what_fit_layouts_refuse() {
+        assert!(pixel_layout((0, 5), 5.0, 0.8, 300).is_err());
+        assert!(pixel_layout((5, 5), 0.01, 0.8, 300).is_err());
+        assert!(pixel_layout((5, 5), f64::NAN, 0.8, 300).is_err());
+        let error = pixel_layout((800, 600), 5.0, 0.8, 300).unwrap_err().to_string();
+        assert!(error.contains("800 by 600") && error.contains("480,000"), "{error}");
     }
 
     #[test]

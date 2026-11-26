@@ -84,7 +84,9 @@
           widthMm={s.canvasWidthMm}
           heightMm={s.canvasHeightMm}
           width={emptyWidth}
-          start={text.bench.canvas(s.canvasWidthMm, s.canvasHeightMm)}
+          start={s.sizing === 'pixels'
+            ? text.bench.perPixel
+            : text.bench.canvas(s.canvasWidthMm, s.canvasHeightMm)}
           end={text.bench.tiles(s.tileMm)}
         >
           {#snippet children({ height }: { height: number })}
@@ -122,7 +124,9 @@
         heightMm={chart.heightMm}
         width={sheetWidth(chart.widthMm, chart.heightMm)}
         start={text.bench.stencilCaption(index, bench.colours[index] ?? '')}
-        end={text.stencil.holes(chart.counts[index] ?? 0)}
+        end={bench.unstencilled.includes(bench.colours[index] ?? '')
+          ? text.stencil.none
+          : text.stencil.holes(chart.counts[index] ?? 0)}
         {faded}
       >
         {#snippet children({ width }: { width: number })}
@@ -142,7 +146,9 @@
         heightMm={chart.heightMm}
         width={sheetWidth(chart.widthMm, chart.heightMm)}
         start={text.bench.chart(chart.widthMm, chart.heightMm)}
-        end={text.bench.onCanvas(s.canvasWidthMm, s.canvasHeightMm)}
+        end={s.sizing === 'pixels'
+          ? text.bench.fromPixels(chart.tilesX, chart.tilesY)
+          : text.bench.onCanvas(s.canvasWidthMm, s.canvasHeightMm)}
         {faded}
       >
         {#snippet children({ width }: { width: number })}
@@ -171,7 +177,11 @@
   {:else if bench.source}
     <p class="status">{text.picture.pixels(bench.source.width, bench.source.height)}</p>
   {:else}
-    <p class="status">{text.bench.canvas(s.canvasWidthMm, s.canvasHeightMm)} · {num(s.dpi)} DPI</p>
+    <p class="status">
+      {s.sizing === 'pixels'
+        ? text.bench.perPixel
+        : text.bench.canvas(s.canvasWidthMm, s.canvasHeightMm)} · {num(s.dpi)} DPI
+    </p>
   {/if}
 </div>
 

@@ -4,10 +4,10 @@ use std::ops::RangeInclusive;
 
 use crate::Error;
 use crate::colour::Rgb;
-use crate::layout::{GridLayout, fit_layout};
+use crate::layout::{GridLayout, fit_layout, pixel_layout};
 use crate::quantise::{ColourMode, quantise};
 use crate::resample::{flatten, resize_box};
-use crate::source::Image;
+use crate::source::{Image, pixel_grid};
 
 /// Largest chart rendered as pixels: about 750 MB as RGB. The vector PDF has no such limit.
 pub const MAX_RASTER_PIXELS: u64 = 250_000_000;
@@ -27,10 +27,23 @@ pub const DPI: RangeInclusive<u32> = 72..=2_400;
 /// Accepted palette sizes.
 pub const COLOURS: RangeInclusive<usize> = 1..=256;
 
+/// How the number of tiles is decided.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Sizing {
+    /// As many tiles as fit the canvas, keeping the picture's proportions.
+    #[default]
+    Canvas,
+    /// One tile per pixel of the picture, for pixel art; the canvas follows. Pixel art
+    /// scaled up by a whole factor counts at the size it was drawn.
+    Pixels,
+}
+
 /// Everything that decides which tiles a chart has and what colour they are.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ChartSettings {
-    /// Width and height of the canvas in millimetres.
+    /// How the number of tiles is decided.
+    pub sizing: Sizing,
+    /// Width and height of the canvas in millimetres, when the grid is fitted to it.
     pub canvas_mm: (f64, f64),
     /// Side of a tile in millimetres.
     pub tile_mm: f64,
@@ -62,8 +75,10 @@ impl ChartSettings {
                 Err(Error::Settings(format!("{name} must be between {} and {} mm.", range.start(), range.end())))
             }
         };
-        mm("The canvas width", self.canvas_mm.0, &CANVAS_MM)?;
-        mm("The canvas height", self.canvas_mm.1, &CANVAS_MM)?;
+        if self.sizing == Sizing::Canvas {
+            mm("The canvas width", self.canvas_mm.0, &CANVAS_MM)?;
+            mm("The canvas height", self.canvas_mm.1, &CANVAS_MM)?;
+        }
         mm("The tile size", self.tile_mm, &TILE_MM)?;
         mm("The line width", self.line_mm, &LINE_MM)?;
         if !DPI.contains(&self.dpi) {
@@ -87,6 +102,7 @@ impl ChartSettings {
 impl Default for ChartSettings {
     fn default() -> Self {
         ChartSettings {
+            sizing: Sizing::Canvas,
             canvas_mm: (200.0, 200.0),
             tile_mm: 5.0,
             line_mm: 0.8,
@@ -137,11 +153,52 @@ impl TileChart {
 /// [`Error::Layout`] when the settings cannot produce a grid.
 pub fn build_chart(image: &Image, settings: &ChartSettings) -> Result<TileChart, Error> {
     settings.check()?;
-    let layout =
-        fit_layout((image.width, image.height), settings.canvas_mm, settings.tile_mm, settings.line_mm, settings.dpi)?;
+    let layout = match settings.sizing {
+        Sizing::Canvas => fit_layout(
+            (image.width, image.height),
+            settings.canvas_mm,
+            settings.tile_mm,
+            settings.line_mm,
+            settings.dpi,
+        )?,
+        Sizing::Pixels => pixel_layout(pixel_grid(image), settings.tile_mm, settings.line_mm, settings.dpi)?,
+    };
     let rgb = sample_tiles(image, layout.tiles_x, layout.tiles_y, settings.background);
     let palette = quantise(&rgb, settings.mode, settings.n_colours, settings.seed)?;
     Ok(TileChart { layout, palette: palette.colours, labels: palette.labels })
+}
+
+/// Merges paints the person chose to merge. Each `(from, to)` pair moves every tile of
+/// colour `from` to colour `to`, in order, so a later pair sees the earlier ones and chains
+/// work. A pair naming a colour that is not, or no longer, in the palette changes nothing,
+/// which keeps a list of merges valid while other settings change. The palette keeps its
+/// order, less the colours merged away.
+#[must_use]
+pub fn merge_paints(chart: &TileChart, merges: &[(Rgb, Rgb)]) -> TileChart {
+    let index = |colour: Rgb| chart.palette.iter().position(|&c| c == colour);
+    // The palette entry each entry's tiles now belong to.
+    let mut owner: Vec<usize> = (0..chart.palette.len()).collect();
+    for &(from, to) in merges {
+        let (Some(f), Some(t)) = (index(from), index(to)) else { continue };
+        if f == t || owner[f] != f || owner[t] != t {
+            continue;
+        }
+        for o in &mut owner {
+            if *o == f {
+                *o = t;
+            }
+        }
+    }
+    let mut palette = Vec::new();
+    let mut renumber = vec![0_u32; owner.len()];
+    for (i, &colour) in chart.palette.iter().enumerate() {
+        if owner[i] == i {
+            renumber[i] = u32::try_from(palette.len()).unwrap_or(u32::MAX);
+            palette.push(colour);
+        }
+    }
+    let labels = chart.labels.iter().map(|&l| renumber[owner[l as usize]]).collect();
+    TileChart { layout: chart.layout, palette, labels }
 }
 
 /// One colour per tile: the image shrunk with Pillow's box filter, then laid on the
@@ -257,6 +314,55 @@ mod tests {
         assert_eq!(refused(|s| s.line_mm = 25.0), "The line width must be between 0 and 20 mm.");
         assert_eq!(refused(|s| s.dpi = 70_000), "The resolution must be between 72 and 2400 DPI.");
         assert_eq!(refused(|s| s.n_colours = 0), "The number of colours must be between 1 and 256.");
+    }
+
+    #[test]
+    fn pixel_sizing_ignores_the_canvas() {
+        let mut settings = ChartSettings { sizing: Sizing::Pixels, ..ChartSettings::default() };
+        settings.canvas_mm = (-1.0, f64::NAN);
+        assert_eq!(settings.check(), Ok(()));
+        // A 3 x 2 picture drawn 5 times larger becomes 3 x 2 tiles, colours exact.
+        let cells = [[200, 40, 40], [20, 20, 20], [200, 40, 40], [20, 20, 20], [250, 250, 250], [250, 250, 250]];
+        let mut rgba = Vec::new();
+        for y in 0..10 {
+            for x in 0..15 {
+                let [r, g, b] = cells[(y / 5) * 3 + x / 5];
+                rgba.extend([r, g, b, 255]);
+            }
+        }
+        let image = Image { width: 15, height: 10, rgba };
+        let chart = build_chart(&image, &settings).unwrap();
+        assert_eq!((chart.layout.tiles_x, chart.layout.tiles_y), (3, 2));
+        assert_eq!(chart.palette, [[20, 20, 20], [200, 40, 40], [250, 250, 250]]);
+        assert_eq!(chart.labels, [1, 0, 1, 0, 2, 2]);
+    }
+
+    fn four_paints() -> TileChart {
+        let layout = GridLayout { tiles_x: 4, tiles_y: 1, tile_px: 2, line_px: 1, dpi: 300 };
+        TileChart { layout, palette: vec![[0, 0, 0], [80, 0, 0], [160, 0, 0], [240, 0, 0]], labels: vec![0, 1, 2, 3] }
+    }
+
+    #[test]
+    fn merging_moves_tiles_and_drops_the_paint() {
+        let merged = merge_paints(&four_paints(), &[([80, 0, 0], [240, 0, 0])]);
+        assert_eq!(merged.palette, [[0, 0, 0], [160, 0, 0], [240, 0, 0]]);
+        assert_eq!(merged.labels, [0, 2, 1, 2]);
+    }
+
+    #[test]
+    fn merges_chain_in_order() {
+        let merged = merge_paints(&four_paints(), &[([0, 0, 0], [80, 0, 0]), ([80, 0, 0], [160, 0, 0])]);
+        assert_eq!(merged.palette, [[160, 0, 0], [240, 0, 0]]);
+        assert_eq!(merged.labels, [0, 0, 0, 1]);
+    }
+
+    #[test]
+    fn merges_with_missing_colours_change_nothing() {
+        let missing = [([1, 2, 3], [0, 0, 0]), ([0, 0, 0], [1, 2, 3]), ([80, 0, 0], [80, 0, 0])];
+        assert_eq!(merge_paints(&four_paints(), &missing), four_paints());
+        // Once merged away, a colour can neither take nor give tiles.
+        let gone = [([0, 0, 0], [80, 0, 0]), ([160, 0, 0], [0, 0, 0]), ([0, 0, 0], [240, 0, 0])];
+        assert_eq!(merge_paints(&four_paints(), &gone).labels, [0, 0, 1, 2]);
     }
 
     #[test]

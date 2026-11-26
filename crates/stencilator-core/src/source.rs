@@ -35,6 +35,54 @@ impl Image {
     }
 }
 
+/// The factor by which pixel art has been scaled up: the largest whole number `n` for
+/// which the image is made of `n` by `n` blocks of one colour each. 1 for most pictures.
+///
+/// It is the greatest common divisor of the width, the height and every place where a row
+/// or a column changes colour. Fully transparent pixels count as one colour, whatever
+/// their RGB values, since editors store those differently.
+pub fn pixel_scale(image: &Image) -> u32 {
+    let key = |p: &[u8]| if p[3] == 0 { 0 } else { u32::from_le_bytes([p[0], p[1], p[2], p[3]]) };
+    let row_bytes = image.width as usize * 4;
+    let row = |y: u32| &image.rgba[y as usize * row_bytes..(y as usize + 1) * row_bytes];
+    let mut scale = gcd(image.width, image.height);
+    for y in 0..image.height {
+        let pixels = row(y).as_chunks::<4>().0;
+        for (x, pair) in (1..).zip(pixels.windows(2)) {
+            if scale == 1 {
+                return 1;
+            }
+            if key(&pair[0]) != key(&pair[1]) {
+                scale = gcd(scale, x);
+            }
+        }
+    }
+    for y in 1..image.height {
+        if scale == 1 {
+            return 1;
+        }
+        let (above, here) = (row(y - 1).as_chunks::<4>().0, row(y).as_chunks::<4>().0);
+        if above.iter().zip(here).any(|(a, b)| key(a) != key(b)) {
+            scale = gcd(scale, y);
+        }
+    }
+    scale
+}
+
+/// The picture's own pixel grid: its size, or for pixel art scaled up by a whole factor
+/// (see [`pixel_scale`]), the size it was drawn at.
+pub fn pixel_grid(image: &Image) -> (u32, u32) {
+    let scale = pixel_scale(image).max(1);
+    (image.width / scale, image.height / scale)
+}
+
+fn gcd(mut a: u32, mut b: u32) -> u32 {
+    while b != 0 {
+        (a, b) = (b, a % b);
+    }
+    a
+}
+
 /// Decodes a PNG, JPEG or WebP image.
 ///
 /// # Errors
@@ -125,6 +173,56 @@ mod tests {
         let image = decode(&png(&DynamicImage::ImageRgba8(rgba))).unwrap();
         assert_eq!((image.width, image.height), (2, 1));
         assert_eq!(image.rgba, [1, 2, 3, 4, 250, 251, 252, 0]);
+    }
+
+    /// `cells` (one colour per byte) drawn `scale` times larger.
+    fn scaled(cells: &[&[u8]], scale: u32) -> Image {
+        let colour = |c: u8| match c {
+            b'.' => [0, 0, 0, 0],
+            b'o' => [232, 119, 46, 255],
+            _ => [43, 35, 32, 255],
+        };
+        let (w, h) = (u32::try_from(cells[0].len()).unwrap() * scale, u32::try_from(cells.len()).unwrap() * scale);
+        let mut rgba = Vec::new();
+        for y in 0..h {
+            for x in 0..w {
+                rgba.extend(colour(cells[(y / scale) as usize][(x / scale) as usize]));
+            }
+        }
+        Image { width: w, height: h, rgba }
+    }
+
+    #[test]
+    fn scaled_up_pixel_art_is_found_at_its_own_size() {
+        let art: &[&[u8]] = &[b".ok", b"oko", b"k.."];
+        for scale in [1, 2, 3, 7, 20] {
+            let image = scaled(art, scale);
+            assert_eq!(pixel_scale(&image), scale);
+            assert_eq!(pixel_grid(&image), (3, 3));
+        }
+    }
+
+    #[test]
+    fn one_odd_pixel_makes_every_pixel_a_tile() {
+        let mut image = scaled(&[b"ok", b"ko"], 4);
+        image.rgba[4 * 5] = 1;
+        assert_eq!(pixel_scale(&image), 1);
+        assert_eq!(pixel_grid(&image), (8, 8));
+    }
+
+    #[test]
+    fn transparent_pixels_match_whatever_their_colour() {
+        let mut image = scaled(&[b".o", b"o."], 2);
+        image.rgba[0..4].copy_from_slice(&[255, 0, 0, 0]);
+        assert_eq!(pixel_scale(&image), 2);
+    }
+
+    #[test]
+    fn a_plain_image_is_one_tile() {
+        let image = scaled(&[b"oo", b"oo"], 6);
+        assert_eq!(pixel_grid(&image), (1, 1));
+        let wide = Image { width: 6, height: 4, rgba: vec![9; 6 * 4 * 4] };
+        assert_eq!(pixel_grid(&wide), (3, 2));
     }
 
     #[test]

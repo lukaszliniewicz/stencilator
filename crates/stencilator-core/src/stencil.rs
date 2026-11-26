@@ -57,13 +57,23 @@ pub fn stencil_file(chart: &TileChart, index: u32, thickness_mm: f64) -> Result<
     ))
 }
 
-/// Every colour's stencil, in palette order, as by [`stencil_file`].
+/// The stencil of every colour not in `skip`, in palette order, as by [`stencil_file`].
+/// Skipped colours are those nobody paints, such as the colour of the canvas itself; the
+/// others keep their numbers.
 ///
 /// # Errors
 ///
-/// As [`stencil_triangles`].
-pub fn stencil_files(chart: &TileChart, thickness_mm: f64) -> Result<Vec<(String, Vec<u8>)>, Error> {
-    (0..).zip(&chart.palette).map(|(index, _)| stencil_file(chart, index, thickness_mm)).collect()
+/// [`Error::Stencil`] when every colour is skipped, otherwise as [`stencil_triangles`].
+pub fn stencil_files(chart: &TileChart, thickness_mm: f64, skip: &[Rgb]) -> Result<Vec<(String, Vec<u8>)>, Error> {
+    let files = (0..)
+        .zip(&chart.palette)
+        .filter(|(_, colour)| !skip.contains(colour))
+        .map(|(index, _)| stencil_file(chart, index, thickness_mm))
+        .collect::<Result<Vec<_>, _>>()?;
+    if files.is_empty() {
+        return Err(Error::Stencil("Every colour is skipped, so there are no stencils to make.".to_owned()));
+    }
+    Ok(files)
 }
 
 /// A closed plate mesh with a through-hole for every `true` tile.
@@ -316,6 +326,19 @@ mod tests {
         assert_eq!(stl.len(), 84 + 50 * triangles.len());
         assert!(stl.starts_with(b"stencilator test"));
         assert_eq!(u32::from_le_bytes(stl[80..84].try_into().unwrap()) as usize, triangles.len());
+    }
+
+    #[test]
+    fn skipped_colours_get_no_stencil_and_the_rest_keep_their_numbers() {
+        let layout = layout(3, 1);
+        let chart = TileChart { layout, palette: vec![[0, 0, 0], [128, 0, 0], [255, 255, 255]], labels: vec![0, 1, 2] };
+        let names = |skip: &[Rgb]| -> Vec<String> {
+            stencil_files(&chart, 1.0, skip).unwrap().into_iter().map(|(name, _)| name).collect()
+        };
+        assert_eq!(names(&[]).len(), 3);
+        assert_eq!(names(&[[255, 255, 255], [9, 9, 9]]), ["stencil-01-000000.stl", "stencil-02-800000.stl"]);
+        assert_eq!(names(&[[0, 0, 0]]), ["stencil-02-800000.stl", "stencil-03-ffffff.stl"]);
+        assert!(stencil_files(&chart, 1.0, &chart.palette).is_err());
     }
 
     #[test]

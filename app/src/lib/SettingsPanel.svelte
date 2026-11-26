@@ -21,6 +21,11 @@
       bench.change(key, value);
     };
   const chart = $derived(bench.chart);
+  const source = $derived(bench.source);
+  const SIZINGS = (['pixels', 'canvas'] as const).map((value) => ({
+    value,
+    label: text.settings.sizings[value]
+  }));
   const MODES = (['colour', 'greyscale', 'black-white'] as const).map((value) => ({
     value,
     label: text.settings.modes[value]
@@ -30,19 +35,39 @@
 <div class="panel">
   <section aria-labelledby="canvas-heading">
     <h2 id="canvas-heading" class="group">{text.settings.canvas}</h2>
-    <div class="pair">
-      <NumberField
-        label={text.settings.width}
-        value={s.canvasWidthMm}
-        onchange={set('canvasWidthMm')}
-      />
-      <NumberField
-        label={text.settings.height}
-        value={s.canvasHeightMm}
-        onchange={set('canvasHeightMm')}
-      />
-    </div>
-    <p class="note">{text.settings.canvasNote}</p>
+    <Segmented
+      label={text.settings.sizing}
+      options={SIZINGS}
+      value={s.sizing}
+      stretch
+      onpick={set('sizing')}
+    />
+    {#if s.sizing === 'canvas'}
+      <div class="pair">
+        <NumberField
+          label={text.settings.width}
+          value={s.canvasWidthMm}
+          onchange={set('canvasWidthMm')}
+        />
+        <NumberField
+          label={text.settings.height}
+          value={s.canvasHeightMm}
+          onchange={set('canvasHeightMm')}
+        />
+      </div>
+      <p class="note">{text.settings.canvasNote}</p>
+    {:else}
+      <p class="note">
+        {source
+          ? text.settings.pixelNote(source.pixelsX, source.pixelsY)
+          : text.settings.pixelNoteEmpty}
+      </p>
+    {/if}
+    <ColourField
+      label={text.settings.background}
+      value={s.background}
+      onchange={set('background')}
+    />
   </section>
 
   <section aria-labelledby="grid-heading">
@@ -94,11 +119,6 @@
       />
     </div>
     {#if s.mode === 'black-white'}<p class="note">{text.settings.twoPaints}</p>{/if}
-    <ColourField
-      label={text.settings.background}
-      value={s.background}
-      onchange={set('background')}
-    />
   </section>
 
   <section aria-labelledby="stencils-heading">

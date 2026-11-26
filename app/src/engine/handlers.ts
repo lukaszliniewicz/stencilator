@@ -41,7 +41,15 @@ export function createHandlers(engine: Engine): (request: Request) => Answer {
         chart = undefined;
         source?.free();
         source = next;
-        return { value: { width: next.width, height: next.height }, transfer: [] };
+        return {
+          value: {
+            width: next.width,
+            height: next.height,
+            pixelsX: next.pixelsX,
+            pixelsY: next.pixelsY
+          },
+          transfer: []
+        };
       }
       case 'chart': {
         // Until the new chart exists, no file may come from the old one.
@@ -50,6 +58,7 @@ export function createHandlers(engine: Engine): (request: Request) => Answer {
         const s = request.settings;
         const settings = new engine.Settings();
         try {
+          settings.sizing = s.sizing;
           settings.canvasWidthMm = s.canvasWidthMm;
           settings.canvasHeightMm = s.canvasHeightMm;
           settings.tileMm = s.tileMm;
@@ -58,7 +67,7 @@ export function createHandlers(engine: Engine): (request: Request) => Answer {
           settings.mode = s.mode;
           settings.colours = s.colours;
           settings.background = s.background;
-          chart = openSource().chart(settings);
+          chart = openSource().chart(settings, Uint32Array.from(s.merges));
         } finally {
           settings.free();
         }
@@ -88,7 +97,7 @@ export function createHandlers(engine: Engine): (request: Request) => Answer {
       case 'stencil':
         return file(builtChart().stencil(request.index, request.thicknessMm));
       case 'stencilsZip':
-        return file(builtChart().stencilsZip(request.thicknessMm));
+        return file(builtChart().stencilsZip(request.thicknessMm, Uint32Array.from(request.skip)));
     }
   };
 }

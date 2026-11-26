@@ -1,12 +1,20 @@
 import { describe, expect, it } from 'vitest';
 
-import { equalSettings, sanitise, toChartSettings } from './settings';
+import {
+  equalSettings,
+  guessSizing,
+  isSkipped,
+  sanitise,
+  toChartSettings,
+  toggledStencil
+} from './settings';
 
 describe('settings', () => {
   const defaults = sanitise(undefined);
 
   it('start from the engine defaults', () => {
     expect(defaults).toEqual({
+      sizing: 'canvas',
       canvasWidthMm: 200,
       canvasHeightMm: 200,
       tileMm: 5,
@@ -16,7 +24,10 @@ describe('settings', () => {
       colours: 16,
       background: '#ffffff',
       gridColour: '#000000',
-      thicknessMm: 1.2
+      thicknessMm: 1.2,
+      merges: [],
+      skipped: [],
+      stencilCanvasColour: false
     });
   });
 
@@ -43,6 +54,20 @@ describe('settings', () => {
     expect(sanitise('nonsense')).toEqual(defaults);
   });
 
+  it('keep only well-formed merges and skipped paints', () => {
+    const read = sanitise({
+      sizing: 'pixels',
+      merges: [['#9c3d17', '#e8772e'], ['#9c3d17'], ['#FFFFFF', '#000000'], 'x'],
+      skipped: ['#ffffff', 7, '#abc'],
+      stencilCanvasColour: 'yes'
+    });
+    expect(read.sizing).toBe('pixels');
+    expect(read.merges).toEqual([['#9c3d17', '#e8772e']]);
+    expect(read.skipped).toEqual(['#ffffff']);
+    expect(read.stencilCanvasColour).toBe(false);
+    expect(sanitise({ sizing: 'stretch', merges: {} }).sizing).toBe('canvas');
+  });
+
   it('leave out-of-range values for the engine to explain', () => {
     expect(sanitise({ canvasWidthMm: -5 }).canvasWidthMm).toBe(-5);
   });
@@ -52,6 +77,10 @@ describe('settings', () => {
     expect(equalSettings(defaults, { ...defaults, lineMm: 0.6 })).toBe(false);
     const empty = { ...defaults, tileMm: Number.NaN };
     expect(equalSettings(empty, { ...empty })).toBe(true);
+    const merged = { ...defaults, merges: [['#000000', '#ffffff']] as [string, string][] };
+    expect(equalSettings(merged, { ...merged, merges: [['#000000', '#ffffff']] })).toBe(true);
+    expect(equalSettings(merged, { ...merged, merges: [['#ffffff', '#000000']] })).toBe(false);
+    expect(equalSettings(defaults, { ...defaults, skipped: ['#ffffff'] })).toBe(false);
   });
 
   it('round whole numbers for the engine and pass colours as numbers', () => {
@@ -65,5 +94,44 @@ describe('settings', () => {
     expect(chart.colours).toBe(7);
     expect(chart.background).toBe(0xc02f34);
     expect(chart).not.toHaveProperty('thicknessMm');
+    const merged = toChartSettings({
+      ...defaults,
+      merges: [
+        ['#9c3d17', '#e8772e'],
+        ['#000000', '#ffffff']
+      ]
+    });
+    expect(merged.merges).toEqual([0x9c3d17, 0xe8772e, 0x000000, 0xffffff]);
+  });
+
+  it('take a picture of few pixels for pixel art', () => {
+    const picture = (pixelsX: number, pixelsY: number) => ({
+      width: pixelsX * 20,
+      height: pixelsY * 20,
+      pixelsX,
+      pixelsY
+    });
+    expect(guessSizing(picture(22, 22))).toBe('pixels');
+    expect(guessSizing(picture(128, 64))).toBe('pixels');
+    expect(guessSizing(picture(129, 64))).toBe('canvas');
+  });
+
+  it('leave the canvas colour without a stencil until it is ticked', () => {
+    const white = '#ffffff';
+    const red = '#c02f34';
+    expect(isSkipped(defaults, white)).toBe(true);
+    expect(isSkipped(defaults, red)).toBe(false);
+
+    const ticked = { ...defaults, ...toggledStencil(defaults, white) };
+    expect(isSkipped(ticked, white)).toBe(false);
+    const unticked = { ...ticked, ...toggledStencil(ticked, white) };
+    expect(isSkipped(unticked, white)).toBe(true);
+    expect(unticked.skipped).toEqual([]);
+
+    const noRed = { ...defaults, ...toggledStencil(defaults, red) };
+    expect(noRed.skipped).toEqual([red]);
+    expect(isSkipped({ ...noRed, ...toggledStencil(noRed, red) }, red)).toBe(false);
+    // Another canvas colour, and white is a paint like any other.
+    expect(isSkipped({ ...defaults, background: '#000000' }, white)).toBe(false);
   });
 });

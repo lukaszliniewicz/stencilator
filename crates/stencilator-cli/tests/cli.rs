@@ -105,3 +105,45 @@ fn settings_out_of_range_are_refused_before_reading_the_image() {
     }
     fs::remove_dir_all(&dir).unwrap();
 }
+
+#[test]
+fn pixel_art_gets_one_tile_per_pixel_with_merges_and_skips() {
+    let dir = workspace("pixels");
+    let fox = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/pixel-art/fox.png");
+    let output = Command::new(env!("CARGO_BIN_EXE_stencilator"))
+        .current_dir(&dir)
+        .arg("build")
+        .arg(&fox)
+        .args(["--pixels", "--tile", "10", "--line", "0.8", "--merge", "9c3d17=e8772e", "--skip", "ffffff"])
+        .args(["--stencils", "plates", "--json"])
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    let summary: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(summary["tiles"], serde_json::json!([22, 22]));
+    let palette: Vec<(String, u64, Option<String>)> = summary["palette"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| {
+            (
+                p["colour"].as_str().unwrap().to_owned(),
+                p["tiles"].as_u64().unwrap(),
+                p["stencil"].as_str().map(String::from),
+            )
+        })
+        .collect();
+    assert_eq!(
+        palette,
+        [
+            ("#2b2320".to_owned(), 16, Some("stencil-01-2b2320.stl".to_owned())),
+            ("#e8772e".to_owned(), 210, Some("stencil-02-e8772e.stl".to_owned())),
+            ("#ffffff".to_owned(), 258, None),
+        ]
+    );
+    assert_eq!(names(&dir.join("plates")), ["stencil-01-2b2320.stl", "stencil-02-e8772e.stl"]);
+
+    let (ok, stderr) = stencilator(&dir, &["--pixels", "--canvas", "100x100"]);
+    assert!(!ok && stderr.contains("--canvas"), "{stderr}");
+    fs::remove_dir_all(&dir).unwrap();
+}

@@ -9,7 +9,15 @@ import { save } from './download';
 import { History } from './history';
 import { latest } from './latest';
 import { baseName, chartFileName, stencilFileName, stencilsZipName } from './names';
-import { equalSettings, sanitise, toChartSettings, type Settings } from './settings';
+import {
+  equalSettings,
+  guessSizing,
+  isSkipped,
+  sanitise,
+  toChartSettings,
+  toggledStencil,
+  type Settings
+} from './settings';
 import { readStored, writeStored } from './storage';
 import { text } from './text';
 
@@ -20,7 +28,7 @@ const SETTINGS_KEY = 'stencilator.settings';
 /** Changes closer together than this become one step of undo. */
 const RECORD_AFTER_MS = 400;
 const IMAGE_TYPES = ['image/png', 'image/jpeg', 'image/webp'];
-const EXAMPLE = './examples/lighthouse.png';
+const EXAMPLE = 'fox.png';
 const TYPES: Record<ChartFormat, string> = {
   png: 'image/png',
   jpeg: 'image/jpeg',
@@ -35,6 +43,8 @@ export class Workbench {
   readonly #build = latest((settings: Settings) => this.#engine.chart(toChartSettings(settings)));
   readonly #history: History<Settings>;
   #recordTimer: ReturnType<typeof setTimeout> | undefined;
+  /** A paint to select once the next chart is built, as its palette may move. */
+  #follow: string | undefined;
 
   settings: Settings = $state(sanitise(readStored(SETTINGS_KEY)));
   source: SourceInfo | undefined = $state();
@@ -62,6 +72,11 @@ export class Workbench {
   );
   readonly stencilsPossible = $derived(this.chart !== undefined && this.chart.linePx > 0);
   readonly colours = $derived(paletteHex(this.chart));
+  /** The paints of the chart that get no stencil. */
+  readonly unstencilled = $derived(
+    this.colours.filter((colour) => isSkipped(this.settings, colour))
+  );
+  readonly stencilCount = $derived(this.colours.length - this.unstencilled.length);
 
   constructor() {
     this.#history = new History($state.snapshot(this.settings), equalSettings);
@@ -93,7 +108,10 @@ export class Workbench {
         (outcome) => {
           if (outcome.superseded) return;
           this.chart = outcome.result;
-          this.selected = Math.min(this.selected, outcome.result.counts.length - 1);
+          const followed = this.#follow ? paletteHex(this.chart).indexOf(this.#follow) : -1;
+          this.#follow = undefined;
+          this.selected =
+            followed >= 0 ? followed : Math.min(this.selected, outcome.result.counts.length - 1);
           this.problem = '';
           this.valid = true;
           this.current = true;
@@ -124,6 +142,24 @@ export class Workbench {
     this.screen = screen;
   };
 
+  /** Gives every tile of one paint to another, which stays selected. */
+  merge = (from: string, to: string): void => {
+    this.#follow = to;
+    this.settings.merges = [...this.settings.merges, [from, to]];
+  };
+
+  /** Takes back one merge, selecting the paint it brings back. */
+  unmerge = (index: number): void => {
+    this.#follow = this.settings.merges[index]?.[0];
+    this.settings.merges = this.settings.merges.filter((_, i) => i !== index);
+  };
+
+  toggleStencil = (colour: string): void => {
+    const next = toggledStencil(this.settings, colour);
+    this.settings.skipped = next.skipped;
+    this.settings.stencilCanvasColour = next.stencilCanvasColour;
+  };
+
   open = async (file: File): Promise<void> => {
     if (file.type !== '' && !IMAGE_TYPES.includes(file.type)) {
       this.problem = text.errors.notAPicture;
@@ -139,6 +175,12 @@ export class Workbench {
       this.valid = false;
       this.selected = 0;
       this.problem = '';
+      // Merges and stencils belong to a picture's paints; the sizing is a guess, and
+      // undoing takes it back.
+      this.settings.sizing = guessSizing(source);
+      this.settings.merges = [];
+      this.settings.skipped = [];
+      this.settings.stencilCanvasColour = false;
       this.source = source;
     } catch (error) {
       this.problem = message(error);
@@ -147,10 +189,10 @@ export class Workbench {
 
   openExample = async (): Promise<void> => {
     try {
-      const response = await fetch(EXAMPLE);
+      const response = await fetch(`./examples/${EXAMPLE}`);
       if (!response.ok) throw new Error(response.statusText);
       const blob = await response.blob();
-      await this.open(new File([blob], 'lighthouse.png', { type: 'image/png' }));
+      await this.open(new File([blob], EXAMPLE, { type: 'image/png' }));
     } catch {
       this.problem = text.errors.example;
     }
@@ -187,8 +229,9 @@ export class Workbench {
 
   saveStencils = (): Promise<void> => {
     const thickness = this.settings.thicknessMm;
+    const skip = this.unstencilled.map(hexToNumber);
     return this.#save(stencilsZipName(this.base), 'application/zip', () =>
-      this.#engine.stencilsZip(thickness)
+      this.#engine.stencilsZip(thickness, skip)
     );
   };
 

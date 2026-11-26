@@ -1,7 +1,7 @@
 //! `stencilator`: the command line.
 //!
-//! `stencilator build` fits a tile grid into a canvas, reduces the colours, and writes the
-//! chart and one stencil per colour. The engine computes; this program reads the image
+//! `stencilator build` lays a tile grid over an image, fitted to a canvas or one tile per
+//! pixel, reduces the colours, and writes the chart and one stencil per colour. The engine computes; this program reads the image
 //! and writes the files, all or nothing.
 
 mod files;
@@ -11,7 +11,7 @@ use std::process::ExitCode;
 
 use clap::{Args, Parser, Subcommand};
 use serde_json::json;
-use stencilator_core::chart::{ChartSettings, TileChart, build_chart};
+use stencilator_core::chart::{ChartSettings, Sizing, TileChart, build_chart, merge_paints};
 use stencilator_core::colour::Rgb;
 use stencilator_core::export::{ChartFormat, encode_chart};
 use stencilator_core::quantise::ColourMode;
@@ -27,7 +27,7 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Fit a tile grid to an image, reduce its colours, and write the chart and stencils.
+    /// Lay a tile grid over an image, reduce its colours, and write the chart and stencils.
     ///
     /// Without --chart, --tiles or --stencils it only prints what it would make.
     Build(Build),
@@ -41,6 +41,10 @@ struct Build {
     /// Canvas width and height in millimetres; the grid never exceeds it.
     #[arg(long, value_name = "WxH", default_value = "200x200", value_parser = parse_size)]
     canvas: (f64, f64),
+    /// One tile per pixel, for pixel art, instead of fitting a canvas; the size follows
+    /// from --tile and --line. Art scaled up by a whole factor counts at its drawn size.
+    #[arg(long, conflicts_with = "canvas")]
+    pixels: bool,
     /// Side of a tile in millimetres.
     #[arg(long, value_name = "MM", default_value_t = 5.0)]
     tile: f64,
@@ -65,6 +69,13 @@ struct Build {
     /// Seed for the colour clustering; the same seed gives the same palette.
     #[arg(long, default_value_t = 0)]
     seed: u64,
+    /// Merge one paint into another once the colours are reduced; repeat for more, in
+    /// order. Colours not in the palette are ignored.
+    #[arg(long, value_name = "RRGGBB=RRGGBB", value_parser = parse_merge)]
+    merge: Vec<(Rgb, Rgb)>,
+    /// Make no stencil for this colour, such as the canvas's own; repeat for more.
+    #[arg(long, value_name = "RRGGBB", value_parser = parse_colour)]
+    skip: Vec<Rgb>,
 
     /// Write the chart with grid lines: .png, .jpg or .pdf.
     #[arg(long, value_name = "FILE")]
@@ -100,6 +111,11 @@ fn parse_colour(text: &str) -> Result<Rgb, String> {
     Ok([channel(0)?, channel(2)?, channel(4)?])
 }
 
+fn parse_merge(text: &str) -> Result<(Rgb, Rgb), String> {
+    let (from, to) = text.split_once('=').ok_or("expected FROM=TO, such as 9c3d17=e8772e")?;
+    Ok((parse_colour(from)?, parse_colour(to)?))
+}
+
 fn parse_mode(text: &str) -> Result<ColourMode, String> {
     text.parse().map_err(|e: stencilator_core::Error| e.to_string())
 }
@@ -114,6 +130,7 @@ fn is_zip(path: &Path) -> bool {
 
 fn build(args: &Build) -> Result<(), String> {
     let settings = ChartSettings {
+        sizing: if args.pixels { Sizing::Pixels } else { Sizing::Canvas },
         canvas_mm: args.canvas,
         tile_mm: args.tile,
         line_mm: args.line,
@@ -130,7 +147,7 @@ fn build(args: &Build) -> Result<(), String> {
     }
     let bytes = std::fs::read(&args.image).map_err(|e| format!("{}: {e}", args.image.display()))?;
     let image = source::decode(&bytes).map_err(|e| e.to_string())?;
-    let chart = build_chart(&image, &settings).map_err(|e| e.to_string())?;
+    let chart = merge_paints(&build_chart(&image, &settings).map_err(|e| e.to_string())?, &args.merge);
 
     let mut destinations: Vec<(String, PathBuf)> = Vec::new();
     for (flag, path) in [("--chart", &args.chart), ("--tiles", &args.tiles)] {
@@ -142,7 +159,7 @@ fn build(args: &Build) -> Result<(), String> {
         Some(path) if is_zip(path) => destinations.push(("--stencils".to_owned(), path.clone())),
         Some(dir) => {
             let count = chart.palette.len();
-            for (index, &colour) in (0..).zip(&chart.palette) {
+            for (index, &colour) in (0..).zip(&chart.palette).filter(|(_, c)| !args.skip.contains(c)) {
                 let name = stencil_filename(index, count, colour);
                 destinations.push((format!("the stencil for {}", hex(colour)), dir.join(name)));
             }
@@ -171,7 +188,7 @@ fn build(args: &Build) -> Result<(), String> {
                 chart.layout.line_mm()
             ));
         }
-        let stencils = stencil_files(&chart, args.thickness).map_err(|e| e.to_string())?;
+        let stencils = stencil_files(&chart, args.thickness, &args.skip).map_err(|e| e.to_string())?;
         if is_zip(path) {
             outputs.push((path.clone(), zip::zip(&stencils).map_err(|e| e.to_string())?));
         } else {
@@ -186,17 +203,26 @@ fn build(args: &Build) -> Result<(), String> {
 
     let written: Vec<&Path> = outputs.iter().map(|(p, _)| p.as_path()).collect();
     if args.json {
-        println!("{}", serde_json::to_string_pretty(&summary_json(&chart, &written, &warnings)).unwrap_or_default());
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&summary_json(&chart, &args.skip, &written, &warnings)).unwrap_or_default()
+        );
     } else {
-        print_summary(&chart, &written, &warnings);
+        print_summary(&chart, &args.skip, &written, &warnings);
     }
     Ok(())
 }
 
-fn summary_json(chart: &TileChart, written: &[&Path], warnings: &[String]) -> serde_json::Value {
+fn summary_json(chart: &TileChart, skip: &[Rgb], written: &[&Path], warnings: &[String]) -> serde_json::Value {
     let g = &chart.layout;
-    let palette: Vec<_> =
-        chart.palette.iter().zip(chart.tile_counts()).map(|(&c, n)| json!({ "colour": hex(c), "tiles": n })).collect();
+    let count = chart.palette.len();
+    let palette: Vec<_> = (0..)
+        .zip(chart.palette.iter().zip(chart.tile_counts()))
+        .map(|(index, (&c, n))| {
+            let stencil = (!skip.contains(&c)).then(|| stencil_filename(index, count, c));
+            json!({ "colour": hex(c), "tiles": n, "stencil": stencil })
+        })
+        .collect();
     json!({
         "tiles": [g.tiles_x, g.tiles_y],
         "size_mm": [g.width_mm(), g.height_mm()],
@@ -210,7 +236,7 @@ fn summary_json(chart: &TileChart, written: &[&Path], warnings: &[String]) -> se
     })
 }
 
-fn print_summary(chart: &TileChart, written: &[&Path], warnings: &[String]) {
+fn print_summary(chart: &TileChart, skip: &[Rgb], written: &[&Path], warnings: &[String]) {
     let g = &chart.layout;
     println!("grid     {} x {} tiles ({})", g.tiles_x, g.tiles_y, g.tile_count());
     println!(
@@ -224,7 +250,8 @@ fn print_summary(chart: &TileChart, written: &[&Path], warnings: &[String]) {
     println!("tile     {:.3} mm, line {:.3} mm", g.tile_mm(), g.line_mm());
     println!("colours  {}", chart.palette.len());
     for (i, (&colour, count)) in chart.palette.iter().zip(chart.tile_counts()).enumerate() {
-        println!("  {:>2}  {}  {count} tiles", i + 1, hex(colour));
+        let note = if skip.contains(&colour) { ", no stencil" } else { "" };
+        println!("  {:>2}  {}  {count} tiles{note}", i + 1, hex(colour));
     }
     for path in written {
         println!("wrote    {}", path.display());
@@ -258,6 +285,8 @@ mod tests {
         assert_eq!(parse_size("297 × 210").unwrap(), (297.0, 210.0));
         assert!(parse_size("300").is_err());
         assert_eq!(parse_colour("#FF8800").unwrap(), [255, 136, 0]);
+        assert_eq!(parse_merge("9c3d17=#E8772E").unwrap(), ([156, 61, 23], [232, 119, 46]));
+        assert!(parse_merge("9c3d17").is_err());
         assert!(parse_colour("ff88").is_err());
         assert_eq!(parse_mode("black-white").unwrap(), ColourMode::BlackWhite);
     }
