@@ -33,6 +33,13 @@ pub const FORMAT: u32 = 1;
 /// The extension of project files, without the dot.
 pub const EXTENSION: &str = "stencilator";
 
+/// The font every shell builds in, for text when a project names no other. Projects name
+/// it without embedding it.
+pub const BUILT_IN_FONT: &str = "NotoSans-Bold.ttf";
+
+/// The size of typed text, in millimetres, unless chosen otherwise.
+pub const TEXT_MM: f64 = 30.0;
+
 /// A project.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Project {
@@ -110,6 +117,13 @@ pub enum Source {
         /// The colour of the letters.
         colour: Colour,
     },
+}
+
+impl Source {
+    /// Typed text at the usual size, in black.
+    pub fn text(text: impl Into<String>) -> Source {
+        Source::Text { text: text.into(), font_mm: TEXT_MM, colour: Colour([0, 0, 0]) }
+    }
 }
 
 /// A font.
@@ -366,6 +380,27 @@ impl Default for Stencils {
     }
 }
 
+/// Everything in a project but the artwork and its fonts: what a shell's controls change.
+/// As in a project file, fields left out take the engine's defaults.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Settings {
+    /// Which kind of stencils the project makes.
+    #[serde(default)]
+    pub mode: Mode,
+    /// How colours become paints, in both modes.
+    #[serde(default)]
+    pub colours: Colours,
+    /// Tile mode.
+    #[serde(default)]
+    pub tiles: Tiles,
+    /// Free-form mode.
+    #[serde(default)]
+    pub freeform: Freeform,
+    /// Plates and the choices made about paints, in both modes.
+    #[serde(default)]
+    pub stencils: Stencils,
+}
+
 impl Project {
     /// A project of `source` with every setting at the engine's default.
     pub fn new(source: Source) -> Project {
@@ -488,13 +523,114 @@ impl Project {
         skip
     }
 
+    /// The settings, apart from the artwork and its fonts.
+    pub fn settings(&self) -> Settings {
+        Settings {
+            mode: self.mode,
+            colours: self.colours,
+            tiles: self.tiles,
+            freeform: self.freeform,
+            stencils: self.stencils.clone(),
+        }
+    }
+
+    fn set_settings(&mut self, settings: Settings) {
+        let Settings { mode, colours, tiles, freeform, stencils } = settings;
+        (self.mode, self.colours, self.tiles, self.freeform, self.stencils) =
+            (mode, colours, tiles, freeform, stencils);
+    }
+
+    /// The settings as JSON, in the form [`Project::set_settings_json`] takes.
+    pub fn settings_json(&self) -> Vec<u8> {
+        serde_json::to_vec(&self.settings()).unwrap_or_default()
+    }
+
+    /// Takes settings given as JSON, in the form of a project file without the source and
+    /// the fonts. Fields left out take the engine's defaults, as when a project is read.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Project`] when the JSON cannot be read, or the error of the first setting
+    /// out of range; the project is then left as it was.
+    pub fn set_settings_json(&mut self, json: &[u8]) -> Result<(), Error> {
+        let damaged = |e: serde_json::Error| Error::Project(format!("The settings could not be read: {e}."));
+        let value: serde_json::Value = serde_json::from_slice(json).map_err(damaged)?;
+        let given = Given::of(&value);
+        let settings: Settings = serde_json::from_value(value).map_err(damaged)?;
+        let previous = self.settings();
+        self.set_settings(settings);
+        self.drawn_defaults(given);
+        self.check().inspect_err(|_| self.set_settings(previous))
+    }
+
+    /// A drawing or text is cut in free-form mode at its own size unless the JSON the
+    /// settings came from says otherwise.
+    fn drawn_defaults(&mut self, given: Given) {
+        if self.is_drawn() {
+            if !given.mode {
+                self.mode = Mode::Freeform;
+            }
+            if !given.size {
+                self.freeform.size = ArtworkSize::Natural;
+            }
+        }
+    }
+
+    /// Checks every setting of both modes.
+    fn check(&self) -> Result<(), Error> {
+        self.chart_settings().check()?;
+        self.artwork_settings().check()?;
+        self.plate_settings().check()
+    }
+
+    /// The font files the artwork is set in, in order: each embedded font, and `built_in`
+    /// for the built-in one, which also stands in when the project names none.
+    ///
+    /// # Errors
+    ///
+    /// [`Error::Project`] when the project names a font it does not embed and that is not
+    /// built in.
+    pub fn font_data<'a>(&'a self, built_in: &'a [u8]) -> Result<Vec<&'a [u8]>, Error> {
+        if self.fonts.is_empty() {
+            return Ok(vec![built_in]);
+        }
+        self.fonts
+            .iter()
+            .map(|font| match &font.data {
+                Some(data) => Ok(data.as_slice()),
+                None if font.name == BUILT_IN_FONT => Ok(built_in),
+                None => Err(Error::Project(format!(
+                    "The project uses the font {}, which it does not include and which is not built in.",
+                    font.name
+                ))),
+            })
+            .collect()
+    }
+
     /// The project as a file: indented JSON, stamped with this format and this version of
-    /// Stencilator. The same project always gives the same bytes.
+    /// Stencilator. A drawing or text that names no font names the built-in one, so the
+    /// file says which font it was cut in. The same project always gives the same bytes.
     pub fn to_json(&self) -> Vec<u8> {
-        let stamped = Project { stencilator: FORMAT, written_by: VERSION.to_owned(), ..self.clone() };
+        let mut stamped = Project { stencilator: FORMAT, written_by: VERSION.to_owned(), ..self.clone() };
+        if stamped.is_drawn() && stamped.fonts.is_empty() {
+            stamped.fonts.push(Font { name: BUILT_IN_FONT.to_owned(), data: None });
+        }
         let mut out = serde_json::to_vec_pretty(&stamped).unwrap_or_default();
         out.push(b'\n');
         out
+    }
+}
+
+/// Which settings whose defaults depend on the source a project or its settings give.
+#[derive(Clone, Copy)]
+struct Given {
+    mode: bool,
+    size: bool,
+}
+
+impl Given {
+    fn of(value: &serde_json::Value) -> Given {
+        Given { mode: value.get("mode").is_some(), size: value.pointer("/freeform/size").is_some() }
     }
 }
 
@@ -517,19 +653,10 @@ pub fn read_project(bytes: &[u8]) -> Result<Project, Error> {
         }
         _ => return Err(Error::Project("This is not a Stencilator project.".to_owned())),
     }
-    let (has_mode, has_size) = (value.get("mode").is_some(), value.pointer("/freeform/size").is_some());
+    let given = Given::of(&value);
     let mut project: Project = serde_json::from_value(value).map_err(damaged)?;
-    if project.is_drawn() {
-        if !has_mode {
-            project.mode = Mode::Freeform;
-        }
-        if !has_size {
-            project.freeform.size = ArtworkSize::Natural;
-        }
-    }
-    project.chart_settings().check()?;
-    project.artwork_settings().check()?;
-    project.plate_settings().check()?;
+    project.drawn_defaults(given);
+    project.check()?;
     Ok(project)
 }
 
@@ -648,6 +775,69 @@ mod tests {
         assert!(text.contains(r#""within_mm": ["#), "{text}");
         assert!(text.contains(r#""mode": "greyscale""#), "{text}");
         assert_eq!(read_project(&file).unwrap(), project);
+    }
+
+    #[test]
+    fn settings_travel_as_json_without_the_artwork() {
+        let mut project = Project::new(Source::Picture { name: "fox.png".to_owned(), data: vec![1, 2, 3] });
+        let json = br##"{"mode": "freeform", "colours": {"count": 4, "background": "#102030"},
+            "freeform": {"size": {"height_mm": 80}, "cell_mm": 0.2},
+            "stencils": {"merges": [["#9c3d17", "#e8772e"]], "stencil_canvas_colour": true}}"##;
+        project.set_settings_json(json).unwrap();
+        assert_eq!(project.mode, Mode::Freeform);
+        assert_eq!(project.artwork_settings().size, Size::Height(80.0));
+        assert_eq!((project.colours.count, project.colours.background), (4, Colour([16, 32, 48])));
+        assert_eq!(project.tiles, Tiles::default());
+        assert_eq!(project.stencil_skip(), Vec::<Rgb>::new());
+        assert_eq!(project.source, Source::Picture { name: "fox.png".to_owned(), data: vec![1, 2, 3] });
+
+        // What comes out goes back in unchanged, and holds no artwork.
+        let out = project.settings_json();
+        assert!(!String::from_utf8(out.clone()).unwrap().contains("source"));
+        let mut again = Project::new(Source::Picture { name: "fox.png".to_owned(), data: vec![1, 2, 3] });
+        again.set_settings_json(&out).unwrap();
+        assert_eq!(again, Project { written_by: project.written_by.clone(), ..project.clone() });
+
+        // A setting out of range changes nothing.
+        let before = project.clone();
+        let error = project.set_settings_json(br#"{"freeform": {"cell_mm": 3}}"#).unwrap_err();
+        assert_eq!(error.to_string(), "The cell size must be between 0.05 and 0.5 mm.");
+        assert_eq!(project, before);
+        let error = project.set_settings_json(br#"{"mode": "zigzag"}"#).unwrap_err().to_string();
+        assert!(error.starts_with("The settings could not be read: unknown variant"), "{error}");
+
+        // Text is cut in free-form mode at its own size unless the settings say otherwise.
+        let mut text = Project::new(Source::text("Hi"));
+        text.set_settings_json(b"{}").unwrap();
+        assert_eq!((text.mode, text.freeform.size), (Mode::Freeform, ArtworkSize::Natural));
+        text.set_settings_json(br#"{"mode": "tiles", "freeform": {"size": {"width_mm": 50}}}"#).unwrap();
+        assert_eq!((text.mode, text.freeform.size), (Mode::Tiles, ArtworkSize::WidthMm(50.0)));
+    }
+
+    #[test]
+    fn fonts_come_from_the_project_or_are_built_in() {
+        let built_in: &[u8] = b"built in";
+        let mut project = Project::new(Source::text("Hi"));
+        assert_eq!(project.source, Source::Text { text: "Hi".to_owned(), font_mm: TEXT_MM, colour: Colour([0, 0, 0]) });
+        assert_eq!(project.font_data(built_in).unwrap(), [built_in]);
+        // Saved, the project names the font it was cut in.
+        let saved = read_project(&project.to_json()).unwrap();
+        assert_eq!(saved.fonts, [Font { name: BUILT_IN_FONT.to_owned(), data: None }]);
+        assert_eq!(saved.font_data(built_in).unwrap(), [built_in]);
+
+        project.fonts = vec![
+            Font { name: "Mine.otf".to_owned(), data: Some(b"mine".to_vec()) },
+            Font { name: BUILT_IN_FONT.to_owned(), data: None },
+        ];
+        assert_eq!(project.font_data(built_in).unwrap(), [b"mine".as_slice(), built_in]);
+        project.fonts.push(Font { name: "Elsewhere.ttf".to_owned(), data: None });
+        assert_eq!(
+            project.font_data(built_in).unwrap_err().to_string(),
+            "The project uses the font Elsewhere.ttf, which it does not include and which is not built in."
+        );
+        // A picture needs no font, and names none.
+        let picture = Project::new(Source::Picture { name: String::new(), data: Vec::new() });
+        assert_eq!(read_project(&picture.to_json()).unwrap().fonts, []);
     }
 
     #[test]

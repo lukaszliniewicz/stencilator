@@ -127,8 +127,8 @@ dependencies. It needs the `wasm32-unknown-unknown` target, `cargo-deny` and
 The engine lives in `crates/stencilator-core`. It only computes and never touches files,
 the network or the clock, which is what lets the same code run natively and in a browser
 with identical results. `crates/stencilator-cli` is the command and
-`crates/stencilator-wasm` the browser build, and `make parity` checks that the two write
-the same bytes. `fixtures/` holds reference results, computed independently with NumPy,
+`crates/stencilator-wasm` the browser build; `make parity` checks that the two write the
+same bytes, and `make timing` how long the browser build takes over free-form work. `fixtures/` holds reference results, computed independently with NumPy,
 Pillow, trimesh and lib3mf, that the tests compare against, and `fonts/` the fonts built
 in. `spikes/` holds early experiments with SVG rendering, outline
 tracing, 3D meshing and MCP that later work will turn into real code.

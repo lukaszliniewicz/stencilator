@@ -166,13 +166,6 @@ pub(crate) fn fits_bed(size_mm: (f64, f64), bed_mm: [f64; 2]) -> bool {
     (w <= bed_mm[0] && h <= bed_mm[1]) || (w <= bed_mm[1] && h <= bed_mm[0])
 }
 
-/// The project as saved, in its mode.
-pub(crate) fn project_file(project: &Project) -> Vec<u8> {
-    let mut saved = project.clone();
-    sources::name_default_font(&mut saved);
-    saved.to_json()
-}
-
 fn main() -> ExitCode {
     let cli = Cli::parse();
     let result = match &cli.command {

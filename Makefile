@@ -3,7 +3,7 @@
 TARGET_DIR ?= $(or $(CARGO_TARGET_DIR),target)
 WASM_CRATES := -p stencilator-core -p stencilator-wasm -p phase0 -p phase0-wasm
 
-.PHONY: check fmt lint test deny unused fix wasm parity spike-wasm
+.PHONY: check fmt lint test deny unused fix wasm parity timing spike-wasm
 
 check: fmt lint test deny unused
 
@@ -40,6 +40,10 @@ wasm:
 parity: wasm
 	cargo build -p stencilator-cli --locked
 	node crates/stencilator-wasm/parity.mjs $(WASM_PKG) $(TARGET_DIR)/debug/stencilator .
+
+# How long the browser build takes over free-form work.
+timing: wasm
+	node crates/stencilator-wasm/timing.mjs $(WASM_PKG) .
 
 # Spike 1: the browser build, its size, and the comparison with native.
 # Needs wasm-bindgen-cli 0.2.130, binaryen (wasm-opt), brotli and Node.

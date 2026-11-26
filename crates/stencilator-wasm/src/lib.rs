@@ -1,9 +1,12 @@
 //! Browser build of the Stencilator engine, called from the app's Web Worker.
 //!
-//! The worker decodes an image once into a [`Source`], builds a [`Chart`] from it for
-//! each change of settings, and asks the chart for files. Files come back as bytes, and
-//! errors as JavaScript `Error`s carrying the engine's message. Objects made here live in
-//! WebAssembly memory until JavaScript calls `free()` on them.
+//! In tile mode the worker decodes an image once into a [`Source`], builds a [`Chart`]
+//! from it for each change of settings, and asks the chart for files. Free-form mode and
+//! projects are in [`freeform`]. Files come back as bytes, and errors as JavaScript
+//! `Error`s carrying the engine's message. Objects made here live in WebAssembly memory
+//! until JavaScript calls `free()` on them.
+
+pub mod freeform;
 
 use stencilator_core::chart::{ChartSettings, Sizing as CoreSizing, TileChart, build_chart, merge_paints};
 use stencilator_core::colour::Rgb;
@@ -28,12 +31,12 @@ pub fn recommended_min_web_mm() -> f64 {
     RECOMMENDED_MIN_WEB_MM
 }
 
-fn error(e: &stencilator_core::Error) -> JsError {
+pub(crate) fn error(e: &stencilator_core::Error) -> JsError {
     JsError::new(e.message())
 }
 
 /// A colour as `0xRRGGBB`, the form JavaScript colour inputs convert to most easily.
-fn rgb(hex: u32) -> Rgb {
+pub(crate) fn rgb(hex: u32) -> Rgb {
     let [_, r, g, b] = hex.to_be_bytes();
     [r, g, b]
 }

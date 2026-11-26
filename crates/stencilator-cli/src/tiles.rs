@@ -13,9 +13,7 @@ use stencilator_core::stencil::{RECOMMENDED_MIN_WEB_MM, stencil_filename, stenci
 use stencilator_core::{source, zip};
 
 use crate::sources::Input;
-use crate::{
-    ColourArgs, StencilArgs, files, fits_bed, hex, is_zip, parse_colour, parse_size, project_file, stencil_destinations,
-};
+use crate::{ColourArgs, StencilArgs, files, fits_bed, hex, is_zip, parse_colour, parse_size, stencil_destinations};
 
 #[derive(Args)]
 pub(crate) struct TilesArgs {
@@ -142,7 +140,7 @@ pub(crate) fn run(args: &TilesArgs) -> Result<(), String> {
         }
     }
     if let Some(path) = &args.save {
-        outputs.push((path.clone(), project_file(&project)));
+        outputs.push((path.clone(), project.to_json()));
     }
     let mut created = Vec::new();
     if let Some(target) = &args.stencils {

@@ -1,6 +1,7 @@
-// Runs the browser build under Node and the command line on the reference charts and a
-// pixel-art case with merged and skipped paints, and checks that every file they write
-// is identical, byte for byte.
+// Runs the browser build under Node and the command line on the same work, and checks
+// that every file they write is identical, byte for byte: tile charts and stencils for
+// the reference charts and a pixel-art case with merged and skipped paints, and free-form
+// plates, 3MF files, reports and projects for an SVG drawing, typed text and a picture.
 // Usage: node parity.mjs <wasm-pkg-dir> <stencilator-binary> <repo-root>
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
@@ -97,6 +98,93 @@ for (const [n, fixture] of cases.entries()) {
   chart.free();
   source.free();
   settings.free();
+}
+
+// Free-form: each case makes a project in the browser build and the same with the
+// command line's options.
+const FONT = readFileSync(join(root, "fonts/NotoSans-Bold.ttf"));
+const FOX = readFileSync(join(root, "fixtures/pixel-art/fox.png"));
+const freeform = [
+  {
+    name: "badge drawing",
+    project: () => engine.Project.svg("badge.svg", readFileSync(join(root, "fixtures/svg/badge.svg"))),
+    args: [join(root, "fixtures/svg/badge.svg")],
+  },
+  {
+    name: "two lines of text",
+    project: () => {
+      const project = engine.Project.text("");
+      project.setText("PAINT\nCLUB", 20, 0x1d2f5c);
+      return project;
+    },
+    args: ["--text", "PAINT", "--text", "CLUB", "--font-size", "20", "--text-colour", "1d2f5c"],
+  },
+  {
+    name: "fox picture, merged",
+    project: () => engine.Project.picture("fox.png", FOX),
+    // Labelled once without the merge and once with it, so that the second labelling
+    // comes from the cells the first one left.
+    before: { mode: "freeform", freeform: { size: { width_mm: 110 }, cell_mm: 0.25 } },
+    settings: {
+      mode: "freeform",
+      freeform: { size: { width_mm: 110 }, cell_mm: 0.25 },
+      stencils: { merges: [["#9c3d17", "#e8772e"]], skipped: ["#ffffff"], stencil_canvas_colour: true },
+    },
+    args: [
+      join(root, "fixtures/pixel-art/fox.png"),
+      "--width", "110", "--cell", "0.25", "--merge", "9c3d17=e8772e", "--skip", "ffffff", "--stencil-canvas-colour",
+    ],
+  },
+];
+
+for (const [n, fixture] of freeform.entries()) {
+  const project = fixture.project();
+  if (fixture.before) project.setSettings(JSON.stringify(fixture.before));
+  const artwork = new engine.Artwork(project, FONT);
+  if (fixture.before) {
+    artwork.labels(project).free();
+    project.setSettings(JSON.stringify(fixture.settings));
+  }
+  const labels = artwork.labels(project);
+  const plates = labels.plates(project);
+  const names = plates.names();
+  const browser = {
+    "plates.3mf": plates.threeMf(project),
+    "plates.zip": plates.zip(project),
+    "project.stencilator": project.file(),
+    [`plates/${names[0]}`]: plates.stl(0, project),
+    [`plates/${names.at(-1)}`]: plates.stl(names.length - 1, project),
+  };
+
+  const dir = join(work, `freeform-${n}`);
+  mkdirSync(dir);
+  // Its warnings are the report's, compared below; a failure still shows them.
+  const run = (extra) => execFileSync(cli, ["freeform", ...fixture.args, ...extra], { stdio: ["ignore", "pipe", "pipe"] });
+  const report = JSON.parse(run([
+    "--3mf", join(dir, "plates.3mf"), "--stencils", join(dir, "plates.zip"),
+    "--save", join(dir, "project.stencilator"), "--json",
+  ]));
+  run(["--stencils", join(dir, "plates")]);
+
+  // The same paints and plates, and the same report.
+  const palette = [...labels.palette()];
+  const counts = [...labels.cellCounts()];
+  const paints = report.palette.map((p) => [p.colour, p.cells]);
+  const own = counts.map((cells, i) => [`#${hex(palette.slice(3 * i, 3 * i + 3))}`, cells]);
+  const reports = JSON.stringify(JSON.parse(plates.report())) === JSON.stringify(report.plates);
+  const opened = engine.Project.open(readFileSync(join(dir, "project.stencilator")));
+  browser["project.stencilator, opened and saved"] = opened.file();
+  for (const [what, same] of [["paints", JSON.stringify(paints) === JSON.stringify(own)], ["report", reports]]) {
+    if (!same) failures += 1;
+    console.log(`${same ? "same" : "DIFFERENT"}  ${fixture.name.padEnd(28)} ${what}`);
+  }
+  for (const [name, bytes] of Object.entries(browser)) {
+    const native = readFileSync(join(dir, name.split(",")[0]));
+    const same = Buffer.compare(Buffer.from(bytes), native) === 0;
+    if (!same) failures += 1;
+    console.log(`${same ? "same" : "DIFFERENT"}  ${fixture.name.padEnd(28)} ${name.padEnd(48)} ${digest(native)}`);
+  }
+  for (const object of [opened, plates, labels, artwork, project]) object.free();
 }
 
 rmSync(work, { recursive: true, force: true });

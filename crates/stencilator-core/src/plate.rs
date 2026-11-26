@@ -12,6 +12,8 @@
 
 use std::ops::RangeInclusive;
 
+use serde::{Serialize, Serializer};
+
 use crate::Error;
 use crate::artwork::LabelMap;
 use crate::colour::Rgb;
@@ -115,37 +117,49 @@ pub struct Plate {
 
 /// A place on a plate: the rectangle around it, in millimetres from the plate's
 /// bottom-left corner, and its area.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
 pub struct Spot {
     /// Left edge.
+    #[serde(serialize_with = "thousandths")]
     pub x_mm: f64,
     /// Bottom edge.
+    #[serde(serialize_with = "thousandths")]
     pub y_mm: f64,
     /// Width.
+    #[serde(serialize_with = "thousandths")]
     pub width_mm: f64,
     /// Height.
+    #[serde(serialize_with = "thousandths")]
     pub height_mm: f64,
     /// Area of the part itself.
+    #[serde(serialize_with = "thousandths")]
     pub area_mm2: f64,
 }
 
 /// What may not print or paint well on one plate. Warnings only: the plate is made anyway.
-#[derive(Debug, Clone, PartialEq)]
+///
+/// As JSON, lengths and areas are rounded to thousandths and the colour is `#rrggbb`.
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct PlateReport {
     /// The paint's place in the palette, from 0.
     pub paint: usize,
     /// The paint's colour.
+    #[serde(serialize_with = "hex")]
     pub colour: Rgb,
     /// Width of the plate.
+    #[serde(serialize_with = "thousandths")]
     pub width_mm: f64,
     /// Height of the plate.
+    #[serde(serialize_with = "thousandths")]
     pub height_mm: f64,
     /// Separate openings.
     pub openings: usize,
     /// Area of the paint's cells.
+    #[serde(serialize_with = "thousandths")]
     pub paint_mm2: f64,
     /// Area of the traced openings. Far below the cells' area when much of the paint is in
     /// detail finer than tracing keeps.
+    #[serde(serialize_with = "thousandths")]
     pub opening_mm2: f64,
     /// Pieces of plate cut off from the rim, which fall out unless something holds them.
     pub islands: Vec<Spot>,
@@ -157,6 +171,35 @@ pub struct PlateReport {
     pub narrow_openings: Vec<Spot>,
     /// Whether the plate fits the bed, turned if need be.
     pub fits_bed: bool,
+}
+
+/// A report with its plate's file name, as the command line prints it and the app reads it.
+#[derive(Serialize)]
+struct Summary<'a> {
+    stencil: String,
+    #[serde(flatten)]
+    report: &'a PlateReport,
+}
+
+/// The reports of `plates` as a JSON array, each with its plate's file name under
+/// `stencil`: one form for the command line's `--json` and for the app.
+pub fn reports_json(plates: &[Plate], reports: &[PlateReport]) -> serde_json::Value {
+    let summaries: Vec<Summary> =
+        plates.iter().zip(reports).map(|(plate, report)| Summary { stencil: plate.file_name(), report }).collect();
+    serde_json::to_value(summaries).unwrap_or_default()
+}
+
+/// Lengths and areas to the thousandth; finer is noise from floating point.
+#[allow(clippy::trivially_copy_pass_by_ref, reason = "serde passes fields by reference")]
+fn thousandths<S: Serializer>(value: &f64, serializer: S) -> Result<S::Ok, S::Error> {
+    serializer.serialize_f64((value * 1000.0).round() / 1000.0)
+}
+
+/// A colour as `#rrggbb`.
+#[allow(clippy::trivially_copy_pass_by_ref, reason = "serde passes fields by reference")]
+fn hex<S: Serializer>(colour: &Rgb, serializer: S) -> Result<S::Ok, S::Error> {
+    let [r, g, b] = colour;
+    serializer.collect_str(&format_args!("#{r:02x}{g:02x}{b:02x}"))
 }
 
 /// Whole micrometres from millimetres, for settings already checked to be in range.
@@ -384,6 +427,18 @@ mod tests {
         assert!((report.opening_mm2 / report.paint_mm2 - 1.0).abs() < 0.01, "{report:?}");
         assert!(report.thin_webs.is_empty() && report.narrow_openings.is_empty(), "{report:?}");
         assert!(report.fits_bed);
+
+        // As JSON, with the plate's file name and figures to the thousandth.
+        let json = reports_json(&plates, std::slice::from_ref(&report));
+        let entry = &json[0];
+        assert_eq!(
+            (entry["stencil"].as_str(), entry["colour"].as_str()),
+            (Some("plate-01-141414.stl"), Some("#141414"))
+        );
+        assert_eq!((entry["paint"].as_u64(), entry["width_mm"].as_f64()), (Some(0), Some(40.0)));
+        let x = entry["islands"][0]["x_mm"].as_f64().unwrap();
+        assert!((x - disc.x_mm).abs() < 0.0005 && (x * 1000.0).fract() == 0.0, "{x}");
+        assert_eq!(entry["thin_webs"], serde_json::json!([]));
     }
 
     #[test]

@@ -3,10 +3,10 @@
 
 use std::path::{Path, PathBuf};
 
-use stencilator_core::project::{Colour, EXTENSION, Font, Project, Source, read_project};
+use stencilator_core::project::{EXTENSION, Font, Project, Source, read_project};
 
-/// The fonts built into the command, by file name; the first stands in for any missing.
-const BUNDLED: &[(&str, &[u8])] = &[("NotoSans-Bold.ttf", include_bytes!("../../../fonts/NotoSans-Bold.ttf"))];
+/// The built-in font, [`stencilator_core::project::BUILT_IN_FONT`].
+const BUILT_IN: &[u8] = include_bytes!("../../../fonts/NotoSans-Bold.ttf");
 
 /// What the command was given to work from.
 pub(crate) enum Input {
@@ -48,9 +48,7 @@ impl Input {
                     Project::new(Source::Picture { name, data: Vec::new() })
                 }
             }
-            Input::Text(lines) => {
-                Project::new(Source::Text { text: lines.join("\n"), font_mm: 30.0, colour: Colour([0, 0, 0]) })
-            }
+            Input::Text(lines) => Project::new(Source::text(lines.join("\n"))),
         })
     }
 
@@ -84,29 +82,7 @@ pub(crate) fn embed_fonts(paths: &[PathBuf]) -> Result<Vec<Font>, String> {
         .collect()
 }
 
-/// The project names the built-in font when its text needs one and it names none.
-pub(crate) fn name_default_font(project: &mut Project) {
-    let drawn = matches!(project.source, Source::Svg { .. } | Source::Text { .. });
-    if drawn && project.fonts.is_empty() {
-        project.fonts.push(Font { name: BUNDLED[0].0.to_owned(), data: None });
-    }
-}
-
-/// The bytes of the project's fonts, the built-in one when it names none.
-pub(crate) fn font_bytes(project: &Project) -> Result<Vec<Vec<u8>>, String> {
-    if project.fonts.is_empty() {
-        return Ok(vec![BUNDLED[0].1.to_vec()]);
-    }
-    project
-        .fonts
-        .iter()
-        .map(|font| match &font.data {
-            Some(data) => Ok(data.clone()),
-            None => {
-                BUNDLED.iter().find(|(name, _)| *name == font.name).map(|(_, data)| data.to_vec()).ok_or_else(|| {
-                    format!("the project uses the font {}, which is not built in; give it with --font", font.name)
-                })
-            }
-        })
-        .collect()
+/// The project's font files, the built-in one among them where it is named.
+pub(crate) fn font_data(project: &Project) -> Result<Vec<&[u8]>, String> {
+    project.font_data(BUILT_IN).map_err(|e| format!("{e} Give it with --font."))
 }

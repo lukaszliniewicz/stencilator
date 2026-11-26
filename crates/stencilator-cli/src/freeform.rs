@@ -8,14 +8,14 @@ use serde_json::{Value, json};
 use stencilator_core::artwork::{LabelMap, label_drawing, label_picture};
 use stencilator_core::colour::Rgb;
 use stencilator_core::drawing::{parse_svg, text_drawing};
-use stencilator_core::plate::{Plate, PlateReport, Spot, build_plates, check_plate, plate_files, plates_3mf};
+use stencilator_core::plate::{
+    Plate, PlateReport, Spot, build_plates, check_plate, plate_files, plates_3mf, reports_json,
+};
 use stencilator_core::project::{ArtworkSize, Colour, Mode, Project, Source};
 use stencilator_core::{source, zip};
 
-use crate::sources::{Input, embed_fonts, font_bytes};
-use crate::{
-    ColourArgs, StencilArgs, files, hex, is_zip, parse_colour, parse_size, project_file, stencil_destinations,
-};
+use crate::sources::{Input, embed_fonts, font_data};
+use crate::{ColourArgs, StencilArgs, files, hex, is_zip, parse_colour, parse_size, stencil_destinations};
 
 /// Positions listed in a warning before the rest are counted.
 const LISTED: usize = 3;
@@ -180,7 +180,7 @@ pub(crate) fn run(args: &FreeformArgs) -> Result<(), String> {
         outputs.push((path.clone(), plates_3mf(&plates, thickness).map_err(|e| e.to_string())?));
     }
     if let Some(path) = &args.save {
-        outputs.push((path.clone(), project_file(&project)));
+        outputs.push((path.clone(), project.to_json()));
     }
     let mut created = Vec::new();
     if let Some(target) = &args.stencils {
@@ -215,19 +215,15 @@ pub(crate) fn run(args: &FreeformArgs) -> Result<(), String> {
 /// The label map of the project's artwork.
 fn label(project: &Project) -> Result<LabelMap, String> {
     let settings = project.artwork_settings();
-    let fonts = || font_bytes(project);
     let map = match &project.source {
         Source::Picture { data, .. } => label_picture(&source::decode(data).map_err(|e| e.to_string())?, &settings),
         Source::Svg { data, .. } => {
-            let fonts = fonts()?;
-            let fonts: Vec<&[u8]> = fonts.iter().map(Vec::as_slice).collect();
-            label_drawing(&parse_svg(data, &fonts).map_err(|e| e.to_string())?, &settings)
+            label_drawing(&parse_svg(data, &font_data(project)?).map_err(|e| e.to_string())?, &settings)
         }
-        Source::Text { text, font_mm, colour } => {
-            let fonts = fonts()?;
-            let fonts: Vec<&[u8]> = fonts.iter().map(Vec::as_slice).collect();
-            label_drawing(&text_drawing(text, &fonts, *font_mm, colour.0).map_err(|e| e.to_string())?, &settings)
-        }
+        Source::Text { text, font_mm, colour } => label_drawing(
+            &text_drawing(text, &font_data(project)?, *font_mm, colour.0).map_err(|e| e.to_string())?,
+            &settings,
+        ),
     };
     map.map_err(|e| e.to_string())
 }
@@ -244,16 +240,6 @@ struct Report<'a> {
 /// Millimetres to the micrometre, which is all the engine resolves.
 fn um(mm: f64) -> f64 {
     (mm * 1000.0).round() / 1000.0
-}
-
-fn spot_json(spot: &Spot) -> Value {
-    json!({
-        "x_mm": um(spot.x_mm),
-        "y_mm": um(spot.y_mm),
-        "width_mm": um(spot.width_mm),
-        "height_mm": um(spot.height_mm),
-        "area_mm2": um(spot.area_mm2),
-    })
 }
 
 /// "x 12.3, y 45.6": the middle of a spot.
@@ -349,25 +335,6 @@ impl Report<'_> {
                 json!({ "colour": hex(colour), "cells": cells, "area_mm2": um(area), "stencil": self.plate_file(paint) })
             })
             .collect();
-        let plates: Vec<Value> = self
-            .plates
-            .iter()
-            .zip(self.reports)
-            .map(|(plate, r)| {
-                json!({
-                    "stencil": plate.file_name(),
-                    "colour": hex(r.colour),
-                    "size_mm": [r.width_mm, r.height_mm],
-                    "fits_bed": r.fits_bed,
-                    "openings": r.openings,
-                    "paint_mm2": um(r.paint_mm2),
-                    "opening_mm2": um(r.opening_mm2),
-                    "islands": r.islands.iter().map(spot_json).collect::<Vec<_>>(),
-                    "thin_webs": r.thin_webs.iter().map(spot_json).collect::<Vec<_>>(),
-                    "narrow_openings": r.narrow_openings.iter().map(spot_json).collect::<Vec<_>>(),
-                })
-            })
-            .collect();
         json!({
             "mode": "freeform",
             "size_mm": [um(map.width_mm()), um(map.height_mm())],
@@ -375,7 +342,7 @@ impl Report<'_> {
             "cell_mm": f64::from(map.cell_um) / 1000.0,
             "thickness_mm": self.project.stencils.thickness_mm,
             "palette": palette,
-            "plates": plates,
+            "plates": reports_json(self.plates, self.reports),
             "written": self.written.iter().map(|p| p.display().to_string()).collect::<Vec<_>>(),
             "warnings": warnings,
         })
