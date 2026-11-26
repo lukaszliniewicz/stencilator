@@ -1,13 +1,13 @@
 //! The Stencilator engine.
 //!
 //! It takes artwork and settings and returns plate shapes and files. It never
-//! touches the disk, the network, the clock or the screen: the command line,
-//! the MCP server and the browser build wrap it and do all input and output.
+//! touches the disk, the network, the clock or the screen: the command line
+//! and the browser build wrap it and do all input and output.
 //! `clippy.toml` in this crate enforces that.
 //!
-//! Tile mode is complete: a grid of square tiles, a chart to paint from and one
-//! stencil per colour. Free-form mode is being built: pictures, SVG drawings and
-//! typed text become maps of paints at a physical size, and those become plates
+//! Tile mode makes a grid of square tiles, a chart to paint from and one
+//! stencil per colour. In free-form mode, pictures, SVG drawings and typed text
+//! become maps of paints at a physical size, and those become plates
 //! with traced openings, checked for islands, thin webs, narrow openings and bed
 //! size, and written as STL or one 3MF. A project file keeps the artwork, the
 //! settings of both modes and the paint choices together.

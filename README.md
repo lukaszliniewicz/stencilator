@@ -38,11 +38,11 @@ target/release/stencilator tiles logo.png --canvas 300x200 --tile 5 --line 0.8 \
     --colours 8 --chart chart.pdf --stencils stencils/
 ```
 
-This finds the largest grid of 5 mm tiles, with 0.8 mm lines between them, that fits on
-a 300 by 200 mm canvas while keeping the picture's proportions. It reduces the picture to
-at most eight colours, saves the chart as a vector PDF at its real size, and writes one
-STL file per colour into `stencils/`. Leave out the outputs to see what it would make
-without writing anything, and add `--json` when another program will read the summary.
+This fits a grid of 5 mm tiles and 0.8 mm lines on a 300 by 200 mm canvas, keeping the
+picture's proportions. It uses up to eight colours, saves the chart as a vector PDF at
+its real size, and writes an STL file per paint into `stencils/`. Give `--stencils` a
+name ending in `.zip` to bundle those files. Leave out the outputs to see what it would
+make without writing anything, and add `--json` when another program will read the summary.
 `stencilator tiles --help` lists every option.
 
 Pixel art can have one tile per pixel instead:
@@ -78,16 +78,17 @@ An SVG keeps its own size and text its font size, unless you ask for another wit
 `--width`, `--height` or `--within`; a picture is 200 mm wide unless you say otherwise.
 Every plate is the artwork plus a 10 mm border (`--margin`), so all of a design's plates
 are the same size and line up by their edges. `--3mf` puts them in one file, side by side,
-each named and coloured after its paint, which most slicers open as a single project;
-`--stencils` writes one STL per plate instead.
+each named and coloured after its paint. `--stencils` writes one STL per plate, in a
+folder or a zip as in tile mode.
 
 Then it reports what may not print well:
 
 - islands, parts of the plate that fall out because nothing joins them to the rest;
 - webs of plate thinner than `--min-web` (0.6 mm), which may break;
-- openings narrower than `--min-opening` (0.5 mm), which may close up in printing.
+- openings narrower than `--min-opening` (0.5 mm), which may close up in printing;
+- a plate that is too large for `--bed` (256 × 256 mm), even when turned.
 
-Each comes with where it is, in millimetres from the bottom-left corner of the plate.
+The first three come with locations, in millimetres from the bottom-left corner of each plate.
 The artwork is traced on a grid of 0.1 mm cells (`--cell`), and patches of one paint
 smaller than 1 mm² (`--min-patch`) take the paints around them, so a speck in a photo
 does not become an opening of its own. Typed text uses the built-in Noto Sans Bold by
@@ -105,21 +106,22 @@ settings in the app or on the command line.
 - The canvas colour (`--background`, white by default) gets no stencil, since the canvas
   shows through there anyway; `--stencil-canvas-colour` makes one all the same.
   Transparent parts of the artwork take that colour too.
-- `--mode greyscale` and `--mode black-white` do what their names say. Artwork with no
-  more colours than you ask for, such as pixel art or a logo, keeps its colours exactly.
+- `--mode greyscale` and `--mode black-white` make greyscale and black-and-white palettes.
+  In colour mode, flat artwork such as pixel art or a solid-colour SVG can keep its exact
+  colours when they fit in the palette.
 - `--save design.stencilator` saves a project: the artwork, any fonts given with `--font`,
   and every setting. Give the project instead of a picture to carry on where you left
   off; options you add change only what they name. The project holds the fonts you
   embed, so mind their licences when you share it. Use the `.stencilator` extension
   to open the file in the web app.
-- Nothing is written unless everything can be, and no output may replace the input, other
-  than a project saved over the one it came from.
+- The command prepares all outputs before replacing any files. A saved project can replace
+  itself with `--save`; other attempts to write over the input are refused.
 
 ## Roadmap
 
-Next are bridges that hold islands in place, so that the middle of an "O" stays put, and
-registration marks. A local MCP server follows, so that an AI assistant can prepare
-stencils for you. The web app gains each of these as the engine does.
+The next phase focuses on holding islands in place and adding a keyed registration frame
+that keeps plates aligned between colours. A local MCP server follows, so that an AI
+assistant can prepare stencils for you.
 
 ## Development
 
@@ -132,16 +134,16 @@ dependencies. It needs the `wasm32-unknown-unknown` target, `cargo-deny` and
 The engine lives in `crates/stencilator-core`. It only computes and never touches files,
 the network or the clock, which is what lets the same code run natively and in a browser
 with identical results. `crates/stencilator-cli` is the command and
-`crates/stencilator-wasm` the browser build; `make parity` checks that the two write the
-same bytes, and `make timing` how long the browser build takes over free-form work. `fixtures/` holds reference results, computed independently with NumPy,
-Pillow, trimesh and lib3mf, that the tests compare against, and `fonts/` the fonts built
-in. `spikes/` holds early experiments with SVG rendering, outline
-tracing, 3D meshing and MCP that later work will turn into real code.
+`crates/stencilator-wasm` the browser build. `make parity` checks that they write the
+same bytes; `make timing` measures how long free-form work takes in the browser build.
+The tests compare against reference results in `fixtures/`, computed independently with
+NumPy, Pillow, trimesh and lib3mf. `fonts/` holds the bundled fonts. `spikes/` retains
+early experiments with SVG rendering, outline tracing, 3D meshing and MCP.
 
 The web app in `app/` is written in Svelte and TypeScript. To work on it you also need
-Node 22 or newer, pnpm, `wasm-bindgen-cli` 0.2.130 and binaryen. Run `make wasm` once,
-then `pnpm install` and `pnpm dev` inside `app/`, where `pnpm check` and `pnpm e2e` run
-its own checks.
+Node 24 (as in CI), pnpm 11.9.0, `wasm-bindgen-cli` 0.2.130 and binaryen. Run `make wasm`
+once, then `pnpm install` and `pnpm dev` inside `app/`. Run `pnpm check` for the app checks
+and `pnpm exec playwright install chromium` before the first `pnpm e2e`.
 
 ## Licence
 
