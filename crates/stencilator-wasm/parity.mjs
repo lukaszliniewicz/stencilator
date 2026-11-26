@@ -69,8 +69,10 @@ for (const [n, fixture] of cases.entries()) {
 
   const dir = join(work, String(n));
   mkdirSync(dir);
+  // The browser is given its skip list in full, so the command line is told not to add
+  // the canvas colour to it.
   const common = [
-    "build", image,
+    "tiles", image, "--stencil-canvas-colour",
     ...(pixels ? ["--pixels"] : ["--canvas", `${s.canvas_mm[0]}x${s.canvas_mm[1]}`]),
     "--tile", String(s.tile_mm), "--line", String(s.line_mm), "--dpi", String(s.dpi),
     "--mode", s.mode, "--colours", String(s.n_colours),

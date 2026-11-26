@@ -1,25 +1,28 @@
 //! `stencilator`: the command line.
 //!
-//! `stencilator build` lays a tile grid over an image, fitted to a canvas or one tile per
-//! pixel, reduces the colours, and writes the chart and one stencil per colour. The engine computes; this program reads the image
+//! `stencilator tiles` lays a grid of square tiles over a picture and writes a chart to
+//! paint from and one stencil per colour. `stencilator freeform` makes plates whose
+//! openings follow the shapes of a picture, an SVG drawing or typed text, and reports what
+//! may not print well. Both start from a project, a new one or one saved earlier, change
+//! what the options say, and can save the result. The engine computes; this program reads
 //! and writes the files, all or nothing.
 
 mod files;
+mod freeform;
+mod sources;
+mod tiles;
 
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use clap::{Args, Parser, Subcommand};
-use serde_json::json;
-use stencilator_core::chart::{ChartSettings, Sizing, TileChart, build_chart, merge_paints};
+use stencilator_core::VERSION;
 use stencilator_core::colour::Rgb;
-use stencilator_core::export::{ChartFormat, encode_chart};
+use stencilator_core::project::{Colour, Project};
 use stencilator_core::quantise::ColourMode;
-use stencilator_core::stencil::{RECOMMENDED_MIN_WEB_MM, check_thickness, stencil_filename, stencil_files};
-use stencilator_core::{VERSION, source, zip};
 
 #[derive(Parser)]
-#[command(name = "stencilator", version = VERSION, about = "Turns images into painting charts and 3D-printable stencils.")]
+#[command(name = "stencilator", version = VERSION, about = "Turns artwork into painting charts and 3D-printable stencils.")]
 struct Cli {
     #[command(subcommand)]
     command: Command,
@@ -27,73 +30,93 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Lay a tile grid over an image, reduce its colours, and write the chart and stencils.
+    /// Lay a grid of square tiles over a picture, reduce its colours, and write the chart
+    /// and one stencil per colour.
     ///
-    /// Without --chart, --tiles or --stencils it only prints what it would make.
-    Build(Build),
+    /// Without --chart, --tiles, --stencils or --save it only prints what it would make.
+    /// Settings not given come from the project, if the input is one, or are the defaults.
+    Tiles(tiles::TilesArgs),
+    /// Make one plate per paint, with openings that follow the shapes of a picture, an SVG
+    /// drawing or typed text, and report what may not print well.
+    ///
+    /// Without --stencils, --3mf or --save it only prints what it would make. Settings not
+    /// given come from the project, if the input is one, or are the defaults.
+    Freeform(freeform::FreeformArgs),
 }
 
+/// How colours become paints, in both modes.
 #[derive(Args)]
-struct Build {
-    /// PNG, JPEG or WebP image.
-    image: PathBuf,
+#[command(next_help_heading = "Colours")]
+pub(crate) struct ColourArgs {
+    /// colour, greyscale or black-white [default: colour]
+    #[arg(long, value_parser = parse_mode)]
+    mode: Option<ColourMode>,
+    /// Most paints; black-white always has two [default: 16]
+    #[arg(long, value_name = "N")]
+    colours: Option<usize>,
+    /// Colour of the canvas, which transparent parts of the artwork take [default: ffffff]
+    #[arg(long, value_name = "RRGGBB", value_parser = parse_colour)]
+    background: Option<Rgb>,
+    /// Seed for the colour clustering; the same seed gives the same paints [default: 0]
+    #[arg(long)]
+    seed: Option<u64>,
+}
 
-    /// Canvas width and height in millimetres; the grid never exceeds it.
-    #[arg(long, value_name = "WxH", default_value = "200x200", value_parser = parse_size)]
-    canvas: (f64, f64),
-    /// One tile per pixel, for pixel art, instead of fitting a canvas; the size follows
-    /// from --tile and --line. Art scaled up by a whole factor counts at its drawn size.
-    #[arg(long, conflicts_with = "canvas")]
-    pixels: bool,
-    /// Side of a tile in millimetres.
-    #[arg(long, value_name = "MM", default_value_t = 5.0)]
-    tile: f64,
-    /// Width of the grid lines in millimetres; 0 for none.
-    #[arg(long, value_name = "MM", default_value_t = 0.8)]
-    line: f64,
-    /// Resolution of the chart; sizes are rounded to whole pixels at this DPI.
-    #[arg(long, default_value_t = 300)]
-    dpi: u32,
-    /// colour, greyscale or black-white.
-    #[arg(long, default_value = "colour", value_parser = parse_mode)]
-    mode: ColourMode,
-    /// Most colours in the palette (black-white always has two).
-    #[arg(long, value_name = "N", default_value_t = 16)]
-    colours: usize,
-    /// Colour that transparent parts of the image take.
-    #[arg(long, value_name = "RRGGBB", default_value = "ffffff", value_parser = parse_colour)]
-    background: Rgb,
-    /// Colour of the grid lines on the chart.
-    #[arg(long, value_name = "RRGGBB", default_value = "000000", value_parser = parse_colour)]
-    grid_colour: Rgb,
-    /// Seed for the colour clustering; the same seed gives the same palette.
-    #[arg(long, default_value_t = 0)]
-    seed: u64,
+impl ColourArgs {
+    fn apply(&self, project: &mut Project) {
+        let colours = &mut project.colours;
+        if let Some(mode) = self.mode {
+            colours.mode = mode.into();
+        }
+        if let Some(count) = self.colours {
+            colours.count = count;
+        }
+        if let Some(background) = self.background {
+            colours.background = Colour(background);
+        }
+        if let Some(seed) = self.seed {
+            colours.seed = seed;
+        }
+    }
+}
+
+/// Stencils and the choices made about paints, in both modes.
+#[derive(Args)]
+#[command(next_help_heading = "Stencils")]
+pub(crate) struct StencilArgs {
     /// Merge one paint into another once the colours are reduced; repeat for more, in
-    /// order. Colours not in the palette are ignored.
+    /// order. Colours not among the paints are ignored.
     #[arg(long, value_name = "RRGGBB=RRGGBB", value_parser = parse_merge)]
     merge: Vec<(Rgb, Rgb)>,
-    /// Make no stencil for this colour, such as the canvas's own; repeat for more.
+    /// Make no stencil for this paint; repeat for more.
     #[arg(long, value_name = "RRGGBB", value_parser = parse_colour)]
     skip: Vec<Rgb>,
-
-    /// Write the chart with grid lines: .png, .jpg or .pdf.
-    #[arg(long, value_name = "FILE")]
-    chart: Option<PathBuf>,
-    /// Write the tiles packed edge to edge: .png, .jpg or .pdf.
-    #[arg(long, value_name = "FILE")]
-    tiles: Option<PathBuf>,
-    /// Write one STL stencil per colour into this folder, or into one zip if the name
-    /// ends in .zip.
-    #[arg(long, value_name = "DIR|ZIP")]
-    stencils: Option<PathBuf>,
-    /// Stencil thickness in millimetres.
-    #[arg(long, value_name = "MM", default_value_t = 1.2)]
-    thickness: f64,
-
-    /// Print the summary as JSON.
+    /// Make a stencil for the canvas colour too; it rarely needs one, so it has none
+    /// unless asked for.
     #[arg(long)]
-    json: bool,
+    stencil_canvas_colour: bool,
+    /// Thickness in millimetres [default: 1.2]
+    #[arg(long, value_name = "MM")]
+    thickness: Option<f64>,
+    /// Width and depth of the print bed in millimetres; larger stencils are reported
+    /// [default: 256x256]
+    #[arg(long, value_name = "WxH", value_parser = parse_size)]
+    bed: Option<(f64, f64)>,
+}
+
+impl StencilArgs {
+    fn apply(&self, project: &mut Project) {
+        let stencils = &mut project.stencils;
+        stencils.merges.extend(self.merge.iter().map(|&(from, to)| [Colour(from), Colour(to)]));
+        stencils.skipped.extend(self.skip.iter().map(|&c| Colour(c)));
+        stencils.stencil_canvas_colour |= self.stencil_canvas_colour;
+        if let Some(thickness) = self.thickness {
+            stencils.thickness_mm = thickness;
+        }
+        if let Some((w, h)) = self.bed {
+            stencils.bed_mm = [w, h];
+        }
+    }
 }
 
 fn parse_size(text: &str) -> Result<(f64, f64), String> {
@@ -120,151 +143,41 @@ fn parse_mode(text: &str) -> Result<ColourMode, String> {
     text.parse().map_err(|e: stencilator_core::Error| e.to_string())
 }
 
-fn hex(colour: Rgb) -> String {
+pub(crate) fn hex(colour: Rgb) -> String {
     format!("#{:02x}{:02x}{:02x}", colour[0], colour[1], colour[2])
 }
 
-fn is_zip(path: &Path) -> bool {
+pub(crate) fn is_zip(path: &Path) -> bool {
     path.extension().is_some_and(|e| e.eq_ignore_ascii_case("zip"))
 }
 
-fn build(args: &Build) -> Result<(), String> {
-    let settings = ChartSettings {
-        sizing: if args.pixels { Sizing::Pixels } else { Sizing::Canvas },
-        canvas_mm: args.canvas,
-        tile_mm: args.tile,
-        line_mm: args.line,
-        dpi: args.dpi,
-        mode: args.mode,
-        n_colours: args.colours,
-        background: args.background,
-        seed: args.seed,
-    };
-    // Settings first, so that a typing mistake is reported before a large image is read.
-    settings.check().map_err(|e| e.to_string())?;
-    if args.stencils.is_some() {
-        check_thickness(args.thickness).map_err(|e| e.to_string())?;
-    }
-    let bytes = std::fs::read(&args.image).map_err(|e| format!("{}: {e}", args.image.display()))?;
-    let image = source::decode(&bytes).map_err(|e| e.to_string())?;
-    let chart = merge_paints(&build_chart(&image, &settings).map_err(|e| e.to_string())?, &args.merge);
-
-    let mut destinations: Vec<(String, PathBuf)> = Vec::new();
-    for (flag, path) in [("--chart", &args.chart), ("--tiles", &args.tiles)] {
-        if let Some(path) = path {
-            destinations.push((flag.to_owned(), path.clone()));
-        }
-    }
-    match &args.stencils {
-        Some(path) if is_zip(path) => destinations.push(("--stencils".to_owned(), path.clone())),
-        Some(dir) => {
-            let count = chart.palette.len();
-            for (index, &colour) in (0..).zip(&chart.palette).filter(|(_, c)| !args.skip.contains(c)) {
-                let name = stencil_filename(index, count, colour);
-                destinations.push((format!("the stencil for {}", hex(colour)), dir.join(name)));
-            }
-        }
-        None => {}
-    }
-    files::check_destinations(&destinations, &args.image)?;
-
-    // Everything is computed before anything is written, so an error leaves no files.
-    let mut outputs: Vec<(PathBuf, Vec<u8>)> = Vec::new();
-    for (path, with_lines) in [(&args.chart, true), (&args.tiles, false)] {
-        if let Some(path) = path {
-            let format = ChartFormat::from_file_name(&path.to_string_lossy()).map_err(|e| e.to_string())?;
-            outputs.push((
-                path.clone(),
-                encode_chart(&chart, format, args.grid_colour, with_lines).map_err(|e| e.to_string())?,
-            ));
-        }
-    }
-    let mut warnings = Vec::new();
-    let mut created = Vec::new();
-    if let Some(path) = &args.stencils {
-        if chart.layout.line_px > 0 && chart.layout.line_mm() < RECOMMENDED_MIN_WEB_MM {
-            warnings.push(format!(
-                "grid lines of {:.2} mm make a fragile stencil web; {RECOMMENDED_MIN_WEB_MM} mm or more suits a 0.4 mm nozzle",
-                chart.layout.line_mm()
-            ));
-        }
-        let stencils = stencil_files(&chart, args.thickness, &args.skip).map_err(|e| e.to_string())?;
-        if is_zip(path) {
-            outputs.push((path.clone(), zip::zip(&stencils).map_err(|e| e.to_string())?));
-        } else {
-            outputs.extend(stencils.into_iter().map(|(name, stl)| (path.join(name), stl)));
-            created = files::create_dirs(path)?;
-        }
-    }
-    if let Err(message) = files::write_all(&outputs) {
-        files::remove_dirs(&created);
-        return Err(message);
-    }
-
-    let written: Vec<&Path> = outputs.iter().map(|(p, _)| p.as_path()).collect();
-    if args.json {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&summary_json(&chart, &args.skip, &written, &warnings)).unwrap_or_default()
-        );
+/// Where each stencil goes: one file per stencil in a folder, or one zip.
+pub(crate) fn stencil_destinations(target: &Path, names: &[(String, Rgb)]) -> Vec<(String, PathBuf)> {
+    if is_zip(target) {
+        vec![("--stencils".to_owned(), target.to_path_buf())]
     } else {
-        print_summary(&chart, &args.skip, &written, &warnings);
+        names.iter().map(|(name, colour)| (format!("the stencil for {}", hex(*colour)), target.join(name))).collect()
     }
-    Ok(())
 }
 
-fn summary_json(chart: &TileChart, skip: &[Rgb], written: &[&Path], warnings: &[String]) -> serde_json::Value {
-    let g = &chart.layout;
-    let count = chart.palette.len();
-    let palette: Vec<_> = (0..)
-        .zip(chart.palette.iter().zip(chart.tile_counts()))
-        .map(|(index, (&c, n))| {
-            let stencil = (!skip.contains(&c)).then(|| stencil_filename(index, count, c));
-            json!({ "colour": hex(c), "tiles": n, "stencil": stencil })
-        })
-        .collect();
-    json!({
-        "tiles": [g.tiles_x, g.tiles_y],
-        "size_mm": [g.width_mm(), g.height_mm()],
-        "size_px": [g.width_px(), g.height_px()],
-        "tile_mm": g.tile_mm(),
-        "line_mm": g.line_mm(),
-        "dpi": g.dpi,
-        "palette": palette,
-        "written": written.iter().map(|p| p.display().to_string()).collect::<Vec<_>>(),
-        "warnings": warnings,
-    })
+/// Whether a stencil `size_mm` fits the bed, turned if need be.
+pub(crate) fn fits_bed(size_mm: (f64, f64), bed_mm: [f64; 2]) -> bool {
+    let (w, h) = size_mm;
+    (w <= bed_mm[0] && h <= bed_mm[1]) || (w <= bed_mm[1] && h <= bed_mm[0])
 }
 
-fn print_summary(chart: &TileChart, skip: &[Rgb], written: &[&Path], warnings: &[String]) {
-    let g = &chart.layout;
-    println!("grid     {} x {} tiles ({})", g.tiles_x, g.tiles_y, g.tile_count());
-    println!(
-        "size     {:.1} x {:.1} mm, {} x {} px at {} DPI",
-        g.width_mm(),
-        g.height_mm(),
-        g.width_px(),
-        g.height_px(),
-        g.dpi
-    );
-    println!("tile     {:.3} mm, line {:.3} mm", g.tile_mm(), g.line_mm());
-    println!("colours  {}", chart.palette.len());
-    for (i, (&colour, count)) in chart.palette.iter().zip(chart.tile_counts()).enumerate() {
-        let note = if skip.contains(&colour) { ", no stencil" } else { "" };
-        println!("  {:>2}  {}  {count} tiles{note}", i + 1, hex(colour));
-    }
-    for path in written {
-        println!("wrote    {}", path.display());
-    }
-    for warning in warnings {
-        eprintln!("warning: {warning}");
-    }
+/// The project as saved, in its mode.
+pub(crate) fn project_file(project: &Project) -> Vec<u8> {
+    let mut saved = project.clone();
+    sources::name_default_font(&mut saved);
+    saved.to_json()
 }
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
     let result = match &cli.command {
-        Command::Build(args) => build(args),
+        Command::Tiles(args) => tiles::run(args),
+        Command::Freeform(args) => freeform::run(args),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
@@ -289,6 +202,7 @@ mod tests {
         assert!(parse_merge("9c3d17").is_err());
         assert!(parse_colour("ff88").is_err());
         assert_eq!(parse_mode("black-white").unwrap(), ColourMode::BlackWhite);
+        assert!(fits_bed((250.0, 120.0), [200.0, 256.0]) && !fits_bed((257.0, 10.0), [256.0, 256.0]));
     }
 
     #[test]

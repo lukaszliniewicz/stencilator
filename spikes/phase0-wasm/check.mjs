@@ -16,7 +16,7 @@ const fnv = (bytes) => {
   return h.toString(16).padStart(16, "0");
 };
 
-const font = readFileSync(join(root, "fixtures/fonts/NotoSans-Bold.ttf"));
+const font = readFileSync(join(root, "fonts/NotoSans-Bold.ttf"));
 for (const name of ["clip-mask-text", "badge"]) {
   const svg = readFileSync(join(root, `fixtures/svg/${name}.svg`), "utf8");
   for (const ppm of [4, 10, 25]) console.log(`render ${name} ${ppm}: ${wasm.render_digest(svg, font, ppm)}`);

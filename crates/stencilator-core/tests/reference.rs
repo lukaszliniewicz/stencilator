@@ -370,7 +370,7 @@ fn plates_match_trimesh_and_lib3mf() {
 
     let root = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
     let read = |path: &str| std::fs::read(root.join(path)).unwrap();
-    let font = read("fixtures/fonts/NotoSans-Bold.ttf");
+    let font = read("fonts/NotoSans-Bold.ttf");
     let cases: Vec<PlateCase> = fixture("plates.json");
     let mut checked = 0;
     for case in &cases {

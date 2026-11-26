@@ -5,7 +5,7 @@ use phase0::mesh::{self, Pt, Shapes, Slab};
 use phase0::trace::LabelMap;
 use phase0::{demo, digest, render, trace};
 
-const FONT: &[u8] = include_bytes!("../../../fixtures/fonts/NotoSans-Bold.ttf");
+const FONT: &[u8] = include_bytes!("../../../fonts/NotoSans-Bold.ttf");
 const BADGE: &str = include_str!("../../../fixtures/svg/badge.svg");
 
 fn rect(x0: i32, y0: i32, x1: i32, y1: i32) -> Vec<Pt> {

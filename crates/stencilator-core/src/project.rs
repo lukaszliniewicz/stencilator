@@ -3,7 +3,8 @@
 //! The artwork is embedded, with any fonts it needs that Stencilator does not bundle, next
 //! to the settings of both modes and the paint choices, which name paints by colour. Any
 //! field but the source may be left out and takes the engine's default, so a short
-//! hand-written project opens too. The field `stencilator` holds the format's version and
+//! hand-written project opens too. A drawing or typed text defaults to free-form mode at
+//! its own size; a picture to tile mode, and to 200 mm wide in free-form mode. The field `stencilator` holds the format's version and
 //! marks the file as a project; files use the extension `.stencilator`.
 //!
 //! ```json
@@ -283,8 +284,6 @@ pub struct Freeform {
     pub min_web_mm: f64,
     /// Narrowest opening not reported, in millimetres.
     pub min_opening_mm: f64,
-    /// Width and depth of the print bed in millimetres.
-    pub bed_mm: [f64; 2],
 }
 
 impl Default for Freeform {
@@ -297,7 +296,6 @@ impl Default for Freeform {
             margin_mm: plates.margin_mm,
             min_web_mm: plates.min_web_mm,
             min_opening_mm: plates.min_opening_mm,
-            bed_mm: [plates.bed_mm.0, plates.bed_mm.1],
         }
     }
 }
@@ -345,6 +343,8 @@ impl From<ArtworkSize> for Size {
 pub struct Stencils {
     /// Thickness of the plates in millimetres.
     pub thickness_mm: f64,
+    /// Width and depth of the print bed in millimetres; larger plates are reported.
+    pub bed_mm: [f64; 2],
     /// Pairs of paints, applied in order: the first becomes the second.
     pub merges: Vec<[Colour; 2]>,
     /// Paints that get no stencil.
@@ -355,8 +355,10 @@ pub struct Stencils {
 
 impl Default for Stencils {
     fn default() -> Self {
+        let plates = PlateSettings::default();
         Stencils {
-            thickness_mm: PlateSettings::default().thickness_mm,
+            thickness_mm: plates.thickness_mm,
+            bed_mm: [plates.bed_mm.0, plates.bed_mm.1],
             merges: Vec::new(),
             skipped: Vec::new(),
             stencil_canvas_colour: false,
@@ -367,7 +369,7 @@ impl Default for Stencils {
 impl Project {
     /// A project of `source` with every setting at the engine's default.
     pub fn new(source: Source) -> Project {
-        Project {
+        let mut project = Project {
             stencilator: FORMAT,
             written_by: VERSION.to_owned(),
             mode: Mode::default(),
@@ -377,7 +379,17 @@ impl Project {
             tiles: Tiles::default(),
             freeform: Freeform::default(),
             stencils: Stencils::default(),
+        };
+        if project.is_drawn() {
+            project.mode = Mode::Freeform;
+            project.freeform.size = ArtworkSize::Natural;
         }
+        project
+    }
+
+    /// Whether the source is a drawing or text, which has a size of its own.
+    fn is_drawn(&self) -> bool {
+        matches!(self.source, Source::Svg { .. } | Source::Text { .. })
     }
 
     /// Tile mode's settings for the engine.
@@ -442,17 +454,17 @@ impl Project {
             margin_mm: f.margin_mm,
             min_web_mm: f.min_web_mm,
             min_opening_mm: f.min_opening_mm,
-            bed_mm: (f.bed_mm[0], f.bed_mm[1]),
+            bed_mm: (self.stencils.bed_mm[0], self.stencils.bed_mm[1]),
         }
     }
 
-    /// Takes free-form mode's plate settings, and the thickness both modes share.
+    /// Takes free-form mode's plate settings, and the thickness and bed both modes share.
     pub fn set_plate_settings(&mut self, settings: &PlateSettings) {
         self.stencils.thickness_mm = settings.thickness_mm;
+        self.stencils.bed_mm = [settings.bed_mm.0, settings.bed_mm.1];
         self.freeform.margin_mm = settings.margin_mm;
         self.freeform.min_web_mm = settings.min_web_mm;
         self.freeform.min_opening_mm = settings.min_opening_mm;
-        self.freeform.bed_mm = [settings.bed_mm.0, settings.bed_mm.1];
     }
 
     /// The merges, as the engine takes them.
@@ -460,9 +472,20 @@ impl Project {
         self.stencils.merges.iter().map(|[from, to]| (from.0, to.0)).collect()
     }
 
-    /// The paints that get no stencil, as the engine takes them.
+    /// The paints ticked off, as the engine takes them.
     pub fn skipped(&self) -> Vec<Rgb> {
         self.stencils.skipped.iter().map(|c| c.0).collect()
+    }
+
+    /// The paints that get no stencil: those ticked off, and the canvas colour unless
+    /// [`Stencils::stencil_canvas_colour`] says it gets one.
+    pub fn stencil_skip(&self) -> Vec<Rgb> {
+        let mut skip = self.skipped();
+        let canvas = self.colours.background.0;
+        if !self.stencils.stencil_canvas_colour && !skip.contains(&canvas) {
+            skip.push(canvas);
+        }
+        skip
     }
 
     /// The project as a file: indented JSON, stamped with this format and this version of
@@ -494,7 +517,16 @@ pub fn read_project(bytes: &[u8]) -> Result<Project, Error> {
         }
         _ => return Err(Error::Project("This is not a Stencilator project.".to_owned())),
     }
-    let project: Project = serde_json::from_value(value).map_err(damaged)?;
+    let (has_mode, has_size) = (value.get("mode").is_some(), value.pointer("/freeform/size").is_some());
+    let mut project: Project = serde_json::from_value(value).map_err(damaged)?;
+    if project.is_drawn() {
+        if !has_mode {
+            project.mode = Mode::Freeform;
+        }
+        if !has_size {
+            project.freeform.size = ArtworkSize::Natural;
+        }
+    }
     project.chart_settings().check()?;
     project.artwork_settings().check()?;
     project.plate_settings().check()?;
@@ -553,13 +585,26 @@ mod tests {
         )
         .unwrap();
         assert_eq!(project.source, text_source());
-        assert_eq!(project.mode, Mode::Tiles);
+        // Text is cut free-form at its own size.
+        assert_eq!(project.mode, Mode::Freeform);
         assert_eq!(project.chart_settings(), ChartSettings::default());
-        assert_eq!(project.artwork_settings(), ArtworkSettings::default());
+        assert_eq!(project.artwork_settings(), ArtworkSettings { size: Size::Natural, ..ArtworkSettings::default() });
         assert_eq!(project.plate_settings(), PlateSettings::default());
         assert_eq!(project.tiles.grid_colour, Colour([0, 0, 0]));
         assert!(project.merges().is_empty() && project.skipped().is_empty() && !project.stencils.stencil_canvas_colour);
         assert_eq!(project, Project { written_by: String::new(), ..Project::new(text_source()) });
+        // The canvas colour gets no stencil unless asked for.
+        assert_eq!(project.stencil_skip(), [[255, 255, 255]]);
+        let mut cut = project.clone();
+        cut.stencils.stencil_canvas_colour = true;
+        assert_eq!(cut.stencil_skip(), Vec::<[u8; 3]>::new());
+        // A picture is a tile project, 200 mm wide in free-form mode, unless it says otherwise.
+        let picture = read_project(br#"{"stencilator": 1, "source": {"kind": "picture", "data": ""}}"#).unwrap();
+        assert_eq!((picture.mode, picture.artwork_settings()), (Mode::Tiles, ArtworkSettings::default()));
+        let said = br#"{"stencilator": 1, "mode": "tiles", "freeform": {"size": {"width_mm": 50}},
+            "source": {"kind": "svg", "data": ""}}"#;
+        let said = read_project(said).unwrap();
+        assert_eq!((said.mode, said.artwork_settings().size), (Mode::Tiles, Size::Width(50.0)));
     }
 
     #[test]

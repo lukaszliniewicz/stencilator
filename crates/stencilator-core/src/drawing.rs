@@ -211,7 +211,7 @@ fn escape(text: &str) -> String {
 mod tests {
     use super::*;
 
-    const FONT: &[u8] = include_bytes!("../../../fixtures/fonts/NotoSans-Bold.ttf");
+    const FONT: &[u8] = include_bytes!("../../../fonts/NotoSans-Bold.ttf");
     const BADGE: &[u8] = include_bytes!("../../../fixtures/svg/badge.svg");
     const MIXED: &[u8] = include_bytes!("../../../fixtures/svg/clip-mask-text.svg");
 

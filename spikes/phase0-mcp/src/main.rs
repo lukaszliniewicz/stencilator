@@ -23,7 +23,7 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 
 /// The only font the spike knows; Phase 1 takes fonts from the project file.
-const FONT: &[u8] = include_bytes!("../../../fixtures/fonts/NotoSans-Bold.ttf");
+const FONT: &[u8] = include_bytes!("../../../fonts/NotoSans-Bold.ttf");
 
 #[derive(Debug, Deserialize, JsonSchema)]
 struct PlateRequest {

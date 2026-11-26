@@ -12,6 +12,8 @@ use std::fmt::Write as _;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+use crate::sources::Input;
+
 fn sibling(path: &Path, tag: &str) -> PathBuf {
     let mut name = path.file_name().unwrap_or_default().to_os_string();
     name.push(format!(".stencilator-{}.{tag}", std::process::id()));
@@ -28,11 +30,20 @@ fn identity(path: &Path) -> PathBuf {
 }
 
 /// Refuses two outputs with the same destination, and an output that would replace the
-/// input. Each output is named for the message, such as `--chart`.
-pub(crate) fn check_destinations(outputs: &[(String, PathBuf)], input: &Path) -> Result<(), String> {
-    let mut seen: BTreeMap<PathBuf, &str> = BTreeMap::from([(identity(input), "the input image")]);
+/// input, except a project saved over the project it came from. Each output is named for
+/// the message, such as `--chart`.
+pub(crate) fn check_destinations(outputs: &[(String, PathBuf)], input: &Input) -> Result<(), String> {
+    let mut seen: BTreeMap<PathBuf, &str> = BTreeMap::new();
+    let project = matches!(input, Input::Project(_));
+    let input_name = if project { "the input project" } else { "the input file" };
+    if let Some(path) = input.path() {
+        seen.insert(identity(path), input_name);
+    }
     for (what, path) in outputs {
         if let Some(other) = seen.insert(identity(path), what) {
+            if project && what == "--save" && other == input_name {
+                continue;
+            }
             return Err(format!("{what} and {other} would both be {}; choose different names", path.display()));
         }
     }
@@ -178,8 +189,9 @@ mod tests {
     #[test]
     fn clashing_destinations_are_refused() {
         let dir = scratch("clash");
-        let input = dir.join("photo.jpg");
-        fs::write(&input, b"jpeg").unwrap();
+        let path = dir.join("photo.jpg");
+        fs::write(&path, b"jpeg").unwrap();
+        let input = Input::File(path.clone());
         let output = |flag: &str, path: PathBuf| (flag.to_owned(), path);
         let chart = output("--chart", dir.join("out.png"));
         let tiles = output("--tiles", dir.join("OUT.png"));
@@ -187,9 +199,20 @@ mod tests {
             check_destinations(&[chart.clone(), tiles], &input).unwrap_err(),
             format!("--tiles and --chart would both be {}; choose different names", dir.join("OUT.png").display())
         );
-        assert!(check_destinations(&[output("--chart", input.clone())], &input).is_err());
+        assert!(check_destinations(&[output("--chart", path.clone())], &input).is_err());
         assert!(check_destinations(&[output("--chart", dir.join(".").join("photo.jpg"))], &input).is_err());
+        assert!(check_destinations(&[output("--save", path.clone())], &input).is_err());
         assert!(check_destinations(&[chart], &input).is_ok());
+        // A project may be saved over itself, and nothing else may replace it.
+        let project = Input::Project(dir.join("art.stencilator"));
+        assert!(check_destinations(&[output("--save", dir.join("art.stencilator"))], &project).is_ok());
+        assert_eq!(
+            check_destinations(&[output("--3mf", dir.join("art.stencilator"))], &project).unwrap_err(),
+            format!(
+                "--3mf and the input project would both be {}; choose different names",
+                dir.join("art.stencilator").display()
+            )
+        );
         fs::remove_dir_all(&dir).unwrap();
     }
 

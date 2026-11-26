@@ -15,7 +15,7 @@ use stencilator_core::colour::Rgb;
 use stencilator_core::drawing::{parse_svg, text_drawing};
 use stencilator_core::plate::{PlateSettings, build_plates, check_plate, plates_3mf};
 
-const FONT: &str = "fixtures/fonts/NotoSans-Bold.ttf";
+const FONT: &str = "fonts/NotoSans-Bold.ttf";
 
 fn main() -> Result<(), String> {
     let args: Vec<String> = std::env::args().skip(1).collect();

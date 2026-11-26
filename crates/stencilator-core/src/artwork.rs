@@ -710,7 +710,7 @@ mod tests {
         assert_eq!(map.unwrap().palette.len(), 16);
     }
 
-    const FONT: &[u8] = include_bytes!("../../../fixtures/fonts/NotoSans-Bold.ttf");
+    const FONT: &[u8] = include_bytes!("../../../fonts/NotoSans-Bold.ttf");
 
     #[test]
     fn a_flat_drawing_keeps_its_own_colours() {

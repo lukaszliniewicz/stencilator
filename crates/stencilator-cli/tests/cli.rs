@@ -7,7 +7,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 fn reference_image() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/reference/chart-0.png")
+    fixture("reference/chart-0.png")
 }
 
 /// An empty folder holding a copy of the reference image as `in.png`.
@@ -19,14 +19,28 @@ fn workspace(name: &str) -> PathBuf {
     dir
 }
 
+fn fixture(path: &str) -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures").join(path)
+}
+
+/// Runs the command in `dir`; whether it succeeded, the report and the messages.
+fn run(dir: &Path, args: &[&str]) -> (bool, String, String) {
+    let output = Command::new(env!("CARGO_BIN_EXE_stencilator")).current_dir(dir).args(args).output().unwrap();
+    let text = |bytes: &[u8]| String::from_utf8_lossy(bytes).into_owned();
+    (output.status.success(), text(&output.stdout), text(&output.stderr))
+}
+
+/// `stencilator tiles in.png` with these options.
 fn stencilator(dir: &Path, args: &[&str]) -> (bool, String) {
-    let output = Command::new(env!("CARGO_BIN_EXE_stencilator"))
-        .current_dir(dir)
-        .args(["build", "in.png"])
-        .args(args)
-        .output()
-        .unwrap();
-    (output.status.success(), String::from_utf8_lossy(&output.stderr).into_owned())
+    let (ok, _, stderr) = run(dir, &[&["tiles", "in.png"][..], args].concat());
+    (ok, stderr)
+}
+
+/// The JSON report of a successful run.
+fn report(dir: &Path, args: &[&str]) -> serde_json::Value {
+    let (ok, stdout, stderr) = run(dir, &[args, &["--json"][..]].concat());
+    assert!(ok, "{args:?}: {stderr}");
+    serde_json::from_str(&stdout).unwrap()
 }
 
 fn names(dir: &Path) -> Vec<String> {
@@ -70,7 +84,7 @@ fn clashing_outputs_change_nothing() {
     assert!(stderr.contains("--tiles and --chart would both be"), "{stderr}");
     let (ok, stderr) = stencilator(&dir, &["--chart", "in.png"]);
     assert!(!ok);
-    assert!(stderr.contains("--chart and the input image would both be"), "{stderr}");
+    assert!(stderr.contains("--chart and the input file would both be"), "{stderr}");
     assert_eq!(fs::read(dir.join("out.png")).unwrap(), b"keep me");
     assert_eq!(fs::read(dir.join("in.png")).unwrap(), fs::read(reference_image()).unwrap());
     assert_eq!(names(&dir), ["in.png", "out.png"]);
@@ -109,17 +123,11 @@ fn settings_out_of_range_are_refused_before_reading_the_image() {
 #[test]
 fn pixel_art_gets_one_tile_per_pixel_with_merges_and_skips() {
     let dir = workspace("pixels");
-    let fox = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../fixtures/pixel-art/fox.png");
-    let output = Command::new(env!("CARGO_BIN_EXE_stencilator"))
-        .current_dir(&dir)
-        .arg("build")
-        .arg(&fox)
-        .args(["--pixels", "--tile", "10", "--line", "0.8", "--merge", "9c3d17=e8772e", "--skip", "ffffff"])
-        .args(["--stencils", "plates", "--json"])
-        .output()
-        .unwrap();
-    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
-    let summary: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let fox = fixture("pixel-art/fox.png");
+    // White is the canvas colour, so it has no stencil unless asked for.
+    let fox = fox.to_str().unwrap();
+    let summary =
+        report(&dir, &["tiles", fox, "--pixels", "--tile", "10", "--merge", "9c3d17=e8772e", "--stencils", "plates"]);
     assert_eq!(summary["tiles"], serde_json::json!([22, 22]));
     let palette: Vec<(String, u64, Option<String>)> = summary["palette"]
         .as_array()
@@ -145,5 +153,70 @@ fn pixel_art_gets_one_tile_per_pixel_with_merges_and_skips() {
 
     let (ok, stderr) = stencilator(&dir, &["--pixels", "--canvas", "100x100"]);
     assert!(!ok && stderr.contains("--canvas"), "{stderr}");
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn a_drawing_is_refused_by_tiles_and_cut_by_freeform() {
+    let dir = workspace("drawing");
+    let badge = fixture("svg/badge.svg");
+    let badge = badge.to_str().unwrap();
+    let (ok, _, stderr) = run(&dir, &["tiles", badge]);
+    assert!(!ok && stderr.contains("use stencilator freeform for SVG drawings"), "{stderr}");
+    let (ok, _, stderr) = run(&dir, &["freeform", badge, "--font-size", "20"]);
+    assert!(!ok && stderr.contains("--font-size and --text-colour are for typed text"), "{stderr}");
+
+    let summary = report(&dir, &["freeform", badge, "--stencils", "plates", "--3mf", "badge.3mf"]);
+    assert_eq!(summary["mode"], "freeform");
+    assert_eq!(summary["size_mm"], serde_json::json!([70.0, 70.0]));
+    let stencils: Vec<&str> =
+        summary["plates"].as_array().unwrap().iter().map(|p| p["stencil"].as_str().unwrap()).collect();
+    assert_eq!(stencils, ["plate-01-1d2f5c.stl", "plate-02-ef7d2d.stl"]);
+    assert_eq!(names(&dir.join("plates")), stencils);
+    assert!(fs::read(dir.join("badge.3mf")).unwrap().starts_with(b"PK\x03\x04"));
+    // The canvas colour is a paint, but has no plate.
+    assert_eq!(summary["palette"][2]["colour"], "#ffffff");
+    assert!(summary["palette"][2]["stencil"].is_null());
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn typed_text_is_saved_as_a_project_that_opens_again() {
+    let dir = workspace("text");
+    let first = report(&dir, &["freeform", "--text", "AO", "--font-size", "20", "--save", "ao.stencilator"]);
+    let plates = first["plates"].as_array().unwrap();
+    assert_eq!(plates.len(), 1);
+    // The middles of the A and the O.
+    assert_eq!(plates[0]["islands"].as_array().unwrap().len(), 2);
+    assert!(first["warnings"][0].as_str().unwrap().contains("2 islands fall out"));
+
+    // The project holds the text and its settings, and names the built-in font.
+    let saved: serde_json::Value = serde_json::from_slice(&fs::read(dir.join("ao.stencilator")).unwrap()).unwrap();
+    assert_eq!(saved["source"]["text"], "AO");
+    assert_eq!(saved["fonts"][0]["name"], "NotoSans-Bold.ttf");
+    let again = report(&dir, &["freeform", "ao.stencilator"]);
+    assert_eq!(again["plates"], first["plates"]);
+
+    // Saving over the project it came from is fine; writing anything else over it is not.
+    let finer = report(&dir, &["freeform", "ao.stencilator", "--cell", "0.05", "--save", "ao.stencilator"]);
+    assert_eq!(finer["cell_mm"], 0.05);
+    let saved: serde_json::Value = serde_json::from_slice(&fs::read(dir.join("ao.stencilator")).unwrap()).unwrap();
+    assert_eq!(saved["freeform"]["cell_mm"], 0.05);
+    let (ok, _, stderr) = run(&dir, &["freeform", "ao.stencilator", "--3mf", "ao.stencilator"]);
+    assert!(!ok && stderr.contains("--3mf and the input project would both be"), "{stderr}");
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn freeform_settings_out_of_range_are_refused_before_reading_the_file() {
+    let dir = workspace("freeform-range");
+    for (args, message) in [
+        (&["missing.svg", "--cell", "1"][..], "The cell size must be between"),
+        (&["missing.svg", "--margin", "0.5"], "The margin must be between"),
+        (&["missing.png", "--width", "1e9"], "The width must be between"),
+    ] {
+        let (ok, _, stderr) = run(&dir, &[&["freeform"][..], args].concat());
+        assert!(!ok && stderr.contains(message), "{args:?}: {stderr}");
+    }
     fs::remove_dir_all(&dir).unwrap();
 }

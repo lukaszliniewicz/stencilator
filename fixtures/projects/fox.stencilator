@@ -33,14 +33,14 @@
     "min_patch_mm2": 1.0,
     "margin_mm": 10.0,
     "min_web_mm": 0.6,
-    "min_opening_mm": 0.5,
-    "bed_mm": [
-      256.0,
-      256.0
-    ]
+    "min_opening_mm": 0.5
   },
   "stencils": {
     "thickness_mm": 1.2,
+    "bed_mm": [
+      256.0,
+      256.0
+    ],
     "merges": [
       [
         "#9c3d17",
