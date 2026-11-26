@@ -157,7 +157,11 @@ describe('the engine in WebAssembly', () => {
       name: 'fox.stencilator',
       bytes: bytes.buffer
     });
-    const edited = { ...settings, mode: 'tiles' } as const;
+    const edited = {
+      ...settings,
+      mode: 'tiles',
+      freeform: { ...settings.freeform, size: { width_mm: 190 } }
+    } as const;
     await ask({ kind: 'chart', settings: edited });
     const file = await ask({
       kind: 'projectFile',
@@ -167,5 +171,6 @@ describe('the engine in WebAssembly', () => {
     const saved = new TextDecoder().decode(file);
     expect(saved).toContain(`"seed": ${seed}`);
     expect(saved).toContain('"mode": "tiles"');
+    expect(saved).toContain('"width_mm": 190');
   });
 });

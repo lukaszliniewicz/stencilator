@@ -65,12 +65,12 @@
           <span class="name">{bench.fileName}</span>
           <span class="note">{text.picture.pixels(bench.source.width, bench.source.height)}</span>
         </p>
-        <button type="button" class="button" disabled={bench.opening} onclick={choose}>
+        <button type="button" class="button" disabled={!bench.canOpen} onclick={choose}>
           {text.picture.replace}
         </button>
       {:else}
         <p class="none">{text.picture.none}</p>
-        <button type="button" class="button" disabled={bench.opening} onclick={choose}>
+        <button type="button" class="button" disabled={!bench.canOpen} onclick={choose}>
           <svg
             width="16"
             height="16"
@@ -90,12 +90,7 @@
   {/if}
 
   <div class="project-actions">
-    <button
-      type="button"
-      class="button"
-      disabled={bench.opening || !!bench.saving}
-      onclick={chooseProject}
-    >
+    <button type="button" class="button" disabled={!bench.canOpen} onclick={chooseProject}>
       {text.project.open}
     </button>
     {#if bench.artwork && (!bench.isFreeform || bench.screen !== 'files')}

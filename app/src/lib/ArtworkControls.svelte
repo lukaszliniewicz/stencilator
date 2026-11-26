@@ -16,7 +16,9 @@
   const original = $derived(bench.freeform?.artwork);
   const font = $derived(bench.fonts.files[0]);
   const choice = $derived(font?.data ? CUSTOM : (font?.name ?? DEFAULT));
-  const tip = $derived(choice !== STENCIL && !!bench.selectedPlate?.islands.length);
+  const tip = $derived(
+    choice === DEFAULT && bench.freeform?.plates.some((plate) => plate.islands.length > 0)
+  );
 
   function openFont(event: Event): void {
     const picker = event.currentTarget as HTMLInputElement;
@@ -109,11 +111,11 @@
 {/if}
 
 <div class="actions">
-  <button type="button" class="button" disabled={bench.opening} onclick={choose}>
+  <button type="button" class="button" disabled={!bench.canOpen} onclick={choose}>
     {bench.artwork ? text.picture.replace : words.open}
   </button>
   {#if bench.artwork && !edited}
-    <button type="button" class="button" disabled={bench.opening} onclick={bench.typeText}>
+    <button type="button" class="button" disabled={!bench.canOpen} onclick={bench.typeText}>
       {words.type}
     </button>
   {/if}

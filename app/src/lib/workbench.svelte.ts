@@ -1,4 +1,5 @@
 /** The open project, live previews, editing history and downloads. */
+import { untrack } from 'svelte';
 import {
   Engine,
   type ArtworkEdits,
@@ -94,6 +95,7 @@ export class Workbench {
   });
   readonly #draw = latest((index: number) => this.#engine.plateDrawing(index));
   #history: History<Edit>;
+  #savedEdit: Edit | undefined;
   #recordTimer: ReturnType<typeof setTimeout> | undefined;
   #buildSerial = 0;
   #nextFontRevision = 0;
@@ -132,10 +134,9 @@ export class Workbench {
   readonly projectName = $derived(this.#projectName || projectFileName(this.base));
   readonly problem = $derived(this.#actionProblem || this.#buildProblem);
   readonly canShowFiles = $derived((this.isFreeform ? this.freeform : this.chart) !== undefined);
-  readonly ready = $derived(
-    this.canShowFiles && this.current && this.valid && !this.opening && !this.saving
-  );
-  readonly canSaveProject = $derived(this.artwork !== undefined && !this.opening && !this.saving);
+  readonly canOpen = $derived(!this.opening && !this.saving);
+  readonly ready = $derived(this.canShowFiles && this.current && this.valid && this.canOpen);
+  readonly canSaveProject = $derived(this.artwork !== undefined && this.canOpen);
   readonly stencilsPossible = $derived(
     this.isFreeform
       ? this.freeform !== undefined
@@ -182,8 +183,10 @@ export class Workbench {
     $effect(() => {
       const artwork = this.artwork;
       if (!artwork || this.opening) return;
-      const input: Build = { ...this.#snapshot(), artwork, serial: ++this.#buildSerial };
-      this.current = false;
+      const edit = this.#snapshot();
+      // A failed open leaves any finished build intact.
+      if (untrack(() => this.current)) return;
+      const input: Build = { ...edit, artwork, serial: ++this.#buildSerial };
       this.progress = input.settings.projectMode === 'freeform' ? 'paints' : undefined;
       void this.#build(input).then(
         (outcome) => {
@@ -194,8 +197,14 @@ export class Workbench {
           if (mode === 'tiles') this.chart = summary;
           else this.freeform = summary;
           const match = colour ? this.colours.indexOf(colour) : -1;
-          this.selected = match >= 0 ? match : (this.freeform?.plates[0]?.paint ?? 0);
-          if (!this.isFreeform && match < 0) this.selected = 0;
+          if (match >= 0) this.selected = match;
+          else {
+            const previous = Math.min(this.selected, this.colours.length - 1);
+            this.selected =
+              mode === 'freeform' && !summary.plates.some((plate) => plate.paint === previous)
+                ? (summary.plates[0]?.paint ?? previous)
+                : previous;
+          }
           this.#buildProblem = '';
           this.progress = undefined;
           this.valid = true;
@@ -328,7 +337,6 @@ export class Workbench {
   };
 
   open = async (file: File): Promise<void> => {
-    if (this.opening || this.saving) return;
     const kind = fileKind(file);
     if (!kind) {
       this.#actionProblem = text.errors.notArtwork;
@@ -356,7 +364,17 @@ export class Workbench {
     });
 
   async #openSource(load: () => Promise<Loaded>): Promise<void> {
-    if (this.opening || this.saving) return;
+    if (!this.canOpen) {
+      this.#actionProblem = text.project.openBusy;
+      return;
+    }
+    if (
+      this.#savedEdit &&
+      !sameEdit(this.#savedEdit, this.#snapshot()) &&
+      !window.confirm(text.project.replaceUnsaved)
+    )
+      return;
+
     this.opening = true;
     this.#actionProblem = '';
     try {
@@ -402,9 +420,11 @@ export class Workbench {
       this.artwork = source;
       this.typed = source.kind === 'text' ? source.style : undefined;
       this.fonts = keepHistory ? this.fonts : { revision: 0, files: fonts };
+      const initial = this.#snapshot();
+      this.#savedEdit = initial;
       if (!keepHistory) {
         this.#recordTimer = undefined;
-        this.#history = new History(this.#snapshot(), sameEdit);
+        this.#history = new History(initial, sameEdit);
         this.#syncHistory();
       }
     } catch (error) {
@@ -493,16 +513,27 @@ export class Workbench {
   saveProject = (): Promise<void> => {
     if (!this.canSaveProject) return Promise.resolve();
     const edit = this.#snapshot();
-    return this.#save(this.projectName, 'application/json', () =>
-      this.#engine.projectFile(toProjectSettings(edit.settings), this.#edits(edit))
+    return this.#save(
+      this.projectName,
+      'application/json',
+      () => this.#engine.projectFile(toProjectSettings(edit.settings), this.#edits(edit)),
+      () => {
+        this.#savedEdit = edit;
+      }
     );
   };
 
-  async #save(name: string, type: string, task: () => Promise<Uint8Array>): Promise<void> {
+  async #save(
+    name: string,
+    type: string,
+    task: () => Promise<Uint8Array>,
+    onSaved?: () => void
+  ): Promise<void> {
     this.saving = name;
     this.#actionProblem = '';
     try {
       save(await task(), name, type);
+      onSaved?.();
     } catch (error) {
       this.#actionProblem = message(error);
     } finally {

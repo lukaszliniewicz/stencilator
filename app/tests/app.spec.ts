@@ -106,6 +106,25 @@ test('a mistake is explained and can be undone', async ({ page }) => {
   expect(problems).toEqual([]);
 });
 
+test('a selected paint keeps its place when a photo is reduced to new colours', async ({
+  page
+}) => {
+  await page.goto('/');
+  const photo = fileURLToPath(
+    new URL('../../fixtures/reference/plates-photo.png', import.meta.url)
+  );
+  await page.getByLabel('Picture file', { exact: true }).setInputFiles(photo);
+  await expect(page.getByRole('img', { name: 'The chart, 34 by 23 tiles' })).toBeVisible();
+  const paint = page.getByRole('button', { name: /^Paint 4,/ });
+  await paint.click();
+  const original = await paint.getAttribute('aria-label');
+
+  await page.getByLabel('Tile (mm)', { exact: true }).fill('6');
+  await expect(page.getByRole('img', { name: 'The chart, 29 by 19 tiles' })).toBeVisible();
+  expect(await paint.getAttribute('aria-label')).not.toBe(original);
+  await expect(paint).toHaveAttribute('aria-pressed', 'true');
+});
+
 test('the example, a dropped picture and the theme', async ({ page }) => {
   const problems = watchForProblems(page);
   await page.goto('/');
@@ -233,10 +252,12 @@ test('typed text uses the selected font and can be saved with every paint untick
   await page.getByRole('textbox', { name: 'Text', exact: true }).fill('AO8');
   await expect(page.getByText('4 loose islands', { exact: true })).toBeVisible();
 
+  await page.getByRole('button', { name: /^Paint 2, #FFFFFF,/ }).click();
   await page.getByRole('button', { name: 'Switch to Allerta Stencil' }).click();
   await expect(page.getByRole('combobox', { name: 'Font' })).toHaveValue(
     'AllertaStencil-Regular.ttf'
   );
+  await page.getByRole('button', { name: /^Paint 1, #000000,/ }).click();
   await expect(page.getByText('4 loose islands', { exact: true })).toHaveCount(0);
   await page.getByRole('button', { name: 'Side by side' }).click();
   await expect(
@@ -256,7 +277,9 @@ test('typed text uses the selected font and can be saved with every paint untick
   expect(problems).toEqual([]);
 });
 
-test('a picture can move between modes even with an unfinished setting', async ({ page }) => {
+test('a picture can switch modes and be saved with an unfinished setting in the other mode', async ({
+  page
+}) => {
   const problems = watchForProblems(page);
   await page.goto('/');
   await openPicture(page);
@@ -268,7 +291,10 @@ test('a picture can move between modes even with an unfinished setting', async (
   await expect(page.getByRole('status')).toHaveText(/200 × 150 mm · 5 paints · 4 plates/);
   await expect(page.getByRole('img', { name: 'Artwork reduced to its paints' })).toBeVisible();
 
-  await page.getByLabel('Width (mm)', { exact: true }).fill('');
+  const width = page.getByLabel('Width (mm)', { exact: true });
+  await width.fill('160');
+  await expect(page.getByRole('status')).toContainText('160 × 120 mm');
+  await width.fill('');
   await expect(page.getByRole('alert')).toHaveText('The width must be between 1 and 10000 mm.');
   await modes.getByRole('button', { name: 'Tiles', exact: true }).click();
   await expect(chart).toBeVisible();
@@ -277,5 +303,58 @@ test('a picture can move between modes even with an unfinished setting', async (
     'aria-pressed',
     'true'
   );
+
+  const saved = page.waitForEvent('download');
+  await page.getByRole('button', { name: 'Save project', exact: true }).click();
+  const design = await saved;
+  const buffer = await readFile(await design.path());
+  await page.reload();
+  await page.getByLabel('Stencilator project file', { exact: true }).setInputFiles({
+    name: design.suggestedFilename(),
+    mimeType: 'application/json',
+    buffer
+  });
+  await expect(chart).toBeVisible();
+  await modes.getByRole('button', { name: 'Free-form' }).click();
+  await expect(width).toHaveValue('160');
+  await expect(page.getByRole('alert')).toHaveCount(0);
+  expect(problems).toEqual([]);
+});
+
+test('pasting into text keeps the artwork and replacing unsaved edits asks first', async ({
+  page
+}) => {
+  const problems = watchForProblems(page);
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Type text', exact: true }).click();
+  const typed = page.getByRole('textbox', { name: 'Text', exact: true });
+  await typed.fill('PAINT');
+
+  let prompt: string | undefined;
+  page.on('dialog', (dialog) => {
+    prompt = dialog.message();
+    void dialog.dismiss();
+  });
+  await typed.evaluate((element, base64) => {
+    const bytes = Uint8Array.from(atob(base64), (character) => character.charCodeAt(0));
+    const clipboardData = new DataTransfer();
+    clipboardData.items.add(new File([bytes], 'pasted.png', { type: 'image/png' }));
+    element.dispatchEvent(new ClipboardEvent('paste', { clipboardData, bubbles: true }));
+  }, readFileSync(IMAGE).toString('base64'));
+  expect(prompt).toBeUndefined();
+  await expect(typed).toHaveValue('PAINT');
+
+  const picker = page.getByLabel('Picture file', { exact: true });
+  await picker.setInputFiles(IMAGE);
+  expect(prompt).toBe('This project has unsaved changes. Replace it without saving?');
+  await expect(typed).toHaveValue('PAINT');
+
+  await savedName(page, () =>
+    page.getByRole('button', { name: 'Save project', exact: true }).click()
+  );
+  prompt = undefined;
+  await picker.setInputFiles(IMAGE);
+  await expect(page.getByText('chart-0.png', { exact: true })).toBeVisible();
+  expect(prompt).toBeUndefined();
   expect(problems).toEqual([]);
 });

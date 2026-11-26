@@ -196,7 +196,9 @@ export const text = {
     heading: 'Stencilator project',
     save: 'Save project',
     body: 'Keep the artwork, fonts, settings and paint choices together. Reopen this file here or use it on the command line.',
-    opening: 'Opening…'
+    opening: 'Opening…',
+    openBusy: 'Wait for the current file to finish opening or saving, then try again.',
+    replaceUnsaved: 'This project has unsaved changes. Replace it without saving?'
   },
 
   freeform: {

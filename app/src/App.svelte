@@ -19,7 +19,7 @@
   let dragging = $state(false);
 
   const choose = (): void => {
-    picker?.click();
+    if (bench.canOpen) picker?.click();
   };
 
   const openFirst = (files: FileList | null | undefined): void => {
@@ -31,6 +31,12 @@
     event.dataTransfer?.types.includes('Files') ?? false;
 
   function paste(event: ClipboardEvent): void {
+    if (
+      event.defaultPrevented ||
+      event.target instanceof HTMLInputElement ||
+      event.target instanceof HTMLTextAreaElement
+    )
+      return;
     openFirst(event.clipboardData?.files);
   }
 

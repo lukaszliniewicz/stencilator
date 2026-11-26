@@ -56,32 +56,38 @@ function takePreview(preview: Wasm.RasterPreview): RasterPreview {
   return { width, height, rgba: preview.pixels() };
 }
 
-/**
- * Both modes share the project file. While previewing, leave the inactive mode's
- * settings alone so a half-entered number there cannot block the active mode.
- */
 function applySettings(
   project: Wasm.Project,
   settings: ProjectSettings,
-  activeOnly: boolean
+  use: 'preview' | 'save'
 ): void {
-  if (activeOnly) {
-    const previous = settingsOf(project);
-    settings =
-      settings.mode === 'tiles'
-        ? {
-            ...settings,
-            freeform: previous.freeform,
-            stencils: {
-              ...settings.stencils,
-              thickness_mm: previous.stencils.thickness_mm,
-              bed_mm: previous.stencils.bed_mm
-            }
-          }
-        : { ...settings, tiles: previous.tiles };
+  // Keep the exact Rust seed on every write.
+  if (use === 'save') {
+    try {
+      project.setSettings(JSON.stringify(settings), true);
+      return;
+    } catch {
+      // The engine left the project unchanged. Retry with its last valid settings
+      // for the inactive mode, so an unfinished field there cannot block saving.
+    }
   }
-  // The palette's seed is kept in Rust so all 64 bits survive the trip through JSON.
-  project.setSettings(JSON.stringify(settings), true);
+
+  const previous = settingsOf(project);
+  const active =
+    settings.mode === 'tiles'
+      ? {
+          ...settings,
+          freeform: previous.freeform,
+          stencils: {
+            ...settings.stencils,
+            // Thickness affects STL files, but an unfinished value should not block the chart.
+            thickness_mm:
+              use === 'preview' ? previous.stencils.thickness_mm : settings.stencils.thickness_mm,
+            bed_mm: previous.stencils.bed_mm
+          }
+        }
+      : { ...settings, tiles: previous.tiles };
+  project.setSettings(JSON.stringify(active), true);
 }
 
 async function applyArtwork(workspace: Workspace, { typed, fonts }: ArtworkEdits): Promise<void> {
@@ -221,7 +227,7 @@ export function createHandlers(
   ): Promise<Answer> {
     const w = opened();
     clearResults();
-    applySettings(w.project, settings, true);
+    applySettings(w.project, settings, 'preview');
     await applyArtwork(w, edits);
     progress?.('paints');
     const artwork = await artworkOf(w);
@@ -282,7 +288,7 @@ export function createHandlers(
         const { project, picture } = opened();
         clearResults();
         if (!picture) throw new Error(text.errors.tilesNeedPicture);
-        applySettings(project, request.settings, true);
+        applySettings(project, request.settings, 'preview');
         chart = project.tileChart(picture);
         const summary = {
           tilesX: chart.tilesX,
@@ -326,7 +332,7 @@ export function createHandlers(
         return file(builtPlates().threeMf(opened().project));
       case 'projectFile': {
         const w = opened();
-        applySettings(w.project, request.settings, false);
+        applySettings(w.project, request.settings, 'save');
         await applyArtwork(w, request.edits);
         if (!w.picture) await artworkOf(w);
         return file(w.project.file());

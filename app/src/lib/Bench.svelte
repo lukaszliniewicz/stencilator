@@ -53,9 +53,13 @@
     <h1>{text.bench.drop}</h1>
     <p>{text.bench.dropBody}</p>
     <div class="actions">
-      <button type="button" class="button primary" onclick={choose}>{text.bench.choose}</button>
-      <button type="button" class="button" onclick={bench.openExample}>{text.bench.example}</button>
-      <button type="button" class="button" disabled={bench.opening} onclick={bench.typeText}>
+      <button type="button" class="button primary" disabled={!bench.canOpen} onclick={choose}>
+        {text.bench.choose}
+      </button>
+      <button type="button" class="button" disabled={!bench.canOpen} onclick={bench.openExample}>
+        {text.bench.example}
+      </button>
+      <button type="button" class="button" disabled={!bench.canOpen} onclick={bench.typeText}>
         {text.freeform.type}
       </button>
     </div>
