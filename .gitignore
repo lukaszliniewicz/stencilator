@@ -1,4 +1,5 @@
 /target
+/app/src/engine/wasm/
 *.stl
 *.3mf
 

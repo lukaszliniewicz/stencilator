@@ -15,10 +15,8 @@ use stencilator_core::chart::{ChartSettings, TileChart, build_chart};
 use stencilator_core::colour::Rgb;
 use stencilator_core::export::{ChartFormat, encode_chart};
 use stencilator_core::quantise::ColourMode;
-use stencilator_core::stencil::{
-    RECOMMENDED_MIN_WEB_MM, check_thickness, encode_stl, stencil_filename, stencil_triangles,
-};
-use stencilator_core::{VERSION, source};
+use stencilator_core::stencil::{RECOMMENDED_MIN_WEB_MM, check_thickness, stencil_filename, stencil_files};
+use stencilator_core::{VERSION, source, zip};
 
 #[derive(Parser)]
 #[command(name = "stencilator", version = VERSION, about = "Turns images into painting charts and 3D-printable stencils.")]
@@ -74,8 +72,9 @@ struct Build {
     /// Write the tiles packed edge to edge: .png, .jpg or .pdf.
     #[arg(long, value_name = "FILE")]
     tiles: Option<PathBuf>,
-    /// Write one STL stencil per colour into this folder.
-    #[arg(long, value_name = "DIR")]
+    /// Write one STL stencil per colour into this folder, or into one zip if the name
+    /// ends in .zip.
+    #[arg(long, value_name = "DIR|ZIP")]
     stencils: Option<PathBuf>,
     /// Stencil thickness in millimetres.
     #[arg(long, value_name = "MM", default_value_t = 1.2)]
@@ -109,6 +108,10 @@ fn hex(colour: Rgb) -> String {
     format!("#{:02x}{:02x}{:02x}", colour[0], colour[1], colour[2])
 }
 
+fn is_zip(path: &Path) -> bool {
+    path.extension().is_some_and(|e| e.eq_ignore_ascii_case("zip"))
+}
+
 fn build(args: &Build) -> Result<(), String> {
     let settings = ChartSettings {
         canvas_mm: args.canvas,
@@ -135,10 +138,14 @@ fn build(args: &Build) -> Result<(), String> {
             destinations.push((flag.to_owned(), path.clone()));
         }
     }
-    if let Some(dir) = &args.stencils {
-        for &colour in &chart.palette {
-            destinations.push((format!("the stencil for {}", hex(colour)), dir.join(stencil_filename(colour))));
+    match &args.stencils {
+        Some(path) if is_zip(path) => destinations.push(("--stencils".to_owned(), path.clone())),
+        Some(dir) => {
+            for &colour in &chart.palette {
+                destinations.push((format!("the stencil for {}", hex(colour)), dir.join(stencil_filename(colour))));
+            }
         }
+        None => {}
     }
     files::check_destinations(&destinations, &args.image)?;
 
@@ -155,21 +162,20 @@ fn build(args: &Build) -> Result<(), String> {
     }
     let mut warnings = Vec::new();
     let mut created = Vec::new();
-    if let Some(dir) = &args.stencils {
+    if let Some(path) = &args.stencils {
         if chart.layout.line_px > 0 && chart.layout.line_mm() < RECOMMENDED_MIN_WEB_MM {
             warnings.push(format!(
                 "grid lines of {:.2} mm make a fragile stencil web; {RECOMMENDED_MIN_WEB_MM} mm or more suits a 0.4 mm nozzle",
                 chart.layout.line_mm()
             ));
         }
-        for (index, &colour) in (0..).zip(&chart.palette) {
-            let holes: Vec<bool> = chart.labels.iter().map(|&l| l == index).collect();
-            let triangles = stencil_triangles(&holes, &chart.layout, args.thickness).map_err(|e| e.to_string())?;
-            let [r, g, b] = colour;
-            let stl = encode_stl(&triangles, &format!("stencil rgb({r}, {g}, {b})"));
-            outputs.push((dir.join(stencil_filename(colour)), stl));
+        let stencils = stencil_files(&chart, args.thickness).map_err(|e| e.to_string())?;
+        if is_zip(path) {
+            outputs.push((path.clone(), zip::zip(&stencils).map_err(|e| e.to_string())?));
+        } else {
+            outputs.extend(stencils.into_iter().map(|(name, stl)| (path.join(name), stl)));
+            created = files::create_dirs(path)?;
         }
-        created = files::create_dirs(dir)?;
     }
     if let Err(message) = files::write_all(&outputs) {
         files::remove_dirs(&created);

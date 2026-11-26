@@ -13,6 +13,7 @@
 use std::ops::RangeInclusive;
 
 use crate::Error;
+use crate::chart::TileChart;
 use crate::colour::Rgb;
 use crate::layout::{GridLayout, MM_PER_INCH};
 
@@ -33,6 +34,30 @@ type Point3 = (u32, u32, u32);
 pub fn stencil_filename(colour: Rgb) -> String {
     let [r, g, b] = colour;
     format!("stencil_color_{r:03}_{g:03}_{b:03}.stl")
+}
+
+/// The stencil of palette colour `index` as binary STL, with its [`stencil_filename`].
+///
+/// # Errors
+///
+/// [`Error::Stencil`] when there is no such colour, or as [`stencil_triangles`].
+pub fn stencil_file(chart: &TileChart, index: u32, thickness_mm: f64) -> Result<(String, Vec<u8>), Error> {
+    let &[r, g, b] = chart
+        .palette
+        .get(index as usize)
+        .ok_or_else(|| Error::Stencil(format!("There is no colour {} in the palette.", u64::from(index) + 1)))?;
+    let holes: Vec<bool> = chart.labels.iter().map(|&l| l == index).collect();
+    let triangles = stencil_triangles(&holes, &chart.layout, thickness_mm)?;
+    Ok((stencil_filename([r, g, b]), encode_stl(&triangles, &format!("stencil rgb({r}, {g}, {b})"))))
+}
+
+/// Every colour's stencil, in palette order, as by [`stencil_file`].
+///
+/// # Errors
+///
+/// As [`stencil_triangles`].
+pub fn stencil_files(chart: &TileChart, thickness_mm: f64) -> Result<Vec<(String, Vec<u8>)>, Error> {
+    (0..).zip(&chart.palette).map(|(index, _)| stencil_file(chart, index, thickness_mm)).collect()
 }
 
 /// A closed plate mesh with a through-hole for every `true` tile.

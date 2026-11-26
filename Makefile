@@ -1,8 +1,9 @@
 # Everyday commands. `make check` is what CI runs.
 
+TARGET_DIR ?= $(or $(CARGO_TARGET_DIR),target)
 WASM_CRATES := -p stencilator-core -p stencilator-wasm -p phase0 -p phase0-wasm
 
-.PHONY: check fmt lint test deny unused fix spike-wasm
+.PHONY: check fmt lint test deny unused fix wasm parity spike-wasm
 
 check: fmt lint test deny unused
 
@@ -26,9 +27,22 @@ fix:
 	cargo fmt --all
 	cargo clippy --workspace --all-targets --fix --allow-dirty --allow-staged
 
+# The browser build of the engine, into the app's source tree (ignored by git).
+# Needs wasm-bindgen-cli at the same version as the wasm-bindgen crate, and binaryen.
+WASM_PKG ?= app/src/engine/wasm
+
+wasm:
+	cargo build -p stencilator-wasm --target wasm32-unknown-unknown --profile wasm --locked
+	wasm-bindgen --target web --out-dir $(WASM_PKG) $(TARGET_DIR)/wasm32-unknown-unknown/wasm/stencilator_wasm.wasm
+	wasm-opt -Oz --strip-debug --strip-producers -o $(WASM_PKG)/stencilator_wasm_bg.wasm $(WASM_PKG)/stencilator_wasm_bg.wasm
+
+# The browser build and the command line must write identical files.
+parity: wasm
+	cargo build -p stencilator-cli --locked
+	node crates/stencilator-wasm/parity.mjs $(WASM_PKG) $(TARGET_DIR)/debug/stencilator .
+
 # Spike 1: the browser build, its size, and the comparison with native.
 # Needs wasm-bindgen-cli 0.2.130, binaryen (wasm-opt), brotli and Node.
-TARGET_DIR ?= $(or $(CARGO_TARGET_DIR),target)
 WASM_OUT ?= $(TARGET_DIR)/spike-wasm
 WASM_FILE := $(WASM_OUT)/phase0_wasm_bg.wasm
 

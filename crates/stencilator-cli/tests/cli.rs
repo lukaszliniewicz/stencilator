@@ -53,6 +53,17 @@ fn writes_the_chart_and_one_stencil_per_colour() {
 }
 
 #[test]
+fn stencils_can_go_into_one_zip() {
+    let dir = workspace("zip");
+    let (ok, stderr) = stencilator(&dir, &["--canvas", "47x40", "--stencils", "plates.zip"]);
+    assert!(ok, "{stderr}");
+    let archive = fs::read(dir.join("plates.zip")).unwrap();
+    assert!(archive.starts_with(b"PK\x03\x04"));
+    assert_eq!(names(&dir), ["in.png", "plates.zip"]);
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
 fn clashing_outputs_change_nothing() {
     let dir = workspace("clash");
     fs::write(dir.join("out.png"), b"keep me").unwrap();

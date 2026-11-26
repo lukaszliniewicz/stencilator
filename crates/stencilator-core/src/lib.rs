@@ -22,6 +22,7 @@ mod rng;
 pub mod source;
 pub mod stencil;
 mod text;
+pub mod zip;
 
 pub use error::Error;
 
