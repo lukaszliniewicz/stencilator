@@ -1,0 +1,18 @@
+[package]
+name = "phase0-wasm"
+description = "Phase 0 spike 1: the spike library compiled for the browser."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+phase0 = { path = "../phase0" }
+wasm-bindgen = "=0.2.130"
+
+[lints]
+workspace = true

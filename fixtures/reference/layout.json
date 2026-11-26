@@ -1,0 +1,303 @@
+{
+ "cases": [
+  {
+   "name": "default settings",
+   "image_size": [
+    64,
+    48
+   ],
+   "canvas_mm": [
+    200.0,
+    200.0
+   ],
+   "tile_mm": 5.0,
+   "line_mm": 0.8,
+   "dpi": 300,
+   "layout": {
+    "tiles_x": 34,
+    "tiles_y": 26,
+    "tile_px": 59,
+    "line_px": 9,
+    "dpi": 300,
+    "pitch_px": 68,
+    "width_px": 2321,
+    "height_px": 1777,
+    "width_mm": 196.5113333333333,
+    "height_mm": 150.45266666666666,
+    "tile_mm": 4.995333333333333,
+    "line_mm": 0.7619999999999999
+   }
+  },
+  {
+   "name": "wide image",
+   "image_size": [
+    1000,
+    250
+   ],
+   "canvas_mm": [
+    200.0,
+    200.0
+   ],
+   "tile_mm": 5.0,
+   "line_mm": 0.8,
+   "dpi": 300,
+   "layout": {
+    "tiles_x": 34,
+    "tiles_y": 8,
+    "tile_px": 59,
+    "line_px": 9,
+    "dpi": 300,
+    "pitch_px": 68,
+    "width_px": 2321,
+    "height_px": 553,
+    "width_mm": 196.5113333333333,
+    "height_mm": 46.82066666666666,
+    "tile_mm": 4.995333333333333,
+    "line_mm": 0.7619999999999999
+   }
+  },
+  {
+   "name": "tall image",
+   "image_size": [
+    250,
+    1000
+   ],
+   "canvas_mm": [
+    200.0,
+    200.0
+   ],
+   "tile_mm": 5.0,
+   "line_mm": 0.8,
+   "dpi": 300,
+   "layout": {
+    "tiles_x": 8,
+    "tiles_y": 34,
+    "tile_px": 59,
+    "line_px": 9,
+    "dpi": 300,
+    "pitch_px": 68,
+    "width_px": 553,
+    "height_px": 2321,
+    "width_mm": 46.82066666666666,
+    "height_mm": 196.5113333333333,
+    "tile_mm": 4.995333333333333,
+    "line_mm": 0.7619999999999999
+   }
+  },
+  {
+   "name": "no grid lines",
+   "image_size": [
+    640,
+    480
+   ],
+   "canvas_mm": [
+    300.0,
+    210.0
+   ],
+   "tile_mm": 3.0,
+   "line_mm": 0.0,
+   "dpi": 150,
+   "layout": {
+    "tiles_x": 91,
+    "tiles_y": 68,
+    "tile_px": 18,
+    "line_px": 0,
+    "dpi": 150,
+    "pitch_px": 18,
+    "width_px": 1638,
+    "height_px": 1224,
+    "width_mm": 277.368,
+    "height_mm": 207.26399999999998,
+    "tile_mm": 3.0479999999999996,
+    "line_mm": 0.0
+   }
+  },
+  {
+   "name": "thin line rounds up to one pixel",
+   "image_size": [
+    640,
+    480
+   ],
+   "canvas_mm": [
+    300.0,
+    210.0
+   ],
+   "tile_mm": 3.0,
+   "line_mm": 0.01,
+   "dpi": 150,
+   "layout": {
+    "tiles_x": 87,
+    "tiles_y": 65,
+    "tile_px": 18,
+    "line_px": 1,
+    "dpi": 150,
+    "pitch_px": 19,
+    "width_px": 1654,
+    "height_px": 1236,
+    "width_mm": 280.07733333333334,
+    "height_mm": 209.296,
+    "tile_mm": 3.0479999999999996,
+    "line_mm": 0.16933333333333334
+   }
+  },
+  {
+   "name": "one-pixel image",
+   "image_size": [
+    1,
+    1
+   ],
+   "canvas_mm": [
+    50.0,
+    50.0
+   ],
+   "tile_mm": 5.0,
+   "line_mm": 0.5,
+   "dpi": 72,
+   "layout": {
+    "tiles_x": 9,
+    "tiles_y": 9,
+    "tile_px": 14,
+    "line_px": 1,
+    "dpi": 72,
+    "pitch_px": 15,
+    "width_px": 136,
+    "height_px": 136,
+    "width_mm": 47.977777777777774,
+    "height_mm": 47.977777777777774,
+    "tile_mm": 4.938888888888889,
+    "line_mm": 0.35277777777777775
+   }
+  },
+  {
+   "name": "near the tile limit",
+   "image_size": [
+    640,
+    480
+   ],
+   "canvas_mm": [
+    1000.0,
+    1000.0
+   ],
+   "tile_mm": 2.0,
+   "line_mm": 0.2,
+   "dpi": 300,
+   "layout": {
+    "tiles_x": 454,
+    "tiles_y": 340,
+    "tile_px": 24,
+    "line_px": 2,
+    "dpi": 300,
+    "pitch_px": 26,
+    "width_px": 11806,
+    "height_px": 8842,
+    "width_mm": 999.5746666666665,
+    "height_mm": 748.6226666666666,
+    "tile_mm": 2.032,
+    "line_mm": 0.16933333333333334
+   }
+  },
+  {
+   "name": "over the tile limit",
+   "image_size": [
+    4000,
+    3000
+   ],
+   "canvas_mm": [
+    1000.0,
+    1000.0
+   ],
+   "tile_mm": 1.5,
+   "line_mm": 0.2,
+   "dpi": 300,
+   "error": "That makes 260,780 tiles; the limit is 250,000. Use larger tiles or a smaller canvas."
+  },
+  {
+   "name": "canvas too small",
+   "image_size": [
+    100,
+    100
+   ],
+   "canvas_mm": [
+    4.0,
+    4.0
+   ],
+   "tile_mm": 5.0,
+   "line_mm": 0.8,
+   "dpi": 300,
+   "error": "The canvas is too small for a single tile. Enlarge it or use smaller tiles."
+  },
+  {
+   "name": "tile under one pixel",
+   "image_size": [
+    100,
+    100
+   ],
+   "canvas_mm": [
+    200.0,
+    200.0
+   ],
+   "tile_mm": 0.01,
+   "line_mm": 0.0,
+   "dpi": 300,
+   "error": "The tile is smaller than one pixel at this DPI."
+  },
+  {
+   "name": "zero dpi",
+   "image_size": [
+    100,
+    100
+   ],
+   "canvas_mm": [
+    200.0,
+    200.0
+   ],
+   "tile_mm": 5.0,
+   "line_mm": 0.8,
+   "dpi": 0,
+   "error": "DPI must be positive."
+  },
+  {
+   "name": "empty image",
+   "image_size": [
+    0,
+    10
+   ],
+   "canvas_mm": [
+    200.0,
+    200.0
+   ],
+   "tile_mm": 5.0,
+   "line_mm": 0.8,
+   "dpi": 300,
+   "error": "The image is empty."
+  },
+  {
+   "name": "canvas edge on a pixel boundary",
+   "image_size": [
+    300,
+    200
+   ],
+   "canvas_mm": [
+    25.4,
+    25.4
+   ],
+   "tile_mm": 1.0,
+   "line_mm": 0.1,
+   "dpi": 300,
+   "layout": {
+    "tiles_x": 23,
+    "tiles_y": 15,
+    "tile_px": 12,
+    "line_px": 1,
+    "dpi": 300,
+    "pitch_px": 13,
+    "width_px": 300,
+    "height_px": 196,
+    "width_mm": 25.4,
+    "height_mm": 16.594666666666665,
+    "tile_mm": 1.016,
+    "line_mm": 0.08466666666666667
+   }
+  }
+ ]
+}

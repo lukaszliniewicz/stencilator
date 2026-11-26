@@ -1,0 +1,18 @@
+[package]
+name = "stencilator-wasm"
+description = "Browser build of the Stencilator engine."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+stencilator-core.workspace = true
+wasm-bindgen = "=0.2.130"
+
+[lints]
+workspace = true

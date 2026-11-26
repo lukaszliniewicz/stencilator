@@ -1,0 +1,6 @@
+/target
+*.stl
+*.3mf
+
+# Working notes and plans that stay on this machine.
+/internal/

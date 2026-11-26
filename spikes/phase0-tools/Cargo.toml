@@ -1,0 +1,16 @@
+[package]
+name = "phase0-tools"
+description = "Phase 0 spikes: native programs that drive the spike library."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+image = { version = "0.25.10", default-features = false, features = ["png"] }
+phase0 = { path = "../phase0" }
+usvg = { version = "0.50.0", default-features = false, features = ["text"] }
+
+[lints]
+workspace = true

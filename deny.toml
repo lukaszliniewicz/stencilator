@@ -1,0 +1,48 @@
+# cargo-deny: licences, security advisories, duplicate or wildcard crates and
+# sources. `make check` runs `cargo deny check`.
+
+[graph]
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "aarch64-apple-darwin",
+    "x86_64-pc-windows-msvc",
+    "wasm32-unknown-unknown",
+]
+
+[advisories]
+# Advisories fail the check. Ignore one only with a dated reason.
+ignore = [
+    # 2026-11-26: chrono is unmaintained, not vulnerable. Only the MCP server
+    # pulls it in, through rmcp and schemars; the engine and the browser build
+    # do not. Drop this once rmcp no longer depends on it.
+    { id = "RUSTSEC-2026-0543", reason = "unmaintained chrono via rmcp, MCP shell only" },
+]
+
+[licenses]
+# Permissive licences only, so the project's own licence stays a free choice.
+allow = [
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    # jpeg-encoder: permissive, but binaries must credit the Independent JPEG Group
+    # in their documentation. The README carries that line.
+    "IJG",
+    "ISC",
+    "MIT",
+    "Unicode-3.0",
+    "Zlib",
+]
+confidence-threshold = 0.9
+
+[licenses.private]
+# Workspace crates are not published.
+ignore = true
+
+[bans]
+multiple-versions = "warn"
+wildcards = "deny"
+allow-wildcard-paths = true
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"

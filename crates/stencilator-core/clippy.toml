@@ -1,0 +1,63 @@
+# The engine computes only. Input, output, time and randomness from the
+# environment belong to the shells (command line, MCP server, browser build).
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+doc-valid-idents = ["NumPy", "SplitMix64", "CIELAB", "WebAssembly", ".."]
+
+disallowed-types = [
+    { path = "std::fs::File", reason = "the engine never touches the disk; take bytes, return bytes" },
+    { path = "std::net::TcpStream", reason = "the engine never uses the network" },
+    { path = "std::process::Command", reason = "the engine never starts processes" },
+    { path = "std::collections::HashMap", reason = "random iteration order breaks same-input-same-bytes; use BTreeMap or a Vec" },
+    { path = "std::collections::HashSet", reason = "random iteration order breaks same-input-same-bytes; use BTreeSet or a Vec" },
+]
+
+disallowed-methods = [
+    { path = "std::fs::read", reason = "the engine never touches the disk" },
+    { path = "std::fs::read_to_string", reason = "the engine never touches the disk" },
+    { path = "std::fs::write", reason = "the engine never touches the disk" },
+    { path = "std::env::var", reason = "settings arrive as arguments, never from the environment" },
+    { path = "std::env::var_os", reason = "settings arrive as arguments, never from the environment" },
+    { path = "std::time::SystemTime::now", reason = "output must not depend on the clock" },
+    { path = "std::time::Instant::now", reason = "output must not depend on the clock" },
+    { path = "f64::powf", reason = "platform maths libraries differ in the last bit; use libm so native and browser agree" },
+    { path = "f64::powi", reason = "platform maths libraries differ in the last bit; use libm so native and browser agree" },
+    { path = "f64::cbrt", reason = "platform maths libraries differ in the last bit; use libm so native and browser agree" },
+    { path = "f64::exp", reason = "platform maths libraries differ in the last bit; use libm so native and browser agree" },
+    { path = "f64::exp2", reason = "platform maths libraries differ in the last bit; use libm so native and browser agree" },
+    { path = "f64::ln", reason = "platform maths libraries differ in the last bit; use libm so native and browser agree" },
+    { path = "f64::log", reason = "platform maths libraries differ in the last bit; use libm so native and browser agree" },
+    { path = "f64::log2", reason = "platform maths libraries differ in the last bit; use libm so native and browser agree" },
+    { path = "f64::log10", reason = "platform maths libraries differ in the last bit; use libm so native and browser agree" },
+    { path = "f64::sin", reason = "platform maths libraries differ in the last bit; use libm so native and browser agree" },
+    { path = "f64::cos", reason = "platform maths libraries differ in the last bit; use libm so native and browser agree" },
+    { path = "f64::tan", reason = "platform maths libraries differ in the last bit; use libm so native and browser agree" },
+    { path = "f64::asin", reason = "platform maths libraries differ in the last bit; use libm so native and browser agree" },
+    { path = "f64::acos", reason = "platform maths libraries differ in the last bit; use libm so native and browser agree" },
+    { path = "f64::atan", reason = "platform maths libraries differ in the last bit; use libm so native and browser agree" },
+    { path = "f64::atan2", reason = "platform maths libraries differ in the last bit; use libm so native and browser agree" },
+    { path = "f64::sinh", reason = "platform maths libraries differ in the last bit; use libm so native and browser agree" },
+    { path = "f64::cosh", reason = "platform maths libraries differ in the last bit; use libm so native and browser agree" },
+    { path = "f64::tanh", reason = "platform maths libraries differ in the last bit; use libm so native and browser agree" },
+    { path = "f64::hypot", reason = "platform maths libraries differ in the last bit; use libm so native and browser agree" },
+    { path = "f32::powf", reason = "platform maths libraries differ in the last bit; use libm so native and browser agree" },
+    { path = "f32::powi", reason = "platform maths libraries differ in the last bit; use libm so native and browser agree" },
+    { path = "f32::cbrt", reason = "platform maths libraries differ in the last bit; use libm so native and browser agree" },
+    { path = "f32::exp", reason = "platform maths libraries differ in the last bit; use libm so native and browser agree" },
+    { path = "f32::exp2", reason = "platform maths libraries differ in the last bit; use libm so native and browser agree" },
+    { path = "f32::ln", reason = "platform maths libraries differ in the last bit; use libm so native and browser agree" },
+    { path = "f32::log", reason = "platform maths libraries differ in the last bit; use libm so native and browser agree" },
+    { path = "f32::log2", reason = "platform maths libraries differ in the last bit; use libm so native and browser agree" },
+    { path = "f32::log10", reason = "platform maths libraries differ in the last bit; use libm so native and browser agree" },
+    { path = "f32::sin", reason = "platform maths libraries differ in the last bit; use libm so native and browser agree" },
+    { path = "f32::cos", reason = "platform maths libraries differ in the last bit; use libm so native and browser agree" },
+    { path = "f32::tan", reason = "platform maths libraries differ in the last bit; use libm so native and browser agree" },
+    { path = "f32::asin", reason = "platform maths libraries differ in the last bit; use libm so native and browser agree" },
+    { path = "f32::acos", reason = "platform maths libraries differ in the last bit; use libm so native and browser agree" },
+    { path = "f32::atan", reason = "platform maths libraries differ in the last bit; use libm so native and browser agree" },
+    { path = "f32::atan2", reason = "platform maths libraries differ in the last bit; use libm so native and browser agree" },
+    { path = "f32::sinh", reason = "platform maths libraries differ in the last bit; use libm so native and browser agree" },
+    { path = "f32::cosh", reason = "platform maths libraries differ in the last bit; use libm so native and browser agree" },
+    { path = "f32::tanh", reason = "platform maths libraries differ in the last bit; use libm so native and browser agree" },
+    { path = "f32::hypot", reason = "platform maths libraries differ in the last bit; use libm so native and browser agree" },
+]
