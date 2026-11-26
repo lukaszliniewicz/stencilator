@@ -20,8 +20,14 @@
 //! 4. The picture is resized to the cells with Pillow's bilinear filter, which keeps edges
 //!    smooth when enlarging, laid on the canvas colour, and every cell takes the nearest
 //!    paint.
+//!
+//! Last, for every kind of artwork, patches of one paint smaller than
+//! [`ArtworkSettings::min_patch_mm2`] are merged into what surrounds them: a plate could
+//! not hold them, and in photos they are mostly noise. Their cells lose their paint and
+//! the patches around them grow into the gap, breadth first, so a speck inside a region
+//! takes that region's paint and one on the border between two is shared between them.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 use std::ops::RangeInclusive;
 
 use crate::Error;
@@ -36,6 +42,9 @@ use crate::text::thousands;
 
 /// Accepted cell sizes in millimetres.
 pub const CELL_MM: RangeInclusive<f64> = 0.05..=0.5;
+
+/// Accepted smallest patches in square millimetres.
+pub const PATCH_MM2: RangeInclusive<f64> = 0.0..=100.0;
 
 /// Most cells a map may have: 400 by 400 mm at 0.1 mm, which keeps the browser's memory in
 /// bounds.
@@ -82,6 +91,9 @@ pub struct ArtworkSettings {
     pub n_colours: usize,
     /// The colour of the canvas, which transparent parts of the picture take.
     pub background: Rgb,
+    /// Patches of one paint smaller than this, in square millimetres, take the paints
+    /// around them; 0 keeps every patch.
+    pub min_patch_mm2: f64,
     /// Seed for the colour clustering.
     pub seed: u64,
 }
@@ -94,6 +106,7 @@ impl Default for ArtworkSettings {
             mode: ColourMode::Colour,
             n_colours: 16,
             background: [255, 255, 255],
+            min_patch_mm2: 1.0,
             seed: 0,
         }
     }
@@ -123,6 +136,13 @@ impl ArtworkSettings {
             }
         }
         mm("The cell size", self.cell_mm, &CELL_MM)?;
+        if !PATCH_MM2.contains(&self.min_patch_mm2) {
+            return Err(Error::Settings(format!(
+                "The smallest patch must be between {} and {} mm².",
+                PATCH_MM2.start(),
+                PATCH_MM2.end()
+            )));
+        }
         if !COLOURS.contains(&self.n_colours) {
             return Err(Error::Settings(format!(
                 "The number of colours must be between {} and {}.",
@@ -137,6 +157,15 @@ impl ArtworkSettings {
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, reason = "checked to be 50 to 500")]
     fn cell_um(&self) -> u32 {
         (self.cell_mm * 1000.0).round_ties_even() as u32
+    }
+
+    /// Fewest cells a patch keeps its paint with: [`ArtworkSettings::min_patch_mm2`] in
+    /// whole cells, rounded up.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss, reason = "checked to be 0 to 100 mm²")]
+    fn min_patch_cells(&self) -> u32 {
+        let area_um2 = (self.min_patch_mm2 * 1e6).round_ties_even() as u64;
+        let cell_um2 = u64::from(self.cell_um()) * u64::from(self.cell_um());
+        to_u32(area_um2.div_ceil(cell_um2))
     }
 }
 
@@ -257,7 +286,7 @@ pub fn label_picture(image: &Image, settings: &ArtworkSettings) -> Result<LabelM
     let (width, height, cell_um) = cell_grid(image.width, image.height, settings)?;
     let fit = fit_paints(image, settings)?;
     let cells = sample_cells(image, width, height, settings.background);
-    Ok(label_cells(&fit, &cells, width, height, cell_um))
+    Ok(label_cells(&fit, &cells, (width, height, cell_um), settings.min_patch_cells()))
 }
 
 /// The label map of an SVG drawing or typed text.
@@ -282,7 +311,7 @@ pub fn label_drawing(drawing: &Drawing, settings: &ArtworkSettings) -> Result<La
     };
     let cells = flatten(&drawn, settings.background);
     drop(drawn);
-    Ok(label_cells(&fit, &cells, width, height, cell_um))
+    Ok(label_cells(&fit, &cells, (width, height, cell_um), settings.min_patch_cells()))
 }
 
 /// Fits the paints on a copy of the picture at most [`FIT_SIDE`] pixels a side, without
@@ -305,10 +334,12 @@ fn fit_paints(image: &Image, settings: &ArtworkSettings) -> Result<Fit, Error> {
     Ok(fit)
 }
 
-/// Gives every cell its paint. Paints no cell took are left out, paints that round to the
-/// same colour become one, and the rest are numbered darkest first.
-fn label_cells(fit: &Fit, cells: &[Rgb], width: u32, height: u32, cell_um: u32) -> LabelMap {
-    let cells = classify(fit, cells);
+/// Gives every cell its paint and merges small patches. Paints no cell took are left out,
+/// paints that round to the same colour become one, and the rest are numbered darkest
+/// first.
+fn label_cells(fit: &Fit, cells: &[Rgb], (width, height, cell_um): (u32, u32, u32), min_patch: u32) -> LabelMap {
+    let mut cells = classify(fit, cells);
+    merge_patches(&mut cells, width as usize, min_patch);
     let mut used = vec![false; fit.len()];
     for &c in &cells {
         used[usize::from(c)] = true;
@@ -321,6 +352,85 @@ fn label_cells(fit: &Fit, cells: &[Rgb], width: u32, height: u32, cell_um: u32) 
     }
     let labels = cells.iter().map(|&c| rank[usize::from(c)]).collect();
     LabelMap { width, height, cell_um, palette, labels }
+}
+
+/// Patches of one paint, joined through their sides, of fewer than `min_cells` cells lose
+/// their paint, and the patches around them grow into the gap, breadth first. Nothing
+/// changes if every patch is that small.
+fn merge_patches(labels: &mut [u8], width: usize, min_cells: u32) {
+    const UNSEEN: u8 = 0;
+    const KEPT: u8 = 1;
+    const MERGED: u8 = 2;
+    if min_cells <= 1 || width == 0 {
+        return;
+    }
+    let height = labels.len() / width;
+    let neighbours = |i: usize| {
+        let (x, y) = (i % width, i / width);
+        [
+            (x > 0).then(|| i - 1),
+            (x + 1 < width).then(|| i + 1),
+            (y > 0).then(|| i - width),
+            (y + 1 < height).then(|| i + width),
+        ]
+        .into_iter()
+        .flatten()
+    };
+    let cell = |i: usize| u32::try_from(i).unwrap_or(u32::MAX);
+
+    // Find the patches. A patch is marked kept as it is walked; if it turns out small,
+    // its cells, remembered up to the limit, are marked merged.
+    let mut state = vec![UNSEEN; labels.len()];
+    let mut stack: Vec<u32> = Vec::new();
+    let mut members: Vec<u32> = Vec::new();
+    let limit = min_cells as usize;
+    for start in 0..labels.len() {
+        if state[start] != UNSEEN {
+            continue;
+        }
+        let paint = labels[start];
+        state[start] = KEPT;
+        stack.push(cell(start));
+        members.clear();
+        let mut size = 0_usize;
+        while let Some(i) = stack.pop() {
+            let i = i as usize;
+            size += 1;
+            if members.len() < limit {
+                members.push(cell(i));
+            }
+            for j in neighbours(i) {
+                if state[j] == UNSEEN && labels[j] == paint {
+                    state[j] = KEPT;
+                    stack.push(cell(j));
+                }
+            }
+        }
+        if size < limit {
+            for &i in &members {
+                state[i as usize] = MERGED;
+            }
+        }
+    }
+    if !state.contains(&KEPT) || !state.contains(&MERGED) {
+        return;
+    }
+
+    // Grow the kept patches into the merged cells, from their edges, in reading order.
+    let mut queue: VecDeque<u32> = (0..labels.len())
+        .filter(|&i| state[i] == KEPT && neighbours(i).any(|j| state[j] == MERGED))
+        .map(cell)
+        .collect();
+    while let Some(i) = queue.pop_front() {
+        let i = i as usize;
+        for j in neighbours(i) {
+            if state[j] == MERGED {
+                state[j] = KEPT;
+                labels[j] = labels[i];
+                queue.push_back(cell(j));
+            }
+        }
+    }
 }
 
 fn to_u8(index: usize) -> u8 {
@@ -641,5 +751,54 @@ mod tests {
         let row = |y: u32| (0..map.width).any(|x| ink[(y * map.width + x) as usize]);
         let column = |x: u32| (0..map.height).any(|y| ink[(y * map.width + x) as usize]);
         assert!(row(0) && row(map.height - 1) && column(0) && column(map.width - 1));
+    }
+
+    #[test]
+    fn small_patches_take_the_paints_around_them() {
+        // Paint 0 on the left, 1 on the right; a 3 by 3 speck of 1 in the 0, and a strip of
+        // paint 2, 2 cells wide and 6 tall, across the border between them.
+        let w = 20;
+        let mut labels = vec![0_u8; w * 12];
+        for (i, label) in labels.iter_mut().enumerate() {
+            let (x, y) = (i % w, i / w);
+            let strip = (9..11).contains(&x) && y >= 6;
+            let speck = (2..5).contains(&x) && (2..5).contains(&y);
+            *label = if strip { 2 } else { u8::from(x >= 10 || speck) };
+        }
+        let mut merged = labels.clone();
+        merge_patches(&mut merged, w, 20);
+        let at = |x: usize, y: usize| merged[y * w + x];
+        assert!((2..5).all(|y| (2..5).all(|x| at(x, y) == 0)), "the speck takes the paint around it");
+        assert!((6..12).all(|y| at(9, y) == 0 && at(10, y) == 1), "the strip is shared");
+        assert_eq!(merged.iter().map(|&l| usize::from(l == 1)).sum::<usize>(), 10 * 12);
+        // Nine cells are enough to keep the speck; nothing changes when every patch is small.
+        for min_cells in [9, 1000] {
+            let mut kept = labels.clone();
+            merge_patches(&mut kept, w, min_cells);
+            let speck = (2..5).all(|y| (2..5).all(|x| kept[y * w + x] == 1));
+            assert!(speck, "{min_cells}");
+        }
+        let mut all = labels.clone();
+        merge_patches(&mut all, w, 1000);
+        assert_eq!(all, labels);
+    }
+
+    #[test]
+    fn a_paint_only_in_specks_disappears() {
+        // A 2 by 2 pixel dot, 0.04 mm² at this size.
+        let mut rgba = vec![255_u8; 100 * 100 * 4];
+        for (x, y) in [(50, 50), (51, 50), (50, 51), (51, 51)] {
+            rgba[(y * 100 + x) * 4..(y * 100 + x) * 4 + 3].copy_from_slice(&RED);
+        }
+        let image = Image { width: 100, height: 100, rgba };
+        let settings = ArtworkSettings { size: Size::Width(10.0), ..ArtworkSettings::default() };
+        assert_eq!(label_picture(&image, &settings).unwrap().palette, [WHITE]);
+        let every = ArtworkSettings { min_patch_mm2: 0.0, ..settings };
+        assert_eq!(label_picture(&image, &every).unwrap().palette, [RED, WHITE]);
+        // A square millimetre is 100 cells of 0.1 mm and 45 of 0.15 mm, rounded up.
+        assert_eq!(settings.min_patch_cells(), 100);
+        assert_eq!(ArtworkSettings { cell_mm: 0.15, ..settings }.min_patch_cells(), 45);
+        let huge = ArtworkSettings { min_patch_mm2: 200.0, ..settings };
+        assert_eq!(huge.check().unwrap_err().to_string(), "The smallest patch must be between 0 and 100 mm².");
     }
 }

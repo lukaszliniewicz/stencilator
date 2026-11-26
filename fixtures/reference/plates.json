@@ -11,10 +11,10 @@
    "plates": [
     {
      "file": "plate-01-1d2f5c.stl",
-     "triangles": 5324,
+     "triangles": 5308,
      "watertight": true,
      "winding_consistent": true,
-     "volume_mm3": 8386.970534552713,
+     "volume_mm3": 8386.86467920381,
      "bodies": 8,
      "euler": -18,
      "bounds": [
@@ -32,10 +32,10 @@
     },
     {
      "file": "plate-02-ef7d2d.stl",
-     "triangles": 3704,
+     "triangles": 3700,
      "watertight": true,
      "winding_consistent": true,
-     "volume_mm3": 7369.760645725735,
+     "volume_mm3": 7369.753281545293,
      "bodies": 16,
      "euler": 18,
      "bounds": [
@@ -195,12 +195,12 @@
    "plates": [
     {
      "file": "plate-01-783ca4.stl",
-     "triangles": 17044,
+     "triangles": 8180,
      "watertight": true,
      "winding_consistent": true,
-     "volume_mm3": 9590.456247226837,
-     "bodies": 106,
-     "euler": -62,
+     "volume_mm3": 9580.967350304727,
+     "bodies": 3,
+     "euler": -28,
      "bounds": [
       [
        0.0,
@@ -216,12 +216,12 @@
     },
     {
      "file": "plate-02-61607e.stl",
-     "triangles": 30376,
+     "triangles": 15080,
      "watertight": true,
      "winding_consistent": true,
-     "volume_mm3": 9316.724414858907,
-     "bodies": 184,
-     "euler": -52,
+     "volume_mm3": 9291.25758216293,
+     "bodies": 13,
+     "euler": -2,
      "bounds": [
       [
        0.0,
@@ -237,12 +237,12 @@
     },
     {
      "file": "plate-03-c9587f.stl",
-     "triangles": 15452,
+     "triangles": 7620,
      "watertight": true,
      "winding_consistent": true,
-     "volume_mm3": 9615.335215184788,
-     "bodies": 69,
-     "euler": -104,
+     "volume_mm3": 9615.406385050563,
+     "bodies": 5,
+     "euler": -8,
      "bounds": [
       [
        0.0,
@@ -258,12 +258,12 @@
     },
     {
      "file": "plate-04-5fa089.stl",
-     "triangles": 32020,
+     "triangles": 17168,
      "watertight": true,
      "winding_consistent": true,
-     "volume_mm3": 9325.566527403409,
-     "bodies": 172,
-     "euler": -112,
+     "volume_mm3": 9324.239349796677,
+     "bodies": 12,
+     "euler": -26,
      "bounds": [
       [
        0.0,
@@ -279,12 +279,12 @@
     },
     {
      "file": "plate-05-54ca72.stl",
-     "triangles": 17100,
+     "triangles": 8720,
      "watertight": true,
      "winding_consistent": true,
-     "volume_mm3": 9622.473957513317,
-     "bodies": 102,
-     "euler": -70,
+     "volume_mm3": 9624.871856653046,
+     "bodies": 12,
+     "euler": 8,
      "bounds": [
       [
        0.0,
@@ -300,12 +300,12 @@
     },
     {
      "file": "plate-06-cab882.stl",
-     "triangles": 16276,
+     "triangles": 7340,
      "watertight": true,
      "winding_consistent": true,
-     "volume_mm3": 9465.458916216496,
-     "bodies": 88,
-     "euler": -98,
+     "volume_mm3": 9447.627895096562,
+     "bodies": 4,
+     "euler": -2,
      "bounds": [
       [
        0.0,

@@ -4,8 +4,8 @@
 //!
 //! Usage: `plates CASES.json OUT_DIR`, run from the repository root. Each case is
 //! `{"name", "kind": "svg" | "picture" | "text", "source", "font_mm"?, "width_mm"?,
-//! "cell_mm", "colours", "skip": ["#rrggbb", ...]}`; without `width_mm` the artwork has
-//! its own size. Plates go to `OUT_DIR/<name>/`.
+//! "cell_mm", "colours", "min_patch_mm2"?, "skip": ["#rrggbb", ...]}`; without `width_mm`
+//! the artwork has its own size. Plates go to `OUT_DIR/<name>/`.
 
 use std::path::Path;
 
@@ -33,6 +33,10 @@ fn main() -> Result<(), String> {
             size: case.get("width_mm").and_then(Value::as_f64).map_or(Size::Natural, Size::Width),
             cell_mm: number("cell_mm")?,
             n_colours: usize::try_from(field("colours")?.as_u64().unwrap_or(16)).map_err(|e| e.to_string())?,
+            min_patch_mm2: case
+                .get("min_patch_mm2")
+                .and_then(Value::as_f64)
+                .unwrap_or(ArtworkSettings::default().min_patch_mm2),
             ..ArtworkSettings::default()
         };
         let source = string("source")?;
