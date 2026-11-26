@@ -241,6 +241,93 @@ fn flat_bridges_survive_project_save_and_can_be_turned_off() {
 }
 
 #[test]
+fn keyed_plates_and_their_frame_export_and_reopen_together() {
+    let dir = workspace("registration");
+    let badge = fixture("svg/badge.svg");
+    let badge = badge.to_str().unwrap();
+    let plain = report(&dir, &["freeform", badge, "--flat-bridges", "--3mf", "plain.3mf"]);
+    let keyed = report(
+        &dir,
+        &[
+            "freeform",
+            badge,
+            "--flat-bridges",
+            "--registration",
+            "--bed",
+            "95x96",
+            "--3mf",
+            "set.3mf",
+            "--stencils",
+            "plates",
+            "--frame",
+            "frame.stl",
+            "--save",
+            "keyed.stencilator",
+        ],
+    );
+    assert_eq!(
+        keyed["frame"],
+        serde_json::json!({
+            "width_mm": 100.6, "height_mm": 103.6, "clearance_mm": 0.3,
+            "fits_bed": false, "file": "registration-frame.stl"
+        })
+    );
+    for plate in keyed["plates"].as_array().unwrap() {
+        assert_eq!(plate["height_mm"], 93.0);
+        assert_eq!(plate["fits_bed"], true);
+    }
+    assert!(keyed["warnings"].as_array().unwrap().iter().any(|w| w.as_str().unwrap().contains("frame, 100.6")));
+    let file = |name| fs::read(dir.join(name)).unwrap();
+    assert_eq!(file("frame.stl"), file("plates/registration-frame.stl"));
+    let saved: serde_json::Value = serde_json::from_slice(&file("keyed.stencilator")).unwrap();
+    assert_eq!(saved["stencilator"], 3);
+    assert_eq!(saved["freeform"]["registration_clearance_mm"], 0.3);
+    let again = report(&dir, &["freeform", "keyed.stencilator", "--3mf", "again.3mf"]);
+    assert_eq!(again["frame"], keyed["frame"]);
+    assert_eq!(file("again.3mf"), file("set.3mf"));
+    let disabled = report(
+        &dir,
+        &[
+            "freeform",
+            "keyed.stencilator",
+            "--registration=0",
+            "--3mf",
+            "disabled.3mf",
+            "--save",
+            "disabled.stencilator",
+        ],
+    );
+    assert!(disabled.get("frame").is_none());
+    assert_eq!(disabled["plates"], plain["plates"]);
+    assert_eq!(file("disabled.3mf"), file("plain.3mf"));
+    let saved: serde_json::Value = serde_json::from_slice(&file("disabled.stencilator")).unwrap();
+    assert_eq!(saved["stencilator"], 2);
+
+    let frame = file("frame.stl");
+    let absolute = dir.join("new/registration-frame.stl");
+    let (ok, _, stderr) = run(
+        &dir,
+        &[
+            "freeform",
+            "keyed.stencilator",
+            "--stencils",
+            "new",
+            "--frame",
+            absolute.to_str().unwrap(),
+            "--save",
+            "clash.stencilator",
+        ],
+    );
+    assert!(!ok && stderr.contains("the registration frame and --frame would both be"), "{stderr}");
+    assert!(!dir.join("new").exists());
+    assert!(!dir.join("clash.stencilator").exists());
+    let (ok, _, stderr) = run(&dir, &["freeform", "disabled.stencilator", "--frame", "frame.stl"]);
+    assert!(!ok && stderr.contains("Add --registration"), "{stderr}");
+    assert_eq!(file("frame.stl"), frame);
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
 fn a_project_saved_without_an_extension_can_be_reopened() {
     let dir = workspace("project-name");
     let first = report(&dir, &["freeform", "--text", "AO", "--save", "design"]);
@@ -301,6 +388,7 @@ fn freeform_settings_out_of_range_are_refused_before_reading_the_file() {
         (&["missing.svg", "--cell", "1"][..], "The cell size must be between"),
         (&["missing.svg", "--margin", "0.5"], "The margin must be between"),
         (&["missing.svg", "--flat-bridges=0.2"], "The flat bridge width must be between"),
+        (&["missing.svg", "--registration=1"], "The registration clearance must be between"),
         (&["missing.png", "--width", "1e9"], "The width must be between"),
     ] {
         let (ok, _, stderr) = run(&dir, &[&["freeform"][..], args].concat());

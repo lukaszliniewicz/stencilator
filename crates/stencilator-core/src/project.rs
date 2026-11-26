@@ -6,7 +6,8 @@
 //! out and take the engine's defaults. A drawing or typed text defaults to free-form mode
 //! at its own size; a picture to tile mode, and to 200 mm wide in free-form mode. Use the
 //! extension `.stencilator` to open the file in the web app.
-//! Projects using flat bridges use format 2; all others can still be saved as format 1.
+//! Flat bridges need format 2 and a registration frame needs format 3. Without
+//! either, projects still save as format 1.
 //!
 //! ```json
 //! {
@@ -29,10 +30,12 @@ use crate::quantise::ColourMode;
 use crate::{Error, VERSION};
 
 /// The newest format this engine reads and writes.
-pub const FORMAT: u32 = 2;
+pub const FORMAT: u32 = REGISTRATION_FORMAT;
 
 /// The format still understood by versions without flat bridges.
 const BASE_FORMAT: u32 = 1;
+const BRIDGES_FORMAT: u32 = 2;
+const REGISTRATION_FORMAT: u32 = 3;
 
 /// The extension of project files, without the dot.
 pub const EXTENSION: &str = "stencilator";
@@ -312,6 +315,9 @@ pub struct Freeform {
     /// Width of flat bridges in millimetres, when requested.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub bridge_width_mm: Option<f64>,
+    /// Gap at each edge of the registration frame in millimetres, when requested.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub registration_clearance_mm: Option<f64>,
 }
 
 impl Default for Freeform {
@@ -325,6 +331,7 @@ impl Default for Freeform {
             min_web_mm: plates.min_web_mm,
             min_opening_mm: plates.min_opening_mm,
             bridge_width_mm: plates.bridge_width_mm,
+            registration_clearance_mm: plates.registration_clearance_mm,
         }
     }
 }
@@ -506,6 +513,7 @@ impl Project {
             min_opening_mm: f.min_opening_mm,
             bed_mm: (self.stencils.bed_mm[0], self.stencils.bed_mm[1]),
             bridge_width_mm: f.bridge_width_mm,
+            registration_clearance_mm: f.registration_clearance_mm,
         }
     }
 
@@ -517,6 +525,7 @@ impl Project {
         self.freeform.min_web_mm = settings.min_web_mm;
         self.freeform.min_opening_mm = settings.min_opening_mm;
         self.freeform.bridge_width_mm = settings.bridge_width_mm;
+        self.freeform.registration_clearance_mm = settings.registration_clearance_mm;
     }
 
     /// The merges, as the engine takes them.
@@ -630,11 +639,11 @@ impl Project {
         Ok(fonts)
     }
 
-    /// The project as a file: indented JSON, stamped with this format and this version of
-    /// Stencilator. A drawing or text that names no font names the built-in one, so the
-    /// file says which font it was cut in. The same project always gives the same bytes.
+    /// The project as a file: indented JSON, stamped with the oldest format that supports
+    /// its settings and this version of Stencilator. A drawing or text that names no font
+    /// names the built-in one. The same project always gives the same bytes.
     pub fn to_json(&self) -> Vec<u8> {
-        let stencilator = if self.freeform.bridge_width_mm.is_some() { FORMAT } else { BASE_FORMAT };
+        let (stencilator, _) = self.required_format();
         let mut stamped = Project { stencilator, written_by: VERSION.to_owned(), ..self.clone() };
         if stamped.is_drawn() && stamped.fonts.is_empty() {
             stamped.fonts.push(Font { name: BUILT_IN_FONT.to_owned(), data: None });
@@ -642,6 +651,16 @@ impl Project {
         let mut out = serde_json::to_vec_pretty(&stamped).unwrap_or_default();
         out.push(b'\n');
         out
+    }
+
+    fn required_format(&self) -> (u32, &'static str) {
+        if self.freeform.registration_clearance_mm.is_some() {
+            (REGISTRATION_FORMAT, "a registration frame")
+        } else if self.freeform.bridge_width_mm.is_some() {
+            (BRIDGES_FORMAT, "flat bridges")
+        } else {
+            (BASE_FORMAT, "")
+        }
     }
 }
 
@@ -679,8 +698,9 @@ pub fn read_project(bytes: &[u8]) -> Result<Project, Error> {
     }
     let given = Given::of(&value);
     let mut project: Project = serde_json::from_value(value).map_err(damaged)?;
-    if project.stencilator == BASE_FORMAT && project.freeform.bridge_width_mm.is_some() {
-        return Err(Error::Project("A project with flat bridges needs format 2.".to_owned()));
+    let (format, feature) = project.required_format();
+    if project.stencilator < format {
+        return Err(Error::Project(format!("A project with {feature} needs format {format}.")));
     }
     project.drawn_defaults(given);
     project.check()?;
@@ -878,8 +898,8 @@ mod tests {
         assert!(message("not json").starts_with("The project could not be read: expected"));
         assert_eq!(message(r#"{"source": {}}"#), "This is not a Stencilator project.");
         assert_eq!(
-            message(r#"{"stencilator": 3}"#),
-            "This project was saved by a newer version of Stencilator (format 3); this one opens up to format 2. \
+            message(r#"{"stencilator": 4}"#),
+            "This project was saved by a newer version of Stencilator (format 4); this one opens up to format 3. \
              Update Stencilator to open it."
         );
         let text = |colour: &str| {
@@ -897,6 +917,9 @@ mod tests {
         assert!(message(picture).contains("an embedded file is damaged"), "{}", message(picture));
         let tiny = r#"{"stencilator": 1, "source": {"kind": "svg", "data": ""}, "tiles": {"tile_mm": 0}}"#;
         assert_eq!(message(tiny), "The tile size must be between 0.1 and 1000 mm.");
+        let frame = r#"{"stencilator": 2, "source": {"kind": "svg", "data": ""},
+            "freeform": {"registration_clearance_mm": 0.3}}"#;
+        assert_eq!(message(frame), "A project with a registration frame needs format 3.");
     }
 
     #[test]

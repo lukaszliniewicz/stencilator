@@ -9,9 +9,10 @@ use stencilator_core::artwork::{LabelMap, label_drawing, label_picture};
 use stencilator_core::colour::Rgb;
 use stencilator_core::drawing::{parse_svg, text_drawing};
 use stencilator_core::plate::{
-    Plate, PlateReport, Spot, build_plates, check_plate, plate_files, plates_3mf, reports_json,
+    Plate, PlateReport, Spot, build_plates, check_plate, plate_files, plates_3mf, registration_frame, reports_json,
 };
 use stencilator_core::project::{ArtworkSize, Colour, Mode, Project, Source};
+use stencilator_core::registration::FrameReport;
 use stencilator_core::{source, zip};
 
 use crate::sources::{Input, embed_fonts, font_data};
@@ -87,20 +88,33 @@ pub(crate) struct FreeformArgs {
         help_heading = "Plates"
     )]
     flat_bridges: Option<f64>,
+    /// Key the plates to one registration frame (0.3 mm clearance at each edge).
+    /// Pass =MM to set the clearance, or =0 for plain plates.
+    #[arg(
+        long,
+        value_name = "MM",
+        num_args = 0..=1,
+        require_equals = true,
+        default_missing_value = "0.3",
+        help_heading = "Plates"
+    )]
+    registration: Option<f64>,
 
     #[command(flatten)]
     colours: ColourArgs,
     #[command(flatten)]
     stencil_settings: StencilArgs,
 
-    /// Write one STL plate per paint into this folder, or into one zip if the name ends in
-    /// .zip.
+    /// Write one STL plate per paint and any registration frame into this folder,
+    /// or into one zip if the name ends in .zip.
     #[arg(long, value_name = "DIR|ZIP", help_heading = "Output")]
     stencils: Option<PathBuf>,
-    /// Write every plate into one 3MF file, side by side, each named and in its paint's
-    /// colour.
+    /// Write the plates and any registration frame side by side in one 3MF file.
     #[arg(long = "3mf", value_name = "FILE", help_heading = "Output")]
     three_mf: Option<PathBuf>,
+    /// Write just the registration frame as STL. Requires registration to be enabled.
+    #[arg(long, value_name = "FILE.stl", help_heading = "Output")]
+    frame: Option<PathBuf>,
     /// Save the project, with the artwork and every setting, to open again later.
     #[arg(long, value_name = "FILE.stencilator", help_heading = "Output")]
     save: Option<PathBuf>,
@@ -158,8 +172,12 @@ impl FreeformArgs {
                 *field = value;
             }
         }
-        if let Some(width) = self.flat_bridges {
-            f.bridge_width_mm = (width != 0.0).then_some(width);
+        for (value, field) in
+            [(self.flat_bridges, &mut f.bridge_width_mm), (self.registration, &mut f.registration_clearance_mm)]
+        {
+            if let Some(value) = value {
+                *field = (value != 0.0).then_some(value);
+            }
         }
         self.colours.apply(project);
         self.stencil_settings.apply(project);
@@ -176,12 +194,15 @@ pub(crate) fn run(args: &FreeformArgs) -> Result<(), String> {
     let plate_settings = project.plate_settings();
     artwork_settings.check().map_err(|e| e.to_string())?;
     plate_settings.check().map_err(|e| e.to_string())?;
+    if args.frame.is_some() && plate_settings.registration_clearance_mm.is_none() {
+        return Err("Add --registration to make a registration frame.".to_owned());
+    }
     input.load(&mut project)?;
 
     let map = label(&project)?.merged(&project.merges());
     let skip = project.stencil_skip();
     let plates = build_plates(&map, &plate_settings, &skip).map_err(|e| e.to_string())?;
-    if plates.is_empty() && (args.three_mf.is_some() || args.stencils.is_some()) {
+    if plates.is_empty() && (args.three_mf.is_some() || args.stencils.is_some() || args.frame.is_some()) {
         return Err("Every paint is skipped, so there are no plates to make.".to_owned());
     }
     let reports = plates
@@ -189,9 +210,11 @@ pub(crate) fn run(args: &FreeformArgs) -> Result<(), String> {
         .map(|plate| check_plate(plate, &plate_settings))
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| e.to_string())?;
+    let frame = registration_frame(&plates);
+    let frame_report = frame.as_ref().map(|frame| frame.report(plate_settings.bed_mm));
 
     let mut destinations: Vec<(String, PathBuf)> = Vec::new();
-    for (flag, path) in [("--3mf", &args.three_mf), ("--save", &args.save)] {
+    for (flag, path) in [("--3mf", &args.three_mf), ("--frame", &args.frame), ("--save", &args.save)] {
         if let Some(path) = path {
             destinations.push((flag.to_owned(), path.clone()));
         }
@@ -199,14 +222,18 @@ pub(crate) fn run(args: &FreeformArgs) -> Result<(), String> {
     if let Some(target) = &args.stencils {
         let names: Vec<(String, Rgb)> = plates.iter().map(|p| (p.file_name(), p.colour)).collect();
         destinations.extend(stencil_destinations(target, &names));
+        if let Some(report) = frame_report.filter(|_| !is_zip(target)) {
+            destinations.push(("the registration frame".to_owned(), target.join(report.file)));
+        }
     }
-    files::check_destinations(&destinations, &input)?;
-
     // Everything is computed before anything is written, so an error leaves no files.
     let thickness = project.stencils.thickness_mm;
     let mut outputs: Vec<(PathBuf, Vec<u8>)> = Vec::new();
     if let Some(path) = &args.three_mf {
         outputs.push((path.clone(), plates_3mf(&plates, thickness).map_err(|e| e.to_string())?));
+    }
+    if let (Some(path), Some(frame)) = (&args.frame, &frame) {
+        outputs.push((path.clone(), frame.stl(thickness).map_err(|e| e.to_string())?));
     }
     if let Some(path) = &args.save {
         outputs.push((path.clone(), project.to_json()));
@@ -221,14 +248,23 @@ pub(crate) fn run(args: &FreeformArgs) -> Result<(), String> {
             created = files::create_dirs(target)?;
         }
     }
-    if let Err(message) = files::write_all(&outputs) {
+    // Resolve destinations after creating the stencil folder, so a stand-alone
+    // frame path and the frame in that folder cannot alias a newly created file.
+    if let Err(message) = files::check_destinations(&destinations, &input).and_then(|()| files::write_all(&outputs)) {
         files::remove_dirs(&created);
         return Err(message);
     }
 
     let written: Vec<&Path> = outputs.iter().map(|(p, _)| p.as_path()).collect();
-    let report =
-        Report { project: &project, map: &map, skip: &skip, plates: &plates, reports: &reports, written: &written };
+    let report = Report {
+        project: &project,
+        map: &map,
+        skip: &skip,
+        plates: &plates,
+        reports: &reports,
+        frame: frame_report,
+        written: &written,
+    };
     let warnings = report.warnings();
     if args.json {
         println!("{}", serde_json::to_string_pretty(&report.json(&warnings)).unwrap_or_default());
@@ -263,6 +299,7 @@ struct Report<'a> {
     skip: &'a [Rgb],
     plates: &'a [Plate],
     reports: &'a [PlateReport],
+    frame: Option<FrameReport>,
     written: &'a [&'a Path],
 }
 
@@ -352,11 +389,17 @@ impl Report<'_> {
                 ));
             }
         }
+        let [bed_w, bed_h] = self.project.stencils.bed_mm;
         if let Some(report) = self.reports.first().filter(|r| !r.fits_bed) {
-            let bed = self.project.stencils.bed_mm;
             warnings.push(format!(
-                "the plates, {:.1} x {:.1} mm, do not fit a {} x {} mm bed",
-                report.width_mm, report.height_mm, bed[0], bed[1]
+                "the plates, {:.1} x {:.1} mm, do not fit a {bed_w} x {bed_h} mm bed",
+                report.width_mm, report.height_mm
+            ));
+        }
+        if let Some(frame) = self.frame.filter(|frame| !frame.fits_bed) {
+            warnings.push(format!(
+                "the registration frame, {:.1} x {:.1} mm, does not fit a {bed_w} x {bed_h} mm bed",
+                frame.width_mm, frame.height_mm
             ));
         }
         warnings
@@ -379,7 +422,7 @@ impl Report<'_> {
                 json!({ "colour": hex(colour), "cells": cells, "area_mm2": um(area), "stencil": self.plate_file(paint) })
             })
             .collect();
-        json!({
+        let mut report = json!({
             "mode": "freeform",
             "size_mm": [um(map.width_mm()), um(map.height_mm())],
             "cells": [map.width, map.height],
@@ -389,7 +432,11 @@ impl Report<'_> {
             "plates": reports_json(self.plates, self.reports),
             "written": self.written.iter().map(|p| p.display().to_string()).collect::<Vec<_>>(),
             "warnings": warnings,
-        })
+        });
+        if let Some(frame) = self.frame {
+            report["frame"] = json!(frame);
+        }
+        report
     }
 
     fn print(&self) {
@@ -431,6 +478,12 @@ impl Report<'_> {
                 count(r.islands.len(), "island", "islands"),
                 count(r.thin_webs.len(), "thin web", "thin webs"),
                 count(r.narrow_openings.len(), "narrow opening", "narrow openings"),
+            );
+        }
+        if let Some(frame) = self.frame {
+            println!(
+                "frame    {:.1} x {:.1} mm, {} mm clearance at each edge  {}",
+                frame.width_mm, frame.height_mm, frame.clearance_mm, frame.file
             );
         }
         for path in self.written {

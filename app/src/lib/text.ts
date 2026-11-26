@@ -282,6 +282,9 @@ export const text = {
     narrowOpenings: (n: number) => plural(n, 'narrow opening', 'narrow openings'),
     openings: (n: number) => plural(n, 'opening', 'openings'),
     bedWarning: 'Larger than your print bed.',
+    includedFrame: (w: number, h: number) =>
+      `Both print files include the registration frame (${size(num(w, 2), num(h, 2), 'mm')}).`,
+    frameBedWarning: 'The registration frame is larger than your print bed.',
     threeMf: '3MF',
     threeMfBody: 'Every plate in one slicer project, named and coloured by paint.',
     zip: 'STL zip',

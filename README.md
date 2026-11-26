@@ -111,8 +111,27 @@ and islands with just one bridge towards the rim. Small or awkward islands may h
 nowhere for a bridge to land.
 
 In a local build of the app, turn on **Flat bridges for brush work** under **Plates**
-and inspect the result in **Plate** view. Projects saved with bridges use format 2;
+and inspect the result in **Plate** view. Projects with bridges alone use format 2;
 the hosted app still uses the preceding release, which opens format 1.
+
+#### Registration frame
+
+Add `--registration` to give every plate in the set the same off-centre key and make a
+matching frame. Hold the frame still on the work and seat each plate against
+the same corner as you change colours. The frame prints at the same thickness
+as the plates. The default clearance is 0.3 mm at each edge; use
+`--registration=0.4` to change it (0.1 to 0.6 mm) or `--registration=0` to go
+back to plain plates. The clearance is nominal; the fit depends on your print.
+
+```sh
+target/release/stencilator freeform drawing.svg --registration \
+    --3mf set.3mf --frame frame.stl --save drawing.stencilator
+```
+
+The 3MF and STL folder or zip include the frame and the plates. `--frame` saves
+only the frame as STL. The report checks each part separately against `--bed`.
+A project with a frame uses format 3. A local app build can open and save it and
+include the frame in 3MF and STL zip downloads. Frame controls are still planned.
 
 ### In both modes
 
@@ -132,9 +151,9 @@ the hosted app still uses the preceding release, which opens format 1.
 
 ## Roadmap
 
-Raised connectors for spray painting and a keyed registration frame for keeping plates
-aligned between colours are next. A local MCP server follows, so that an AI assistant can
-prepare stencils for you.
+Raised connectors for spray painting are being tested. Plate finishing, on-screen
+registration and paint previews are next. A local MCP server follows, so that an AI
+assistant can prepare stencils for you.
 
 ## Development
 

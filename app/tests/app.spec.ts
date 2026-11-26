@@ -312,6 +312,45 @@ test('flat bridges hold a text island and stay with the saved project', async ({
   expect(problems).toEqual([]);
 });
 
+test('an imported keyed project keeps its frame in the print files and when saved', async ({
+  page
+}) => {
+  const problems = watchForProblems(page);
+  const badge = new URL('../../fixtures/svg/badge.svg', import.meta.url);
+  const project = {
+    stencilator: 3,
+    source: { kind: 'svg', name: 'badge.svg', data: readFileSync(badge).toString('base64') },
+    freeform: { registration_clearance_mm: 0.35 },
+    stencils: { bed_mm: [95, 96] }
+  };
+  await page.goto('/');
+  await page.getByLabel('Stencilator project file', { exact: true }).setInputFiles({
+    name: 'keyed.stencilator',
+    mimeType: 'application/json',
+    buffer: Buffer.from(JSON.stringify(project))
+  });
+  const files = page.getByRole('button', { name: 'Files', exact: true });
+  await files.click();
+  await expect(
+    page.getByText('The registration frame is larger than your print bed.')
+  ).toBeVisible();
+  const included = page.getByText(/Both print files include the registration frame/);
+  await expect(included).toBeVisible();
+  const zip = page.getByRole('button', { name: 'Save STL zip' });
+  expect(await zipEntries(page, () => zip.click())).toBe(3);
+
+  const saved = page.waitForEvent('download');
+  await page.getByRole('button', { name: 'Save project', exact: true }).click();
+  const buffer = await readFile(await (await saved).path());
+  expect(buffer.toString('utf8')).toContain('"registration_clearance_mm": 0.35');
+
+  await page.getByLabel('Picture file', { exact: true }).setInputFiles(fileURLToPath(badge));
+  await files.click();
+  await expect(included).toHaveCount(0);
+  expect(await zipEntries(page, () => zip.click())).toBe(2);
+  expect(problems).toEqual([]);
+});
+
 test('a picture can switch modes and be saved with an unfinished setting in the other mode', async ({
   page
 }) => {

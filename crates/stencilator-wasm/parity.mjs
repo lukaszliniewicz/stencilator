@@ -9,6 +9,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { pathToFileURL } from "node:url";
+import { isDeepStrictEqual } from "node:util";
 
 const [pkg, cli, root] = process.argv.slice(2);
 const engine = await import(pathToFileURL(join(pkg, "stencilator_wasm.js")).href);
@@ -137,6 +138,12 @@ const freeform = [
     args: [badge, "--flat-bridges"],
   },
   {
+    name: "badge with registration",
+    project: () => engine.Project.svg("badge.svg", readFileSync(badge)),
+    settings: { freeform: { bridge_width_mm: 1.2, registration_clearance_mm: 0.35 } },
+    args: [badge, "--flat-bridges", "--registration=0.35"],
+  },
+  {
     name: "badge, every paint skipped",
     project: () => engine.Project.svg("badge.svg", readFileSync(badge)),
     settings: { stencils: { skipped: ["#1d2f5c", "#ef7d2d"] } },
@@ -188,6 +195,8 @@ for (const [n, fixture] of freeform.entries()) {
   const labels = artwork.labels(project);
   const plates = labels.plates(project);
   const names = plates.names();
+  const frameJson = plates.frameReport(project);
+  const frame = frameJson ? JSON.parse(frameJson) : undefined;
   const browser = { "project.stencilator": project.file() };
   if (names.length) {
     Object.assign(browser, {
@@ -197,13 +206,18 @@ for (const [n, fixture] of freeform.entries()) {
       [`plates/${names.at(-1)}`]: plates.stl(names.length - 1, project),
     });
   }
+  if (frame) {
+    browser[frame.file] = plates.frameStl(project);
+    browser[`plates/${frame.file}`] = browser[frame.file];
+  }
 
   const dir = join(work, `freeform-${n}`);
   mkdirSync(dir);
   // Its warnings are the report's, compared below; a failure still shows them.
   const run = (extra) => execFileSync(cli, ["freeform", ...fixture.args, ...extra], { stdio: ["ignore", "pipe", "pipe"] });
   const printFiles = names.length ? ["--3mf", join(dir, "plates.3mf"), "--stencils", join(dir, "plates.zip")] : [];
-  const report = JSON.parse(run([...printFiles, "--save", join(dir, "project.stencilator"), "--json"]));
+  const frameFile = frame ? ["--frame", join(dir, frame.file)] : [];
+  const report = JSON.parse(run([...printFiles, ...frameFile, "--save", join(dir, "project.stencilator"), "--json"]));
   if (names.length) run(["--stencils", join(dir, "plates")]);
 
   // The same paints and plates, and the same report.
@@ -211,7 +225,8 @@ for (const [n, fixture] of freeform.entries()) {
   const counts = [...labels.cellCounts()];
   const paints = report.palette.map((p) => [p.colour, p.cells]);
   const own = counts.map((cells, i) => [`#${hex(palette.slice(3 * i, 3 * i + 3))}`, cells]);
-  const reports = JSON.stringify(JSON.parse(plates.report())) === JSON.stringify(report.plates);
+  const reports = isDeepStrictEqual(JSON.parse(plates.report()), report.plates)
+    && isDeepStrictEqual(frame, report.frame);
   const opened = engine.Project.open(readFileSync(join(dir, "project.stencilator")));
   browser["project.stencilator, opened and saved"] = opened.file();
   for (const [what, same] of [["paints", JSON.stringify(paints) === JSON.stringify(own)], ["report", reports]]) {

@@ -29,6 +29,7 @@ pub mod paints;
 pub mod plate;
 pub mod project;
 pub mod quantise;
+pub mod registration;
 mod resample;
 mod rng;
 pub mod source;

@@ -7,6 +7,7 @@
   let { bench }: { bench: Workbench } = $props();
   const words = text.freeform;
   const plates = $derived(bench.freeform?.plates ?? []);
+  const frame = $derived(bench.freeform?.frame);
   const FORMATS = [
     { format: '3mf', name: words.threeMf, description: words.threeMfBody },
     { format: 'zip', name: words.zip, description: words.zipBody }
@@ -17,6 +18,10 @@
   <header class="top">
     <h1>{text.files.heading}</h1>
     <p class="note">{bench.fileName || words.typed} · {words.allPlates(plates.length)}</p>
+    {#if frame}
+      <p class="note">{words.includedFrame(frame.width_mm, frame.height_mm)}</p>
+      {#if !frame.fits_bed}<p class="notice">{words.frameBedWarning}</p>{/if}
+    {/if}
     {#if bench.progress}
       <p class="note" role="status">
         {bench.progress === 'paints' ? words.finding : words.building}

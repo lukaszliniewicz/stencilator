@@ -29,6 +29,7 @@ export interface ProjectSettings {
     min_web_mm: number;
     min_opening_mm: number;
     bridge_width_mm?: number;
+    registration_clearance_mm?: number;
   };
   stencils: {
     thickness_mm: number;
@@ -149,6 +150,14 @@ export interface PlateDrawing {
   narrow_openings: string;
 }
 
+export interface FrameReport {
+  width_mm: number;
+  height_mm: number;
+  clearance_mm: number;
+  fits_bed: boolean;
+  file: string;
+}
+
 export interface FreeformSummary {
   widthMm: number;
   heightMm: number;
@@ -158,6 +167,7 @@ export interface FreeformSummary {
   artwork?: RasterPreview;
   painted: RasterPreview;
   plates: PlateReport[];
+  frame?: FrameReport;
 }
 
 export type FileKind = 'picture' | 'svg' | 'project';

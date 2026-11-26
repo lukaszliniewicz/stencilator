@@ -1,7 +1,7 @@
 //! Free-form plates: one per paint, each the artwork's rectangle with a margin around it,
 //! less the openings where that paint goes.
 //!
-//! Every plate has the same outline, so they line up when laid on the same corner. The
+//! Every plate has the same outline, optionally keyed to fit a registration frame. The
 //! openings are the paint's cells traced into smooth outlines ([`crate::trace`]). A plate
 //! is one slab, meshed into a closed solid. Flat bridges can hold parts of it cut off from
 //! the rim. Any pieces still loose stay in the mesh, and [`check_plate`] reports them with
@@ -19,9 +19,11 @@ use crate::artwork::LabelMap;
 use crate::bridges::flat_bridges;
 use crate::colour::Rgb;
 use crate::geometry::{
-    Corners, Point, Shape, Shapes, UM_PER_MM, area_mm2, bounds, difference, offset, rectangle, svg_path, translate,
+    Corners, Point, Shape, Shapes, UM_PER_MM, area_mm2, bounds, difference, fits_bed, mm, offset, rectangle, svg_path,
+    translate, um,
 };
 use crate::mesh::{Mesh, Slab, mesh_slabs};
+use crate::registration::{FRAME_FILE, FRAME_NAME, Frame, Registration};
 use crate::stencil::{RECOMMENDED_MIN_WEB_MM, check_thickness, encode_stl};
 use crate::threemf::{Object, write_3mf};
 use crate::trace::{TraceSettings, trace_mask};
@@ -37,6 +39,9 @@ pub const BED_MM: RangeInclusive<f64> = 50.0..=2000.0;
 
 /// Accepted flat bridge widths in millimetres.
 pub const BRIDGE_MM: RangeInclusive<f64> = RECOMMENDED_MIN_WEB_MM..=5.0;
+
+/// Accepted gaps between a keyed plate and the frame at each edge, in millimetres.
+pub const FRAME_CLEARANCE_MM: RangeInclusive<f64> = 0.1..=0.6;
 
 /// Space between plates laid out in a 3MF file, in micrometres.
 const LAYOUT_GAP_UM: i32 = 10_000;
@@ -63,6 +68,8 @@ pub struct PlateSettings {
     pub bed_mm: (f64, f64),
     /// Width of flat bridges in millimetres, or `None` to leave the openings as traced.
     pub bridge_width_mm: Option<f64>,
+    /// Gap at each edge between the plate and the frame, or `None` for plain plates.
+    pub registration_clearance_mm: Option<f64>,
 }
 
 impl Default for PlateSettings {
@@ -74,6 +81,7 @@ impl Default for PlateSettings {
             min_opening_mm: 0.5,
             bed_mm: (256.0, 256.0),
             bridge_width_mm: None,
+            registration_clearance_mm: None,
         }
     }
 }
@@ -102,6 +110,9 @@ impl PlateSettings {
         if let Some(width) = self.bridge_width_mm {
             mm("The flat bridge width", width, &BRIDGE_MM)?;
         }
+        if let Some(clearance) = self.registration_clearance_mm {
+            mm("The registration clearance", clearance, &FRAME_CLEARANCE_MM)?;
+        }
         Ok(())
     }
 }
@@ -121,11 +132,12 @@ pub struct Plate {
     pub paint_mm2: f64,
     /// Where paint goes through.
     pub openings: Shapes,
-    /// The plate itself: its rectangle less the openings. The first shape is the rim, the
+    /// The plate itself: its outline less the openings. The first shape is the rim, the
     /// rest are islands.
     pub solid: Shapes,
     /// What the optional flat bridges changed.
     pub flat_bridges: Option<FlatBridgeReport>,
+    registration: Option<Registration>,
 }
 
 /// A place on a plate: the rectangle around it, in millimetres from the plate's
@@ -230,16 +242,6 @@ fn hex<S: Serializer>(colour: &Rgb, serializer: S) -> Result<S::Ok, S::Error> {
     serializer.collect_str(&format_args!("#{r:02x}{g:02x}{b:02x}"))
 }
 
-/// Whole micrometres from millimetres, for settings already checked to be in range.
-#[allow(clippy::cast_possible_truncation, reason = "settings are checked to be far below 2^31 micrometres")]
-fn um(mm: f64) -> i32 {
-    (mm * UM_PER_MM).round_ties_even() as i32
-}
-
-fn mm(um: i32) -> f64 {
-    f64::from(um) / UM_PER_MM
-}
-
 /// The plate of every paint not in `skip`, in palette order. Skipped paints are those
 /// nobody paints, such as the canvas colour; the others keep their numbers. If every
 /// paint is skipped, there are no plates.
@@ -257,8 +259,11 @@ pub fn build_plates(map: &LabelMap, settings: &PlateSettings, skip: &[Rgb]) -> R
     let side = |cells: u32| i32::try_from(u64::from(cells) * u64::from(map.cell_um)).map_err(|_| too_large());
     let margin = um(settings.margin_mm);
     let grown = |side: i32| side.checked_add(2 * margin).filter(|&s| s < 1 << 30).ok_or_else(too_large);
-    let size_um = (grown(side(map.width)?)?, grown(side(map.height)?)?);
-    let outline = vec![vec![rectangle(0, 0, size_um.0, size_um.1)]];
+    let body = (grown(side(map.width)?)?, grown(side(map.height)?)?);
+    let registration =
+        settings.registration_clearance_mm.map(|clearance| Registration::new(body, um(clearance))).transpose()?;
+    let size_um = registration.map_or(body, Registration::plate_size_um);
+    let outline = registration.map_or_else(|| vec![vec![rectangle(0, 0, body.0, body.1)]], Registration::outline);
     let trace = TraceSettings { cell_um: map.cell_um, ..TraceSettings::default() };
     let cell_mm = f64::from(map.cell_um) / UM_PER_MM;
     let cell_mm2 = cell_mm * cell_mm;
@@ -282,6 +287,7 @@ pub fn build_plates(map: &LabelMap, settings: &PlateSettings, skip: &[Rgb]) -> R
                 openings,
                 solid,
                 flat_bridges: None,
+                registration,
             };
             if let Some(width) = settings.bridge_width_mm {
                 plate.add_flat_bridges(&outline, um(width));
@@ -349,17 +355,31 @@ impl Plate {
     }
 }
 
-/// Every plate as binary STL with its [`Plate::file_name`], ready to be zipped.
+/// The matching frame when registration was requested for this set of plates.
+pub fn registration_frame(plates: &[Plate]) -> Option<Frame> {
+    plates.first()?.registration.map(Registration::frame)
+}
+
+/// Every plate as binary STL with its [`Plate::file_name`] and the optional frame, ready
+/// to be zipped.
 ///
 /// # Errors
 ///
 /// As [`Plate::mesh`].
 pub fn plate_files(plates: &[Plate], thickness_mm: f64) -> Result<Vec<(String, Vec<u8>)>, Error> {
-    plates.iter().map(|plate| Ok((plate.file_name(), plate.stl(thickness_mm)?))).collect()
+    let mut files = plates
+        .iter()
+        .map(|plate| Ok((plate.file_name(), plate.stl(thickness_mm)?)))
+        .collect::<Result<Vec<_>, Error>>()?;
+    if let Some(frame) = registration_frame(plates) {
+        files.push((FRAME_FILE.to_owned(), frame.stl(thickness_mm)?));
+    }
+    Ok(files)
 }
 
 /// Every plate in one 3MF file, each an object named as [`Plate::name`] in its paint's
-/// colour. They lie in a grid with 10 mm between them, in palette order from the top left.
+/// colour, followed by the optional registration frame. They lie in a grid with at least
+/// 10 mm between them, in palette order from the top left.
 ///
 /// # Errors
 ///
@@ -368,23 +388,31 @@ pub fn plate_files(plates: &[Plate], thickness_mm: f64) -> Result<Vec<(String, V
 pub fn plates_3mf(plates: &[Plate], thickness_mm: f64) -> Result<Vec<u8>, Error> {
     let meshes = plates.iter().map(|plate| plate.mesh(thickness_mm)).collect::<Result<Vec<_>, _>>()?;
     let names: Vec<String> = plates.iter().map(Plate::name).collect();
-    let columns = (1..=plates.len()).find(|c| c * c >= plates.len()).unwrap_or(1);
-    let rows = plates.len().div_ceil(columns);
+    let frame = registration_frame(plates);
+    let frame_mesh = frame.as_ref().map(|frame| frame.mesh(thickness_mm)).transpose()?;
+    let count = plates.len() + usize::from(frame.is_some());
+    let columns = (1..=count).find(|c| c * c >= count).unwrap_or(1);
+    let rows = count.div_ceil(columns);
+    let (width, height) = plates
+        .iter()
+        .map(|plate| plate.size_um)
+        .chain(frame.iter().map(|frame| frame.size_um))
+        .fold((0, 0), |(w, h), (p_w, p_h)| (w.max(p_w), h.max(p_h)));
     let too_large = || Error::Geometry("The plates would be too large to lay out together.".to_owned());
     let place = |index: usize, step: i32| {
         i32::try_from(index).ok().and_then(|i| i.checked_mul(step.checked_add(LAYOUT_GAP_UM)?)).ok_or_else(too_large)
     };
-    let objects = plates
+    let position = |i| Ok((place(i % columns, width)?, place(rows - 1 - i / columns, height)?));
+    let mut objects = plates
         .iter()
         .zip(&meshes)
         .zip(&names)
         .enumerate()
-        .map(|(i, ((plate, mesh), name))| {
-            let x = place(i % columns, plate.size_um.0)?;
-            let y = place(rows - 1 - i / columns, plate.size_um.1)?;
-            Ok(Object { name, colour: plate.colour, mesh, position_um: (x, y) })
-        })
+        .map(|(i, ((plate, mesh), name))| Ok(Object { name, colour: plate.colour, mesh, position_um: position(i)? }))
         .collect::<Result<Vec<_>, Error>>()?;
+    if let Some(mesh) = &frame_mesh {
+        objects.push(Object { name: FRAME_NAME, colour: [128; 3], mesh, position_um: position(plates.len())? });
+    }
     write_3mf(&objects)
 }
 
@@ -418,7 +446,6 @@ pub struct PlateProblems {
 pub fn inspect_plate(plate: &Plate, settings: &PlateSettings) -> Result<(PlateReport, PlateProblems), Error> {
     settings.check()?;
     let (width_mm, height_mm) = (mm(plate.size_um.0), mm(plate.size_um.1));
-    let (bed_w, bed_h) = settings.bed_mm;
     let placed = |shapes: Shapes| -> (Shapes, Vec<Spot>) {
         shapes.into_iter().filter_map(|shape| spot(&shape).map(|s| (shape, s))).unzip()
     };
@@ -447,7 +474,7 @@ pub fn inspect_plate(plate: &Plate, settings: &PlateSettings) -> Result<(PlateRe
         islands: island_spots,
         thin_webs: web_spots,
         narrow_openings: narrow_spots,
-        fits_bed: (width_mm <= bed_w && height_mm <= bed_h) || (width_mm <= bed_h && height_mm <= bed_w),
+        fits_bed: fits_bed((width_mm, height_mm), settings.bed_mm),
         flat_bridges: plate.flat_bridges.clone(),
     };
     Ok((report, PlateProblems { islands, thin_webs, narrow_openings }))

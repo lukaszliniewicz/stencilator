@@ -7,6 +7,7 @@ import { text } from '../lib/text';
 import type {
   ArtworkEdits,
   ArtworkSource,
+  FrameReport,
   FreeformStage,
   FreeformSummary,
   OpenedProject,
@@ -251,6 +252,8 @@ export function createHandlers(
       painted: takePreview(labels.preview()),
       plates: JSON.parse(plates.report()) as PlateReport[]
     };
+    const frame = plates.frameReport(w.project);
+    if (frame) summary.frame = JSON.parse(frame) as FrameReport;
     const transfer: Transferable[] = [
       summary.palette.buffer,
       summary.counts.buffer,

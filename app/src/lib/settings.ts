@@ -33,6 +33,7 @@ export interface Settings {
   minWebMm: number;
   minOpeningMm: number;
   bridgeWidthMm: number | null;
+  registrationClearanceMm: number | null;
   thicknessMm: number;
   bedWidthMm: number;
   bedDepthMm: number;
@@ -66,6 +67,7 @@ const DEFAULTS: Readonly<Settings> = {
   minWebMm: 0.6,
   minOpeningMm: 0.5,
   bridgeWidthMm: null,
+  registrationClearanceMm: null,
   thicknessMm: 1.2,
   bedWidthMm: 256,
   bedDepthMm: 256,
@@ -134,6 +136,7 @@ export function sanitise(value: unknown): Settings {
     minOpeningMm: number('minOpeningMm'),
     bridgeWidthMm:
       typeof bridgeWidth === 'number' && Number.isFinite(bridgeWidth) ? bridgeWidth : null,
+    registrationClearanceMm: null,
     thicknessMm: number('thicknessMm'),
     bedWidthMm: number('bedWidthMm'),
     bedDepthMm: number('bedDepthMm'),
@@ -197,7 +200,10 @@ export function toProjectSettings(s: Settings): ProjectSettings {
       margin_mm: entered(s.marginMm),
       min_web_mm: entered(s.minWebMm),
       min_opening_mm: entered(s.minOpeningMm),
-      ...(s.bridgeWidthMm !== null ? { bridge_width_mm: entered(s.bridgeWidthMm) } : {})
+      ...(s.bridgeWidthMm !== null ? { bridge_width_mm: entered(s.bridgeWidthMm) } : {}),
+      ...(s.registrationClearanceMm !== null
+        ? { registration_clearance_mm: entered(s.registrationClearanceMm) }
+        : {})
     },
     stencils: {
       thickness_mm: entered(s.thicknessMm),
@@ -233,6 +239,7 @@ export function fromProjectSettings(p: ProjectSettings): Settings {
     minWebMm: f.min_web_mm,
     minOpeningMm: f.min_opening_mm,
     bridgeWidthMm: f.bridge_width_mm ?? null,
+    registrationClearanceMm: f.registration_clearance_mm ?? null,
     thicknessMm: s.thickness_mm,
     bedWidthMm: s.bed_mm[0],
     bedDepthMm: s.bed_mm[1],

@@ -170,8 +170,8 @@ export class Workbench {
 
     $effect(() => {
       const now = this.#snapshot();
-      // Artwork and its fonts stay out of local storage.
-      writeStored(SETTINGS_KEY, now.settings);
+      // Keep the frame with its imported project. New artwork starts without one.
+      writeStored(SETTINGS_KEY, { ...now.settings, registrationClearanceMm: null });
       clearTimeout(this.#recordTimer);
       this.#recordTimer = setTimeout(() => {
         this.#recordTimer = undefined;
@@ -407,6 +407,7 @@ export class Workbench {
         this.settings.merges = [];
         this.settings.skipped = [];
         this.settings.stencilCanvasColour = false;
+        this.settings.registrationClearanceMm = null;
         if (source.kind === 'picture') this.settings.sizing = guessSizing(source.info);
         else this.settings.sizeMode = 'natural';
         if (source.kind === 'text') {

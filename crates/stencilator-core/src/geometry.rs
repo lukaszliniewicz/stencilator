@@ -17,6 +17,21 @@ use crate::Error;
 /// Micrometres per millimetre.
 pub const UM_PER_MM: f64 = 1000.0;
 
+/// Whole micrometres from millimetres, for settings already checked to be in range.
+#[allow(clippy::cast_possible_truncation, reason = "settings are checked to be far below 2^31 micrometres")]
+pub(crate) fn um(mm: f64) -> i32 {
+    (mm * UM_PER_MM).round_ties_even() as i32
+}
+
+pub(crate) fn mm(um: i32) -> f64 {
+    f64::from(um) / UM_PER_MM
+}
+
+/// Whether the part fits on the bed, turned if need be.
+pub(crate) fn fits_bed((w, h): (f64, f64), (bed_w, bed_h): (f64, f64)) -> bool {
+    (w <= bed_w && h <= bed_h) || (w <= bed_h && h <= bed_w)
+}
+
 /// A point in micrometres.
 pub type Point = IntPoint<i32>;
 /// A closed ring of points, the last joined back to the first.

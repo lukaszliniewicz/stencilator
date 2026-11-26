@@ -15,7 +15,7 @@ use stencilator_core::chart::{build_chart, merge_paints};
 use stencilator_core::drawing::{Drawing, parse_svg, text_drawing};
 use stencilator_core::plate::{
     Plate, PlateProblems, PlateReport, build_plates, inspect_plate, plate_drawing, plate_files, plates_3mf,
-    reports_json,
+    registration_frame, reports_json,
 };
 use stencilator_core::project::{self, BUILT_IN_FONTS, Colour, Font, Source, read_project};
 use stencilator_core::source::{Image, decode};
@@ -508,6 +508,14 @@ impl Plates {
         reports_json(&self.built, &self.reports).to_string()
     }
 
+    /// The registration frame's dimensions and fit on the bed, as JSON, when there is one.
+    #[wasm_bindgen(js_name = frameReport)]
+    #[must_use]
+    pub fn frame_report(&self, project: &Project) -> Option<String> {
+        let frame = registration_frame(&self.built)?;
+        Some(frame.report(project.project.plate_settings().bed_mm).to_json())
+    }
+
     /// One plate as a page draws it, as JSON: its size, and SVG path data in millimetres,
     /// y down, for its material, islands, thin webs and narrow openings.
     ///
@@ -533,7 +541,7 @@ impl Plates {
         plate.stl(project.project.stencils.thickness_mm).map_err(|e| error(&e))
     }
 
-    /// Every plate as STL files in one zip.
+    /// The plates and any registration frame as STL files in one zip.
     ///
     /// # Errors
     ///
@@ -543,7 +551,7 @@ impl Plates {
         zip(&files).map_err(|e| error(&e))
     }
 
-    /// Every plate in one 3MF file, side by side, each named and in its paint's colour.
+    /// The plates and any registration frame in one 3MF file, side by side.
     ///
     /// # Errors
     ///
@@ -551,5 +559,17 @@ impl Plates {
     #[wasm_bindgen(js_name = threeMf)]
     pub fn three_mf(&self, project: &Project) -> Result<Vec<u8>, JsError> {
         plates_3mf(&self.built, project.project.stencils.thickness_mm).map_err(|e| error(&e))
+    }
+
+    /// Just the registration frame as binary STL.
+    ///
+    /// # Errors
+    ///
+    /// When there is no frame or it cannot be meshed at the given thickness.
+    #[wasm_bindgen(js_name = frameStl)]
+    pub fn frame_stl(&self, project: &Project) -> Result<Vec<u8>, JsError> {
+        let frame =
+            registration_frame(&self.built).ok_or_else(|| JsError::new("This set has no registration frame."))?;
+        frame.stl(project.project.stencils.thickness_mm).map_err(|e| error(&e))
     }
 }
