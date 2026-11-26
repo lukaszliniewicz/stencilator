@@ -1,6 +1,7 @@
 <script lang="ts">
-  // The left column: the name, the theme, the picture, and once there is a chart, its
-  // paints: which get stencils, merging the picked one into another, and its stencil.
+  // Artwork, theme, shared paint controls, and the selected stencil or plate report.
+  import ArtworkControls from './ArtworkControls.svelte';
+  import PlateIssues from './PlateIssues.svelte';
   import TileCanvas from './TileCanvas.svelte';
   import { num, text } from './text';
   import { THEMES, type Theme } from './theme.svelte';
@@ -10,12 +11,15 @@
     bench: Workbench;
     theme: Theme;
     choose: () => void;
+    chooseProject: () => void;
   }
 
-  let { bench, theme, choose }: Props = $props();
+  let { bench, theme, choose, chooseProject }: Props = $props();
 
   let previewWidth = $state(0);
   const chart = $derived(bench.chart);
+  const freeform = $derived(bench.isFreeform ? bench.freeform : undefined);
+  const paints = $derived(bench.isFreeform ? freeform : chart);
   const picked = $derived(bench.selected);
   const pickedColour = $derived(bench.colours[picked] ?? '');
   const merges = $derived(bench.settings.merges);
@@ -47,55 +51,89 @@
     </div>
   </header>
 
-  <section aria-labelledby="picture-heading">
-    <h2 id="picture-heading" class="label heading">{text.picture.heading}</h2>
-    {#if bench.source}
-      <img class="thumbnail" src={bench.pictureUrl} alt={text.picture.alt} />
-      <p class="file">
-        <span class="name">{bench.fileName}</span>
-        <span class="note">{text.picture.pixels(bench.source.width, bench.source.height)}</span>
-      </p>
-      <button type="button" class="button" onclick={choose}>{text.picture.replace}</button>
-    {:else}
-      <p class="none">{text.picture.none}</p>
-      <button type="button" class="button" onclick={choose}>
-        <svg
-          width="16"
-          height="16"
-          viewBox="0 0 16 16"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="1.5"
-          aria-hidden="true"
-        >
-          <path d="M8 11V2.5M4.5 6L8 2.5 11.5 6" />
-          <path d="M2.5 10.5v3h11v-3" />
-        </svg>
-        {text.picture.open}
+  {#if bench.isFreeform}
+    <section aria-labelledby="artwork-heading">
+      <h2 id="artwork-heading" class="label heading">{text.freeform.artwork}</h2>
+      <ArtworkControls {bench} {choose} />
+    </section>
+  {:else}
+    <section aria-labelledby="picture-heading">
+      <h2 id="picture-heading" class="label heading">{text.picture.heading}</h2>
+      {#if bench.source}
+        <img class="thumbnail" src={bench.pictureUrl} alt={text.picture.alt} />
+        <p class="file">
+          <span class="name">{bench.fileName}</span>
+          <span class="note">{text.picture.pixels(bench.source.width, bench.source.height)}</span>
+        </p>
+        <button type="button" class="button" disabled={bench.opening} onclick={choose}>
+          {text.picture.replace}
+        </button>
+      {:else}
+        <p class="none">{text.picture.none}</p>
+        <button type="button" class="button" disabled={bench.opening} onclick={choose}>
+          <svg
+            width="16"
+            height="16"
+            viewBox="0 0 16 16"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.5"
+            aria-hidden="true"
+          >
+            <path d="M8 11V2.5M4.5 6L8 2.5 11.5 6" />
+            <path d="M2.5 10.5v3h11v-3" />
+          </svg>
+          {text.picture.open}
+        </button>
+      {/if}
+    </section>
+  {/if}
+
+  <div class="project-actions">
+    <button
+      type="button"
+      class="button"
+      disabled={bench.opening || !!bench.saving}
+      onclick={chooseProject}
+    >
+      {text.project.open}
+    </button>
+    {#if bench.artwork && (!bench.isFreeform || bench.screen !== 'files')}
+      <button
+        type="button"
+        class="button"
+        disabled={!bench.canSaveProject}
+        onclick={bench.saveProject}
+      >
+        {bench.saving === bench.projectName ? text.files.saving : text.project.save}
       </button>
     {/if}
-  </section>
+  </div>
 
-  {#if chart}
+  {#if paints}
     <section aria-labelledby="paints-heading">
       <h2 id="paints-heading" class="label heading split">
         <span>{text.paints.heading}</span>
-        <span class="aside">{text.paints.order(chart.counts.length)}</span>
+        <span class="aside">{text.paints.order(paints.counts.length)}</span>
       </h2>
       <ul class="paints">
         {#each bench.colours as colour, i (i)}
+          {@const count = paints.counts[i] ?? 0}
+          {@const area = freeform ? count * freeform.cellMm ** 2 : 0}
           <li class:off={bench.unstencilled.includes(colour)}>
             <button
               type="button"
               aria-pressed={picked === i}
-              aria-label={text.paints.item(i, colour, chart.counts[i] ?? 0)}
+              aria-label={freeform
+                ? text.freeform.paint(i, colour, area)
+                : text.paints.item(i, colour, count)}
               onclick={() => {
                 bench.select(i);
               }}
             >
               <span class="swatch" style:background={colour}></span>
               <span class="mono hex">{colour.toUpperCase()}</span>
-              <span class="count">{num(chart.counts[i] ?? 0)}</span>
+              <span class="count">{freeform ? text.freeform.area(area) : num(count)}</span>
             </button>
             {#if bench.stencilsPossible}
               <input
@@ -170,7 +208,22 @@
         </div>
       {/if}
 
-      {#if bench.stencilsPossible}
+      {#if freeform}
+        {#if bench.selectedPlate}
+          {@const plate = bench.selectedPlate}
+          <div class="report">
+            <p class="label">{text.freeform.plateCheck}</p>
+            <p class="note">
+              {text.freeform.plateFor(plate.paint, plate.colour)} · {text.freeform.openings(
+                plate.openings
+              )}
+            </p>
+            <PlateIssues {plate} />
+          </div>
+        {:else if bench.unstencilled.includes(pickedColour)}
+          <p class="note">{text.freeform.nothingSelected}</p>
+        {/if}
+      {:else if bench.stencilsPossible && chart}
         {@const off = bench.unstencilled.includes(pickedColour)}
         <figure class="preview" class:off>
           <div class="measure" bind:clientWidth={previewWidth}>
@@ -195,7 +248,7 @@
         </figure>
       {/if}
     </section>
-  {:else}
+  {:else if !bench.isFreeform}
     <section aria-labelledby="how-heading">
       <h2 id="how-heading" class="label heading">{text.how.heading}</h2>
       <ol class="steps">
@@ -464,6 +517,25 @@
 
   .preview.off .measure {
     opacity: 0.4;
+  }
+
+  .project-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+
+  .project-actions .button {
+    min-height: 34px;
+    padding-inline: 10px;
+    font-size: 11px;
+  }
+
+  .report {
+    display: grid;
+    gap: 6px;
+    padding-top: 10px;
+    border-top: 1px solid var(--line);
   }
 
   .steps {

@@ -8,7 +8,9 @@ import { pathToFileURL } from "node:url";
 const [pkg, root] = process.argv.slice(2);
 const engine = await import(pathToFileURL(join(pkg, "stencilator_wasm.js")).href);
 const wasm = engine.initSync({ module: readFileSync(join(pkg, "stencilator_wasm_bg.wasm")) });
-const FONT = readFileSync(join(root, "fonts/NotoSans-Bold.ttf"));
+// The built-in fonts, as every shell gives them to the engine.
+const fonts = new engine.Fonts();
+for (const name of engine.Fonts.builtIn()) fonts.add(name, readFileSync(join(root, "fonts", name)));
 const badge = readFileSync(join(root, "fixtures/svg/badge.svg"));
 const photo = readFileSync(join(root, "fixtures/reference/plates-photo.png"));
 const text = () => {
@@ -32,7 +34,7 @@ for (const [name, make, settings] of cases) {
   project.setSettings(JSON.stringify({ mode: "freeform", ...settings }));
   const times = [];
   let t = performance.now();
-  const artwork = new engine.Artwork(project, FONT);
+  const artwork = new engine.Artwork(project, fonts);
   times.push(since(t));
   t = performance.now();
   let labels = artwork.labels(project);

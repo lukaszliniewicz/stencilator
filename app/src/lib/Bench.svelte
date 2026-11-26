@@ -1,7 +1,8 @@
 <script lang="ts">
   // The middle of the workspace: the canvas waiting for a picture, then the picture, the
   // chart or one stencil, fitted to the room there is.
-  import Sheet, { CAPTION_SPACE, RULER_SPACE } from './Sheet.svelte';
+  import { CAPTION_SPACE, RULER_SPACE } from './bench-space';
+  import Sheet from './Sheet.svelte';
   import TileCanvas from './TileCanvas.svelte';
   import { num, text } from './text';
   import type { Workbench } from './workbench.svelte';
@@ -54,6 +55,9 @@
     <div class="actions">
       <button type="button" class="button primary" onclick={choose}>{text.bench.choose}</button>
       <button type="button" class="button" onclick={bench.openExample}>{text.bench.example}</button>
+      <button type="button" class="button" disabled={bench.opening} onclick={bench.typeText}>
+        {text.freeform.type}
+      </button>
     </div>
   </div>
 {/snippet}

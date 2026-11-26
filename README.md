@@ -17,11 +17,10 @@ and, later, behind an AI assistant, giving the same result everywhere.
 
 ## Status
 
-Early, but usable. Tile mode is finished, both on the command line and in the web app at
-<https://stencilator.liniewicz.eu>, which runs entirely in your browser: your pictures are
-never uploaded. Free-form mode works on the command line and comes to the web app next.
-The rest is still to come (see the [roadmap](#roadmap)), and there are no prebuilt
-releases of the command yet.
+Early, but usable. Both modes work on the command line and in the web app built from
+this repository. The [hosted app](https://stencilator.liniewicz.eu) currently serves tile
+mode. The app runs entirely in your browser, so your artwork is never uploaded.
+There are no prebuilt releases of the command yet.
 
 ## Trying it
 
@@ -92,8 +91,14 @@ Then it reports what may not print well:
 Each comes with where it is, in millimetres from the bottom-left corner of the plate.
 The artwork is traced on a grid of 0.1 mm cells (`--cell`), and patches of one paint
 smaller than 1 mm² (`--min-patch`) take the paints around them, so a speck in a photo
-does not become an opening of its own. Typed text uses Noto Sans Bold, which is built in;
-`--font` gives it another, and gives SVG drawings the fonts their text needs.
+does not become an opening of its own. Typed text uses the built-in Noto Sans Bold by
+default. Try `--font "Allerta Stencil"` for letters with bridges already drawn in, or
+give `--font` a font file for text or SVG artwork.
+
+In the web app, pick **Free-form** to use an image, an SVG or typed text. The **Plate**
+view highlights islands, thin webs and narrow openings. **Files** offers 3MF, a zip of
+STLs, or a single plate. Save a `.stencilator` project to reopen the artwork and all its
+settings in the app or on the command line.
 
 ### In both modes
 
@@ -111,10 +116,9 @@ does not become an opening of its own. Typed text uses Noto Sans Bold, which is 
 
 ## Roadmap
 
-Free-form mode comes to the web app next. After that come bridges that hold islands in
-place, so that the middle of an "O" stays put, and registration marks; then a local MCP
-server, so that an AI assistant can prepare stencils for you. The web app gains each of
-these as the engine does.
+Next are bridges that hold islands in place, so that the middle of an "O" stays put, and
+registration marks. A local MCP server follows, so that an AI assistant can prepare
+stencils for you. The web app gains each of these as the engine does.
 
 ## Development
 
@@ -133,14 +137,13 @@ Pillow, trimesh and lib3mf, that the tests compare against, and `fonts/` the fon
 in. `spikes/` holds early experiments with SVG rendering, outline
 tracing, 3D meshing and MCP that later work will turn into real code.
 
-The web app in `app/` is written in Svelte and TypeScript and does everything the command
-line does in tile mode. To work on it you also need Node 22 or newer, pnpm, `wasm-bindgen-cli` 0.2.130 and
-binaryen. Run `make wasm` once, then `pnpm install` and `pnpm dev` inside `app/`, where
-`pnpm check` and `pnpm e2e` run its own checks.
+The web app in `app/` is written in Svelte and TypeScript. To work on it you also need
+Node 22 or newer, pnpm, `wasm-bindgen-cli` 0.2.130 and binaryen. Run `make wasm` once,
+then `pnpm install` and `pnpm dev` inside `app/`, where `pnpm check` and `pnpm e2e` run
+its own checks.
 
 ## Licence
 
 MIT; see [LICENSE](LICENSE). This software is based in part on the work of the
 Independent JPEG Group, through the `jpeg-encoder` crate that writes JPEG charts. The
-built-in font, Noto Sans Bold, is under the SIL Open Font License 1.1; see
-[fonts/](fonts/README.md).
+built-in fonts are under the SIL Open Font License 1.1; see [fonts/](fonts/README.md).

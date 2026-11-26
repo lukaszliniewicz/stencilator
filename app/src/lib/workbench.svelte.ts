@@ -1,20 +1,41 @@
-/**
- * The state of the workspace: the open picture, the settings with their history, the
- * newest chart, and saving files from it. Build it while a component initialises, since
- * it keeps the chart in step with the settings through effects.
- */
-import { Engine, type ChartFormat, type ChartSummary, type SourceInfo } from '../engine/client';
+/** The open project, live previews, editing history and downloads. */
+import {
+  Engine,
+  type ArtworkEdits,
+  type ArtworkSource,
+  type ChartFormat,
+  type ChartSummary,
+  type FileKind,
+  type FontSelection,
+  type FreeformStage,
+  type FreeformSummary,
+  type OpenedProject,
+  type PlateDrawing,
+  type PlateReport,
+  type ProjectFont,
+  type ProjectMode,
+  type TypedText
+} from '../engine/client';
+import badgeUrl from '../../../fixtures/svg/badge.svg?no-inline';
 import { hexToNumber, rgbToHex } from './colour';
 import { save } from './download';
 import { History } from './history';
 import { latest } from './latest';
-import { baseName, chartFileName, stencilFileName, stencilsZipName } from './names';
+import {
+  baseName,
+  chartFileName,
+  platesFileName,
+  projectFileName,
+  stencilFileName,
+  stencilsZipName
+} from './names';
 import {
   equalSettings,
+  fromProjectSettings,
   guessSizing,
   isSkipped,
   sanitise,
-  toChartSettings,
+  toProjectSettings,
   toggledStencil,
   type Settings
 } from './settings';
@@ -28,35 +49,72 @@ const SETTINGS_KEY = 'stencilator.settings';
 /** Changes closer together than this become one step of undo. */
 const RECORD_AFTER_MS = 400;
 const IMAGE_TYPES = ['image/png', 'image/jpeg', 'image/webp'];
-const EXAMPLE = 'fox.png';
 const TYPES: Record<ChartFormat, string> = {
   png: 'image/png',
   jpeg: 'image/jpeg',
   pdf: 'application/pdf'
 };
 
+interface Edit {
+  settings: Settings;
+  typed: TypedText | undefined;
+  fonts: FontSelection;
+}
+
+interface Build extends Edit {
+  artwork: ArtworkSource;
+  serial: number;
+}
+
+interface Loaded {
+  project: OpenedProject;
+  file?: File;
+  kind?: FileKind;
+}
+
 const message = (error: unknown): string =>
   error instanceof Error ? error.message : String(error);
 
+const sameEdit = (a: Edit, b: Edit): boolean =>
+  equalSettings(a.settings, b.settings) && a.typed === b.typed && a.fonts === b.fonts;
+
 export class Workbench {
   readonly #engine = new Engine();
-  readonly #build = latest((settings: Settings) => this.#engine.chart(toChartSettings(settings)));
-  readonly #history: History<Settings>;
+  readonly #build = latest(async (input: Build) => {
+    // An open may have replaced the project while this build was waiting.
+    if (this.opening || input.artwork !== this.artwork) return;
+    const settings = toProjectSettings(input.settings);
+    if (settings.mode === 'tiles') {
+      return { mode: settings.mode, summary: await this.#engine.chart(settings) };
+    }
+    const summary = await this.#engine.freeform(settings, this.#edits(input), (stage) => {
+      if (this.#waitingFor(input)) this.progress = stage;
+    });
+    return { mode: settings.mode, summary };
+  });
+  readonly #draw = latest((index: number) => this.#engine.plateDrawing(index));
+  #history: History<Edit>;
   #recordTimer: ReturnType<typeof setTimeout> | undefined;
-  /** A paint to select once the next chart is built, as its palette may move. */
+  #buildSerial = 0;
+  #nextFontRevision = 0;
   #follow: string | undefined;
+  #buildProblem = $state('');
+  #actionProblem = $state('');
+  #drawn = $state.raw<{ forPlate: PlateReport; drawing: PlateDrawing }>();
 
   settings: Settings = $state(sanitise(readStored(SETTINGS_KEY)));
-  source: SourceInfo | undefined = $state();
-  fileName = $state('');
+  artwork = $state.raw<ArtworkSource>();
+  typed = $state.raw<TypedText>();
+  fonts: FontSelection = $state.raw({ revision: 0, files: [] });
   pictureUrl = $state('');
-  chart: ChartSummary | undefined = $state.raw();
-  /** Whether the newest settings have been answered, with a chart or a problem. */
+  chart = $state.raw<ChartSummary>();
+  freeform = $state.raw<FreeformSummary>();
+  /** Whether the newest settings have been answered, with a build or a problem. */
   current = $state(false);
-  /** Whether the chart shown is the engine's newest, so that files can come from it. */
+  /** Whether the displayed build is the engine's newest and can be exported. */
   valid = $state(false);
-  problem = $state('');
-  /** The file being saved, by its name, or nothing. */
+  opening = $state(false);
+  progress = $state<FreeformStage>();
   saving = $state('');
   view: View = $state('chart');
   screen: Screen = $state('bench');
@@ -65,70 +123,179 @@ export class Workbench {
   canRedo = $state(false);
   version = $state('');
   minWebMm = $state(0.6);
+  #projectName = $state('');
 
+  readonly isFreeform = $derived(this.settings.projectMode === 'freeform');
+  readonly source = $derived(this.artwork?.kind === 'picture' ? this.artwork.info : undefined);
+  readonly fileName = $derived(this.artwork?.kind === 'text' ? '' : (this.artwork?.name ?? ''));
   readonly base = $derived(baseName(this.fileName));
+  readonly projectName = $derived(this.#projectName || projectFileName(this.base));
+  readonly problem = $derived(this.#actionProblem || this.#buildProblem);
+  readonly canShowFiles = $derived((this.isFreeform ? this.freeform : this.chart) !== undefined);
   readonly ready = $derived(
-    this.chart !== undefined && this.current && this.valid && this.saving === ''
+    this.canShowFiles && this.current && this.valid && !this.opening && !this.saving
   );
-  readonly stencilsPossible = $derived(this.chart !== undefined && this.chart.linePx > 0);
-  readonly colours = $derived(paletteHex(this.chart));
-  /** The paints of the chart that get no stencil. */
+  readonly canSaveProject = $derived(this.artwork !== undefined && !this.opening && !this.saving);
+  readonly stencilsPossible = $derived(
+    this.isFreeform
+      ? this.freeform !== undefined
+      : this.chart !== undefined && this.chart.linePx > 0
+  );
+  readonly colours = $derived(paletteHex(this.isFreeform ? this.freeform : this.chart));
+  /** Paints that get no stencil, in either mode. */
   readonly unstencilled = $derived(
     this.colours.filter((colour) => isSkipped(this.settings, colour))
   );
   readonly stencilCount = $derived(this.colours.length - this.unstencilled.length);
+  readonly selectedPlate = $derived.by(() => {
+    if (!this.isFreeform || this.unstencilled.includes(this.colours[this.selected] ?? '')) return;
+    return this.freeform?.plates.find((plate) => plate.paint === this.selected);
+  });
+  readonly drawing = $derived(
+    this.#drawn?.forPlate === this.selectedPlate ? this.#drawn?.drawing : undefined
+  );
 
   constructor() {
-    this.#history = new History($state.snapshot(this.settings), equalSettings);
-    this.#engine.about().then(
+    this.#history = new History(this.#snapshot(), sameEdit);
+    void this.#engine.about().then(
       (about) => {
         this.version = about.version;
         this.minWebMm = about.minWebMm;
       },
       (error: unknown) => {
-        this.problem = message(error);
+        this.#actionProblem = message(error);
       }
     );
 
-    // Remember every change, and make pauses in changing into steps of undo.
     $effect(() => {
-      const now = $state.snapshot(this.settings);
-      writeStored(SETTINGS_KEY, now);
+      const now = this.#snapshot();
+      // Artwork and its fonts stay out of local storage.
+      writeStored(SETTINGS_KEY, now.settings);
       clearTimeout(this.#recordTimer);
       this.#recordTimer = setTimeout(() => {
         this.#recordTimer = undefined;
-        this.#record(now);
+        this.#history.record(now);
+        this.#syncHistory();
       }, RECORD_AFTER_MS);
     });
 
     $effect(() => {
-      if (!this.source) return;
+      const artwork = this.artwork;
+      if (!artwork || this.opening) return;
+      const input: Build = { ...this.#snapshot(), artwork, serial: ++this.#buildSerial };
       this.current = false;
-      this.#build($state.snapshot(this.settings)).then(
+      this.progress = input.settings.projectMode === 'freeform' ? 'paints' : undefined;
+      void this.#build(input).then(
         (outcome) => {
-          if (outcome.superseded) return;
-          this.chart = outcome.result;
-          const followed = this.#follow ? paletteHex(this.chart).indexOf(this.#follow) : -1;
+          if (outcome.superseded || !outcome.result || !this.#waitingFor(input)) return;
+          const { mode, summary } = outcome.result;
+          const colour = this.#follow ?? this.colours[this.selected];
           this.#follow = undefined;
-          this.selected =
-            followed >= 0 ? followed : Math.min(this.selected, outcome.result.counts.length - 1);
-          this.problem = '';
+          if (mode === 'tiles') this.chart = summary;
+          else this.freeform = summary;
+          const match = colour ? this.colours.indexOf(colour) : -1;
+          this.selected = match >= 0 ? match : (this.freeform?.plates[0]?.paint ?? 0);
+          if (!this.isFreeform && match < 0) this.selected = 0;
+          this.#buildProblem = '';
+          this.progress = undefined;
           this.valid = true;
           this.current = true;
         },
         (error: unknown) => {
-          // The last chart stays in view, faded; the engine no longer holds it.
-          this.problem = message(error);
+          if (!this.#waitingFor(input)) return;
+          // Keep the last drawing or chart in view, faded, while the person corrects it.
+          this.#buildProblem = message(error);
+          this.progress = undefined;
           this.valid = false;
           this.current = true;
         }
       );
     });
+
+    $effect(() => {
+      const plate = this.selectedPlate;
+      if (
+        !plate ||
+        this.drawing ||
+        this.view !== 'stencil' ||
+        this.screen !== 'bench' ||
+        this.opening ||
+        !this.current ||
+        !this.valid
+      )
+        return;
+      const index = this.freeform?.plates.indexOf(plate) ?? -1;
+      if (index < 0) return;
+      void this.#draw(index).then(
+        (outcome) => {
+          if (!outcome.superseded && this.selectedPlate === plate) {
+            this.#drawn = { forPlate: plate, drawing: outcome.result };
+          }
+        },
+        (error: unknown) => {
+          if (this.current && this.valid && this.selectedPlate === plate && !this.opening) {
+            this.#actionProblem = message(error);
+          }
+        }
+      );
+    });
+  }
+
+  #snapshot(): Edit {
+    return { settings: $state.snapshot(this.settings), typed: this.typed, fonts: this.fonts };
+  }
+
+  #edits(edit: Edit): ArtworkEdits {
+    return edit.typed ? { typed: edit.typed, fonts: edit.fonts } : { fonts: edit.fonts };
+  }
+
+  #waitingFor(input: Build): boolean {
+    return !this.opening && this.artwork === input.artwork && this.#buildSerial === input.serial;
+  }
+
+  #changing(): void {
+    this.#actionProblem = '';
+    this.current = false;
+    this.#buildSerial++;
   }
 
   change = <K extends keyof Settings>(key: K, value: Settings[K]): void => {
+    if (Object.is(this.settings[key], value)) return;
+    this.#changing();
     this.settings[key] = value;
   };
+
+  chooseMode = (mode: ProjectMode): void => {
+    if (mode === 'tiles' && this.artwork && !this.source) return;
+    this.change('projectMode', mode);
+  };
+
+  changeText = <K extends keyof TypedText>(key: K, value: TypedText[K]): void => {
+    if (!this.typed || Object.is(this.typed[key], value)) return;
+    this.#changing();
+    this.typed = { ...this.typed, [key]: value };
+  };
+
+  builtinFont = (name: string): void => {
+    const [current] = this.fonts.files;
+    if (current?.name === name && !current.data) return;
+    this.#replaceFonts([{ name }]);
+  };
+
+  addFont = (file: File): void => {
+    const fonts =
+      this.artwork?.kind === 'svg' ? this.fonts.files.filter(({ name }) => name !== file.name) : [];
+    this.#replaceFonts([...fonts, { name: file.name, data: file }]);
+  };
+
+  clearFonts = (): void => {
+    this.#replaceFonts([]);
+  };
+
+  #replaceFonts(files: readonly ProjectFont[]): void {
+    this.#changing();
+    this.fonts = { revision: ++this.#nextFontRevision, files };
+  }
 
   select = (index: number): void => {
     this.selected = index;
@@ -142,113 +309,131 @@ export class Workbench {
     this.screen = screen;
   };
 
-  /** Gives every tile of one paint to another, which stays selected. */
   merge = (from: string, to: string): void => {
     this.#follow = to;
-    this.settings.merges = [...this.settings.merges, [from, to]];
+    this.change('merges', [...this.settings.merges, [from, to]]);
   };
 
-  /** Takes back one merge, selecting the paint it brings back. */
   unmerge = (index: number): void => {
     this.#follow = this.settings.merges[index]?.[0];
-    this.settings.merges = this.settings.merges.filter((_, i) => i !== index);
+    this.change(
+      'merges',
+      this.settings.merges.filter((_, i) => i !== index)
+    );
   };
 
   toggleStencil = (colour: string): void => {
-    const next = toggledStencil(this.settings, colour);
-    this.settings.skipped = next.skipped;
-    this.settings.stencilCanvasColour = next.stencilCanvasColour;
+    this.#changing();
+    Object.assign(this.settings, toggledStencil(this.settings, colour));
   };
 
   open = async (file: File): Promise<void> => {
-    if (file.type !== '' && !IMAGE_TYPES.includes(file.type)) {
-      this.problem = text.errors.notAPicture;
+    if (this.opening || this.saving) return;
+    const kind = fileKind(file);
+    if (!kind) {
+      this.#actionProblem = text.errors.notArtwork;
       return;
     }
+    await this.#openSource(async () => ({
+      project: await this.#engine.open(file, kind),
+      file,
+      kind
+    }));
+  };
+
+  typeText = (): Promise<void> =>
+    this.#openSource(async () => ({
+      project: await this.#engine.typeText(text.freeform.initialText)
+    }));
+
+  openExample = (): Promise<void> =>
+    this.#openSource(async () => {
+      const kind = this.isFreeform ? 'svg' : 'picture';
+      const response = await fetch(kind === 'svg' ? badgeUrl : './examples/fox.png');
+      if (!response.ok) throw new Error(text.errors.example);
+      const file = new File([await response.blob()], kind === 'svg' ? 'badge.svg' : 'fox.png');
+      return { project: await this.#engine.open(file, kind), file, kind };
+    });
+
+  async #openSource(load: () => Promise<Loaded>): Promise<void> {
+    if (this.opening || this.saving) return;
+    this.opening = true;
+    this.#actionProblem = '';
     try {
-      const source = await this.#engine.open(file);
+      const { project, file, kind } = await load();
+      const { source, pictureBytes, fonts } = project;
+      const keepHistory =
+        kind === 'picture' &&
+        (!this.artwork || this.artwork.kind === 'picture') &&
+        this.fonts.files.length === 0;
+      if (keepHistory) this.#flush();
+      else clearTimeout(this.#recordTimer);
+
       if (this.pictureUrl) URL.revokeObjectURL(this.pictureUrl);
-      this.pictureUrl = URL.createObjectURL(file);
-      this.fileName = file.name;
-      // The engine has let go of the old chart.
+      const picture = pictureBytes ? new Blob([pictureBytes.slice()]) : file;
+      this.pictureUrl = source.kind === 'picture' && picture ? URL.createObjectURL(picture) : '';
+      this.#projectName = kind === 'project' ? (file?.name ?? '') : '';
       this.chart = undefined;
+      this.freeform = undefined;
+      this.#drawn = undefined;
       this.valid = false;
+      this.current = false;
       this.selected = 0;
-      this.problem = '';
-      // Merges and stencils belong to a picture's paints; the sizing is a guess, and
-      // undoing takes it back.
-      this.settings.sizing = guessSizing(source);
-      this.settings.merges = [];
-      this.settings.skipped = [];
-      this.settings.stencilCanvasColour = false;
-      this.source = source;
+      this.#follow = undefined;
+      this.#buildProblem = '';
+      this.screen = 'bench';
+      if (!keepHistory) this.view = 'chart';
+
+      if (kind === 'project') this.settings = fromProjectSettings(project.settings);
+      else {
+        this.settings.merges = [];
+        this.settings.skipped = [];
+        this.settings.stencilCanvasColour = false;
+        if (source.kind === 'picture') this.settings.sizing = guessSizing(source.info);
+        else this.settings.sizeMode = 'natural';
+        if (source.kind === 'text') {
+          this.settings.mode = 'colour';
+          this.settings.colours = Math.max(2, this.settings.colours);
+        }
+      }
+      if (source.kind !== 'picture') this.settings.projectMode = 'freeform';
+      else if (this.settings.sizeMode === 'natural') this.settings.sizeMode = 'width';
+
+      this.artwork = source;
+      this.typed = source.kind === 'text' ? source.style : undefined;
+      this.fonts = keepHistory ? this.fonts : { revision: 0, files: fonts };
+      if (!keepHistory) {
+        this.#recordTimer = undefined;
+        this.#history = new History(this.#snapshot(), sameEdit);
+        this.#syncHistory();
+      }
     } catch (error) {
-      this.problem = message(error);
-    }
-  };
-
-  openExample = async (): Promise<void> => {
-    try {
-      const response = await fetch(`./examples/${EXAMPLE}`);
-      if (!response.ok) throw new Error(response.statusText);
-      const blob = await response.blob();
-      await this.open(new File([blob], EXAMPLE, { type: 'image/png' }));
-    } catch {
-      this.problem = text.errors.example;
-    }
-  };
-
-  undo = (): void => {
-    this.#flush();
-    const previous = this.#history.undo();
-    if (previous) this.settings = { ...previous };
-    this.#sync();
-  };
-
-  redo = (): void => {
-    this.#flush();
-    const next = this.#history.redo();
-    if (next) this.settings = { ...next };
-    this.#sync();
-  };
-
-  saveChart = (format: ChartFormat, withLines: boolean): Promise<void> => {
-    const name = chartFileName(this.base, format, withLines);
-    const grid = hexToNumber(this.settings.gridColour);
-    return this.#save(name, TYPES[format], () => this.#engine.chartFile(format, grid, withLines));
-  };
-
-  saveStencil = (index: number): Promise<void> => {
-    const engineName = this.chart?.stencilNames[index];
-    if (engineName === undefined) return Promise.resolve();
-    const thickness = this.settings.thicknessMm;
-    return this.#save(stencilFileName(this.base, engineName), 'model/stl', () =>
-      this.#engine.stencil(index, thickness)
-    );
-  };
-
-  saveStencils = (): Promise<void> => {
-    const thickness = this.settings.thicknessMm;
-    const skip = this.unstencilled.map(hexToNumber);
-    return this.#save(stencilsZipName(this.base), 'application/zip', () =>
-      this.#engine.stencilsZip(thickness, skip)
-    );
-  };
-
-  async #save(name: string, type: string, task: () => Promise<Uint8Array>): Promise<void> {
-    this.saving = name;
-    try {
-      save(await task(), name, type);
-    } catch (error) {
-      this.problem = message(error);
+      this.#actionProblem = message(error);
     } finally {
-      this.saving = '';
+      this.opening = false;
     }
   }
 
-  #record(next: Settings): void {
-    this.#history.record(next);
-    this.#sync();
+  undo = (): void => {
+    if (this.opening) return;
+    this.#flush();
+    this.#restore(this.#history.undo());
+  };
+
+  redo = (): void => {
+    if (this.opening) return;
+    this.#flush();
+    this.#restore(this.#history.redo());
+  };
+
+  #restore(edit: Edit | undefined): void {
+    if (edit) {
+      this.#changing();
+      this.settings = { ...edit.settings };
+      this.typed = edit.typed;
+      this.fonts = edit.fonts;
+    }
+    this.#syncHistory();
   }
 
   /** Records a change still waiting for its pause, so that undo starts from it. */
@@ -256,22 +441,88 @@ export class Workbench {
     if (this.#recordTimer === undefined) return;
     clearTimeout(this.#recordTimer);
     this.#recordTimer = undefined;
-    this.#history.record($state.snapshot(this.settings));
+    this.#history.record(this.#snapshot());
   }
 
-  #sync(): void {
+  #syncHistory(): void {
     this.canUndo = this.#history.canUndo;
     this.canRedo = this.#history.canRedo;
   }
+
+  saveChart = (format: ChartFormat, withLines: boolean): Promise<void> => {
+    if (!this.ready || this.isFreeform) return Promise.resolve();
+    const name = chartFileName(this.base, format, withLines);
+    const grid = hexToNumber(this.settings.gridColour);
+    return this.#save(name, TYPES[format], () => this.#engine.chartFile(format, grid, withLines));
+  };
+
+  saveStencil = (index: number): Promise<void> => {
+    const engineName = this.chart?.stencilNames[index];
+    if (!this.ready || this.isFreeform || !engineName) return Promise.resolve();
+    return this.#save(stencilFileName(this.base, engineName), 'model/stl', () =>
+      this.#engine.stencil(index, this.settings.thicknessMm)
+    );
+  };
+
+  saveStencils = (): Promise<void> => {
+    if (!this.ready || this.isFreeform) return Promise.resolve();
+    const skip = this.unstencilled.map(hexToNumber);
+    return this.#save(stencilsZipName(this.base), 'application/zip', () =>
+      this.#engine.stencilsZip(this.settings.thicknessMm, skip)
+    );
+  };
+
+  savePlates = (format: '3mf' | 'zip'): Promise<void> => {
+    if (!this.ready || !this.isFreeform || !this.freeform?.plates.length) return Promise.resolve();
+    const threeMf = format === '3mf';
+    return this.#save(
+      platesFileName(this.base, format),
+      threeMf ? 'model/3mf' : 'application/zip',
+      () => (threeMf ? this.#engine.threeMf() : this.#engine.platesZip())
+    );
+  };
+
+  savePlate = (index: number): Promise<void> => {
+    const plate = this.freeform?.plates[index];
+    if (!this.ready || !this.isFreeform || !plate) return Promise.resolve();
+    return this.#save(stencilFileName(this.base, plate.stencil), 'model/stl', () =>
+      this.#engine.plateFile(index)
+    );
+  };
+
+  saveProject = (): Promise<void> => {
+    if (!this.canSaveProject) return Promise.resolve();
+    const edit = this.#snapshot();
+    return this.#save(this.projectName, 'application/json', () =>
+      this.#engine.projectFile(toProjectSettings(edit.settings), this.#edits(edit))
+    );
+  };
+
+  async #save(name: string, type: string, task: () => Promise<Uint8Array>): Promise<void> {
+    this.saving = name;
+    this.#actionProblem = '';
+    try {
+      save(await task(), name, type);
+    } catch (error) {
+      this.#actionProblem = message(error);
+    } finally {
+      this.saving = '';
+    }
+  }
 }
 
-function paletteHex(chart: ChartSummary | undefined): string[] {
-  if (!chart) return [];
-  return Array.from({ length: chart.palette.length / 3 }, (_, i) =>
-    rgbToHex(
-      chart.palette[3 * i] ?? 0,
-      chart.palette[3 * i + 1] ?? 0,
-      chart.palette[3 * i + 2] ?? 0
-    )
+function fileKind(file: File): FileKind | undefined {
+  const name = file.name.toLowerCase();
+  if (name.endsWith('.stencilator')) return 'project';
+  if (name.endsWith('.svg') || file.type === 'image/svg+xml') return 'svg';
+  if (IMAGE_TYPES.includes(file.type) || /\.(png|jpe?g|webp)$/.test(name)) return 'picture';
+  return file.type === '' ? 'picture' : undefined;
+}
+
+function paletteHex(summary: ChartSummary | FreeformSummary | undefined): string[] {
+  if (!summary) return [];
+  const { palette } = summary;
+  return Array.from({ length: palette.length / 3 }, (_, i) =>
+    rgbToHex(palette[3 * i] ?? 0, palette[3 * i + 1] ?? 0, palette[3 * i + 2] ?? 0)
   );
 }

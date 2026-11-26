@@ -38,10 +38,11 @@ pub(crate) struct FreeformArgs {
     /// Colour of the text [default: 000000]
     #[arg(long, value_name = "RRGGBB", value_parser = parse_colour, help_heading = "Text")]
     text_colour: Option<Rgb>,
-    /// A TrueType or OpenType font for typed text and for text in SVG drawings; repeat for
-    /// more, the first standing in for any font a drawing names but does not carry. Noto
-    /// Sans Bold is built in.
-    #[arg(long, value_name = "FILE", help_heading = "Text")]
+    /// A TrueType or OpenType file, or a built-in font: "Noto Sans Bold", the default, or
+    /// "Allerta Stencil", whose letters have bridges so their middles stay put. It sets
+    /// typed text and stands in for any font a drawing names but does not carry; repeat
+    /// for more. Letters a font lacks come from Noto Sans Bold.
+    #[arg(long, value_name = "FILE|NAME", help_heading = "Text")]
     font: Vec<PathBuf>,
 
     /// Make the artwork this wide in millimetres; the height follows [default for

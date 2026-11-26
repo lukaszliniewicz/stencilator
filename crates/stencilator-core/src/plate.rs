@@ -18,7 +18,7 @@ use crate::Error;
 use crate::artwork::LabelMap;
 use crate::colour::Rgb;
 use crate::geometry::{
-    Corners, Point, Shape, Shapes, UM_PER_MM, area_mm2, bounds, difference, offset, rectangle, translate,
+    Corners, Point, Shape, Shapes, UM_PER_MM, area_mm2, bounds, difference, offset, rectangle, svg_path, translate,
 };
 use crate::mesh::{Mesh, Slab, mesh_slabs};
 use crate::stencil::{RECOMMENDED_MIN_WEB_MM, check_thickness, encode_stl};
@@ -338,15 +338,48 @@ pub fn plates_3mf(plates: &[Plate], thickness_mm: f64) -> Result<Vec<u8>, Error>
 /// [`Error::Settings`] or [`Error::Stencil`] when a setting is out of range, and
 /// [`Error::Geometry`] when the plate is too large to work with.
 pub fn check_plate(plate: &Plate, settings: &PlateSettings) -> Result<PlateReport, Error> {
+    inspect_plate(plate, settings).map(|(report, _)| report)
+}
+
+/// The shapes a plate's report describes, in the plate's coordinates, for drawing them.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct PlateProblems {
+    /// Pieces of plate cut off from the rim.
+    pub islands: Shapes,
+    /// Plate material too narrow to print well.
+    pub thin_webs: Shapes,
+    /// Openings too narrow to print well.
+    pub narrow_openings: Shapes,
+}
+
+/// What may not print or paint well on a plate, as [`check_plate`] reports it, with the
+/// shapes the report describes.
+///
+/// # Errors
+///
+/// As [`check_plate`].
+pub fn inspect_plate(plate: &Plate, settings: &PlateSettings) -> Result<(PlateReport, PlateProblems), Error> {
     settings.check()?;
     let (width_mm, height_mm) = (mm(plate.size_um.0), mm(plate.size_um.1));
     let (bed_w, bed_h) = settings.bed_mm;
-    let spots = |shapes: &[Shape]| shapes.iter().filter_map(spot).collect::<Vec<_>>();
+    let placed = |shapes: Shapes| -> (Shapes, Vec<Spot>) {
+        shapes.into_iter().filter_map(|shape| spot(&shape).map(|s| (shape, s))).unzip()
+    };
     // A narrow part no longer than the limit is a blunted corner, or the point where two
     // shapes touch diagonally: it neither breaks nor closes up.
-    let long =
-        |spots: Vec<Spot>, limit: f64| spots.into_iter().filter(|s| s.width_mm.max(s.height_mm) > limit).collect();
-    Ok(PlateReport {
+    let long = |shapes: Shapes, limit: f64| {
+        placed(
+            shapes
+                .into_iter()
+                .filter(|shape| spot(shape).is_some_and(|s| s.width_mm.max(s.height_mm) > limit))
+                .collect(),
+        )
+    };
+    let (islands, island_spots) = placed(plate.solid.get(1..).unwrap_or_default().to_vec());
+    let (thin_webs, web_spots) = long(narrow_parts(&plate.solid, um(settings.min_web_mm))?, settings.min_web_mm);
+    let (narrow_openings, narrow_spots) =
+        long(narrow_parts(&plate.openings, um(settings.min_opening_mm))?, settings.min_opening_mm);
+    let report = PlateReport {
         paint: plate.paint,
         colour: plate.colour,
         width_mm,
@@ -354,14 +387,51 @@ pub fn check_plate(plate: &Plate, settings: &PlateSettings) -> Result<PlateRepor
         openings: plate.openings.len(),
         paint_mm2: plate.paint_mm2,
         opening_mm2: area_mm2(&plate.openings),
-        islands: spots(plate.solid.get(1..).unwrap_or_default()),
-        thin_webs: long(spots(&narrow_parts(&plate.solid, um(settings.min_web_mm))?), settings.min_web_mm),
-        narrow_openings: long(
-            spots(&narrow_parts(&plate.openings, um(settings.min_opening_mm))?),
-            settings.min_opening_mm,
-        ),
+        islands: island_spots,
+        thin_webs: web_spots,
+        narrow_openings: narrow_spots,
         fits_bed: (width_mm <= bed_w && height_mm <= bed_h) || (width_mm <= bed_h && height_mm <= bed_w),
-    })
+    };
+    Ok((report, PlateProblems { islands, thin_webs, narrow_openings }))
+}
+
+/// A plate as a page draws it: SVG path data in millimetres, y down, to fill with the
+/// even-odd rule. The plate path holds all its material, islands included, with the
+/// openings as holes; the others lie over it.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct PlateDrawing {
+    /// Width of the plate.
+    pub width_mm: f64,
+    /// Height of the plate.
+    pub height_mm: f64,
+    /// All of the plate's material.
+    pub plate: String,
+    /// The pieces that fall out.
+    pub islands: String,
+    /// Material too narrow to print well.
+    pub thin_webs: String,
+    /// Openings too narrow to print well.
+    pub narrow_openings: String,
+}
+
+impl PlateDrawing {
+    /// The drawing as JSON.
+    pub fn to_json(&self) -> String {
+        serde_json::to_string(self).unwrap_or_default()
+    }
+}
+
+/// `plate` and its `problems` as a page draws them.
+pub fn plate_drawing(plate: &Plate, problems: &PlateProblems) -> PlateDrawing {
+    let height = plate.size_um.1;
+    PlateDrawing {
+        width_mm: mm(plate.size_um.0),
+        height_mm: mm(height),
+        plate: svg_path(&plate.solid, height),
+        islands: svg_path(&problems.islands, height),
+        thin_webs: svg_path(&problems.thin_webs, height),
+        narrow_openings: svg_path(&problems.narrow_openings, height),
+    }
 }
 
 fn spot(shape: &Shape) -> Option<Spot> {
@@ -428,6 +498,14 @@ mod tests {
         assert!(report.thin_webs.is_empty() && report.narrow_openings.is_empty(), "{report:?}");
         assert!(report.fits_bed);
 
+        // The shapes behind the report, and the plate as a page draws it.
+        let (_, problems) = inspect_plate(plate, &PlateSettings::default()).unwrap();
+        assert_eq!((problems.islands.len(), problems.thin_webs.len()), (1, 0));
+        let drawing = plate_drawing(plate, &problems);
+        assert_eq!((drawing.width_mm, drawing.height_mm), (40.0, 32.0));
+        assert!(drawing.plate.starts_with('M') && drawing.islands.starts_with('M'), "{drawing:?}");
+        assert_eq!((drawing.thin_webs.as_str(), drawing.narrow_openings.as_str()), ("", ""));
+
         // As JSON, with the plate's file name and figures to the thousandth.
         let json = reports_json(&plates, std::slice::from_ref(&report));
         let entry = &json[0];
@@ -485,6 +563,11 @@ mod tests {
         assert!((web.height_mm - 4.0).abs() < 0.3, "{web:?}");
         assert_eq!(report.narrow_openings.len(), 1, "{report:?}");
         assert!((report.narrow_openings[0].width_mm - 4.0).abs() < 0.2, "{report:?}");
+        // The shapes are the narrow parts themselves: the web is 0.3 mm wide, not a box.
+        let (_, problems) = inspect_plate(plate, &PlateSettings::default()).unwrap();
+        assert_eq!((problems.thin_webs.len(), problems.narrow_openings.len()), (1, 1));
+        let web_area = area_mm2(&problems.thin_webs);
+        assert!(web_area > 0.5 && web_area < 1.5, "{web_area}");
         // Squares that touch at a corner make a point narrower than anything, but a harmless one.
         let corners = |x: u32, y: u32| {
             let square = |x0: u32, y0: u32| (x0..x0 + 40).contains(&x) && (y0..y0 + 40).contains(&y);

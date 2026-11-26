@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { svelte } from '@sveltejs/vite-plugin-svelte';
 import { defineConfig, type Plugin } from 'vite';
 
@@ -35,10 +36,23 @@ function contentSecurityPolicy(): Plugin {
   };
 }
 
+function fontLicences(): Plugin {
+  return {
+    name: 'stencilator:font-licences',
+    apply: 'build',
+    generateBundle() {
+      for (const name of ['OFL-NotoSans.txt', 'OFL-AllertaStencil.txt']) {
+        const source = readFileSync(new URL(`../fonts/${name}`, import.meta.url));
+        this.emitFile({ type: 'asset', fileName: `licenses/${name}`, source });
+      }
+    }
+  };
+}
+
 export default defineConfig({
   // Relative paths, so the built folder works from any address.
   base: './',
-  plugins: [svelte(), contentSecurityPolicy()],
+  plugins: [svelte(), contentSecurityPolicy(), fontLicences()],
   worker: { format: 'es' },
   build: { target: 'es2022' }
 });

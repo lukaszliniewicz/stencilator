@@ -1,8 +1,9 @@
 <script lang="ts">
-  // The workspace: picture and paints on the left, the bench or the files in the middle,
-  // settings on the right. Pictures come from the picker, a drop or the clipboard.
+  // Artwork and paints on the left, the bench or files in the middle, settings on the right.
   import Bench from './lib/Bench.svelte';
   import Files from './lib/Files.svelte';
+  import FreeformBench from './lib/FreeformBench.svelte';
+  import FreeformFiles from './lib/FreeformFiles.svelte';
   import SettingsPanel from './lib/SettingsPanel.svelte';
   import Sidebar from './lib/Sidebar.svelte';
   import { text } from './lib/text';
@@ -14,6 +15,7 @@
   const bench = new Workbench();
 
   let picker: HTMLInputElement | undefined = $state();
+  let projectPicker: HTMLInputElement | undefined = $state();
   let dragging = $state(false);
 
   const choose = (): void => {
@@ -46,6 +48,7 @@
   }
 
   function drop(event: DragEvent): void {
+    if (!carriesFiles(event)) return;
     event.preventDefault();
     dragging = false;
     openFirst(event.dataTransfer?.files);
@@ -80,7 +83,7 @@
 <input
   bind:this={picker}
   type="file"
-  accept="image/png,image/jpeg,image/webp"
+  accept="image/png,image/jpeg,image/webp,image/svg+xml,.svg"
   aria-label={text.picture.fileLabel}
   hidden
   onchange={(event) => {
@@ -89,9 +92,21 @@
   }}
 />
 
+<input
+  bind:this={projectPicker}
+  type="file"
+  accept=".stencilator"
+  aria-label={text.project.fileLabel}
+  hidden
+  onchange={(event) => {
+    openFirst(event.currentTarget.files);
+    event.currentTarget.value = '';
+  }}
+/>
+
 <div class="app">
-  <aside class="side" aria-label={text.picture.heading}>
-    <Sidebar {bench} {theme} {choose} />
+  <aside class="side" aria-label={bench.isFreeform ? text.freeform.artwork : text.picture.heading}>
+    <Sidebar {bench} {theme} {choose} chooseProject={() => projectPicker?.click()} />
   </aside>
 
   <main class="work">
@@ -99,13 +114,19 @@
     {#if bench.problem}
       <p class="problem" role="alert">{bench.problem}</p>
     {/if}
-    {#if bench.screen === 'files' && bench.chart}
-      <Files {bench} dark={theme.dark} />
+    {#if bench.screen === 'files' && bench.canShowFiles}
+      {#if bench.isFreeform}
+        <FreeformFiles {bench} />
+      {:else}
+        <Files {bench} dark={theme.dark} />
+      {/if}
+    {:else if bench.isFreeform}
+      <FreeformBench {bench} {choose} />
     {:else}
       <Bench {bench} dark={theme.dark} {choose} />
     {/if}
     {#if dragging}
-      <div class="drop" aria-hidden="true"><p>{text.bench.dropping}</p></div>
+      <div class="drop" aria-hidden="true"><p>{text.freeform.dropping}</p></div>
     {/if}
   </main>
 

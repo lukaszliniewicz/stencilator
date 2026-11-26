@@ -8,6 +8,7 @@
 use std::fmt::Write as _;
 
 use crate::colour::Rgb;
+use crate::geometry::Mm;
 use crate::mesh::Mesh;
 use crate::zip::zip;
 use crate::{Error, VERSION};
@@ -86,23 +87,6 @@ pub fn write_3mf(objects: &[Object<'_>]) -> Result<Vec<u8>, Error> {
         ("_rels/.rels", RELATIONSHIPS.as_bytes()),
         ("3D/3dmodel.model", xml.as_bytes()),
     ])
-}
-
-/// Whole micrometres written as millimetres, exactly and without trailing zeros.
-struct Mm(i32);
-
-impl std::fmt::Display for Mm {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        let um = self.0.unsigned_abs();
-        let sign = if self.0 < 0 { "-" } else { "" };
-        let (whole, part) = (um / 1000, um % 1000);
-        if part == 0 {
-            write!(f, "{sign}{whole}")
-        } else {
-            let digits = format!("{part:03}");
-            write!(f, "{sign}{whole}.{}", digits.trim_end_matches('0'))
-        }
-    }
 }
 
 fn escape(text: &str) -> String {

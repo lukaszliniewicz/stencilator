@@ -21,3 +21,11 @@ export function stencilsZipName(base: string): string {
 export function stencilFileName(base: string, engineName: string): string {
   return `${base}-${engineName}`;
 }
+
+export function platesFileName(base: string, format: '3mf' | 'zip'): string {
+  return `${base}-plates.${format}`;
+}
+
+export function projectFileName(base: string): string {
+  return `${base}.stencilator`;
+}

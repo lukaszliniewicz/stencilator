@@ -2,10 +2,11 @@ import { describe, expect, it } from 'vitest';
 
 import {
   equalSettings,
+  fromProjectSettings,
   guessSizing,
   isSkipped,
   sanitise,
-  toChartSettings,
+  toProjectSettings,
   toggledStencil
 } from './settings';
 
@@ -14,6 +15,7 @@ describe('settings', () => {
 
   it('start from the engine defaults', () => {
     expect(defaults).toEqual({
+      projectMode: 'tiles',
       sizing: 'canvas',
       canvasWidthMm: 200,
       canvasHeightMm: 200,
@@ -24,7 +26,17 @@ describe('settings', () => {
       colours: 16,
       background: '#ffffff',
       gridColour: '#000000',
+      sizeMode: 'width',
+      artWidthMm: 200,
+      artHeightMm: 200,
+      cellMm: 0.1,
+      minPatchMm2: 1,
+      marginMm: 10,
+      minWebMm: 0.6,
+      minOpeningMm: 0.5,
       thicknessMm: 1.2,
+      bedWidthMm: 256,
+      bedDepthMm: 256,
       merges: [],
       skipped: [],
       stencilCanvasColour: false
@@ -83,25 +95,40 @@ describe('settings', () => {
     expect(equalSettings(defaults, { ...defaults, skipped: ['#ffffff'] })).toBe(false);
   });
 
-  it('round whole numbers for the engine and pass colours as numbers', () => {
-    const chart = toChartSettings({
+  it('round whole numbers for the engine and keep colours as project hex strings', () => {
+    const project = toProjectSettings({
       ...defaults,
       dpi: 299.6,
       colours: 7.4,
-      background: '#c02f34'
-    });
-    expect(chart.dpi).toBe(300);
-    expect(chart.colours).toBe(7);
-    expect(chart.background).toBe(0xc02f34);
-    expect(chart).not.toHaveProperty('thicknessMm');
-    const merged = toChartSettings({
-      ...defaults,
+      background: '#c02f34',
       merges: [
         ['#9c3d17', '#e8772e'],
         ['#000000', '#ffffff']
       ]
     });
-    expect(merged.merges).toEqual([0x9c3d17, 0xe8772e, 0x000000, 0xffffff]);
+    expect(project.tiles.dpi).toBe(300);
+    expect(project.colours.count).toBe(7);
+    expect(project.colours.background).toBe('#c02f34');
+    expect(project.stencils.merges).toEqual([
+      ['#9c3d17', '#e8772e'],
+      ['#000000', '#ffffff']
+    ]);
+  });
+
+  it('round-trips both modes in the project file settings', () => {
+    const mixed = {
+      ...defaults,
+      projectMode: 'freeform',
+      sizing: 'pixels',
+      sizeMode: 'within',
+      artWidthMm: 175,
+      artHeightMm: 135,
+      bedDepthMm: 210,
+      skipped: ['#202030']
+    } as const;
+    const p = toProjectSettings({ ...mixed, skipped: [...mixed.skipped] });
+    expect(p.freeform.size).toEqual({ within_mm: [175, 135] });
+    expect(fromProjectSettings(p)).toEqual(mixed);
   });
 
   it('take a picture of few pixels for pixel art', () => {

@@ -179,3 +179,103 @@ test('pixel art, with paints merged and the canvas colour left without a stencil
 
   expect(problems).toEqual([]);
 });
+
+test('an SVG becomes checked plates and reopens with its project settings', async ({ page }) => {
+  const problems = watchForProblems(page);
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Free-form', exact: true }).click();
+  await page.getByRole('button', { name: 'Try the badge' }).click();
+
+  const status = page.getByRole('status');
+  await expect(status).toHaveText('70 × 70 mm · 3 paints · 2 plates · 0.1 mm cells');
+  await expect(page.getByRole('button', { name: 'Tiles', exact: true })).toBeDisabled();
+  await page.getByRole('button', { name: 'Plate', exact: true }).click();
+  await expect(page.getByRole('img', { name: 'Plate 1 · #1D2F5C' })).toBeVisible();
+  const islands = page.getByRole('checkbox', { name: 'Islands', exact: true });
+  await islands.uncheck();
+  await expect(islands).not.toBeChecked();
+  await page.getByLabel('Bed width (mm)').fill('80');
+  await expect(page.getByText('Larger than your print bed.')).toBeVisible();
+
+  await page.getByRole('button', { name: 'Files', exact: true }).click();
+  const printProject = page.getByRole('button', { name: 'Save 3MF' });
+  expect(await savedName(page, () => printProject.click())).toBe('badge-plates.3mf');
+  expect(
+    await zipEntries(page, () => page.getByRole('button', { name: 'Save STL zip' }).click())
+  ).toBe(2);
+  expect(
+    await savedName(page, () => page.getByRole('button', { name: 'Save plate 2, #EF7D2D' }).click())
+  ).toBe('badge-plate-02-ef7d2d.stl');
+
+  const saved = page.waitForEvent('download');
+  await page.getByRole('button', { name: 'Save project', exact: true }).click();
+  const design = await saved;
+  expect(design.suggestedFilename()).toBe('badge.stencilator');
+  const buffer = await readFile(await design.path());
+  await page.reload();
+  const chooser = page.waitForEvent('filechooser');
+  await page.getByRole('button', { name: 'Open project' }).click();
+  await (
+    await chooser
+  ).setFiles({ name: design.suggestedFilename(), mimeType: 'application/json', buffer });
+  await expect(status).toHaveText('70 × 70 mm · 3 paints · 2 plates · 0.1 mm cells');
+  await expect(page.getByLabel('Bed width (mm)')).toHaveValue('80');
+  expect(problems).toEqual([]);
+});
+
+test('typed text uses the selected font and can be saved with every paint unticked', async ({
+  page
+}) => {
+  const problems = watchForProblems(page);
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Free-form', exact: true }).click();
+  await page.getByRole('button', { name: 'Type text', exact: true }).click();
+  await page.getByRole('textbox', { name: 'Text', exact: true }).fill('AO8');
+  await expect(page.getByText('4 loose islands', { exact: true })).toBeVisible();
+
+  await page.getByRole('button', { name: 'Switch to Allerta Stencil' }).click();
+  await expect(page.getByRole('combobox', { name: 'Font' })).toHaveValue(
+    'AllertaStencil-Regular.ttf'
+  );
+  await expect(page.getByText('4 loose islands', { exact: true })).toHaveCount(0);
+  await page.getByRole('button', { name: 'Side by side' }).click();
+  await expect(
+    page.getByRole('img', { name: 'The artwork at its original colours' })
+  ).toBeVisible();
+
+  await page.getByRole('checkbox', { name: 'Stencil for paint 1, #000000' }).uncheck();
+  await expect(page.getByRole('status')).toHaveText(/2 paints · 0 plates/);
+  await expect(page.getByRole('alert')).toHaveCount(0);
+  await page.getByRole('button', { name: 'Files', exact: true }).click();
+  await expect(page.getByRole('button', { name: 'Save 3MF' })).toHaveCount(0);
+  expect(
+    await savedName(page, () =>
+      page.getByRole('button', { name: 'Save project', exact: true }).click()
+    )
+  ).toBe('stencilator.stencilator');
+  expect(problems).toEqual([]);
+});
+
+test('a picture can move between modes even with an unfinished setting', async ({ page }) => {
+  const problems = watchForProblems(page);
+  await page.goto('/');
+  await openPicture(page);
+  const chart = page.getByRole('img', { name: 'The chart, 8 by 6 tiles' });
+  await expect(chart).toBeVisible();
+
+  const modes = page.getByRole('group', { name: 'Stencil mode' });
+  await modes.getByRole('button', { name: 'Free-form' }).click();
+  await expect(page.getByRole('status')).toHaveText(/200 × 150 mm · 5 paints · 4 plates/);
+  await expect(page.getByRole('img', { name: 'Artwork reduced to its paints' })).toBeVisible();
+
+  await page.getByLabel('Width (mm)', { exact: true }).fill('');
+  await expect(page.getByRole('alert')).toHaveText('The width must be between 1 and 10000 mm.');
+  await modes.getByRole('button', { name: 'Tiles', exact: true }).click();
+  await expect(chart).toBeVisible();
+  await expect(page.getByRole('alert')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Per pixel' })).toHaveAttribute(
+    'aria-pressed',
+    'true'
+  );
+  expect(problems).toEqual([]);
+});

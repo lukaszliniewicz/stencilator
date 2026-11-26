@@ -33,9 +33,16 @@ pub const FORMAT: u32 = 1;
 /// The extension of project files, without the dot.
 pub const EXTENSION: &str = "stencilator";
 
-/// The font every shell builds in, for text when a project names no other. Projects name
-/// it without embedding it.
+/// The font every shell builds in, for text when a project names no other and for any
+/// letter another font lacks. Projects name it without embedding it.
 pub const BUILT_IN_FONT: &str = "NotoSans-Bold.ttf";
+
+/// The stencil font every shell builds in: its letters have bridges drawn in, so their
+/// middles stay in the plate.
+pub const STENCIL_FONT: &str = "AllertaStencil-Regular.ttf";
+
+/// The fonts every shell builds in, by file name, [`BUILT_IN_FONT`] first.
+pub const BUILT_IN_FONTS: [&str; 2] = [BUILT_IN_FONT, STENCIL_FONT];
 
 /// The size of typed text, in millimetres, unless chosen otherwise.
 pub const TEXT_MM: f64 = 30.0;
@@ -583,28 +590,34 @@ impl Project {
         self.plate_settings().check()
     }
 
-    /// The font files the artwork is set in, in order: each embedded font, and `built_in`
-    /// for the built-in one, which also stands in when the project names none.
+    /// The font files the artwork is set in, in order: each font the project names, from
+    /// its own data or from `built_in`, the shell's [`BUILT_IN_FONTS`] by name, and last
+    /// [`BUILT_IN_FONT`], which sets text when the project names no font and gives any
+    /// letter the others lack.
     ///
     /// # Errors
     ///
     /// [`Error::Project`] when the project names a font it does not embed and that is not
-    /// built in.
-    pub fn font_data<'a>(&'a self, built_in: &'a [u8]) -> Result<Vec<&'a [u8]>, Error> {
-        if self.fonts.is_empty() {
-            return Ok(vec![built_in]);
-        }
-        self.fonts
+    /// built in, or `built_in` lacks [`BUILT_IN_FONT`].
+    pub fn font_data<'a>(&'a self, built_in: &[(&str, &'a [u8])]) -> Result<Vec<&'a [u8]>, Error> {
+        let find = |name: &str| built_in.iter().find(|(n, _)| *n == name).map(|&(_, data)| data);
+        let mut fonts = self
+            .fonts
             .iter()
             .map(|font| match &font.data {
                 Some(data) => Ok(data.as_slice()),
-                None if font.name == BUILT_IN_FONT => Ok(built_in),
-                None => Err(Error::Project(format!(
-                    "The project uses the font {}, which it does not include and which is not built in.",
-                    font.name
-                ))),
+                None => find(&font.name).ok_or_else(|| {
+                    Error::Project(format!(
+                        "The project uses the font {}, which it does not include and which is not built in.",
+                        font.name
+                    ))
+                }),
             })
-            .collect()
+            .collect::<Result<Vec<_>, _>>()?;
+        if !self.fonts.iter().any(|font| font.data.is_none() && font.name == BUILT_IN_FONT) {
+            fonts.push(find(BUILT_IN_FONT).ok_or_else(|| Error::Project("The built-in font is missing.".to_owned()))?);
+        }
+        Ok(fonts)
     }
 
     /// The project as a file: indented JSON, stamped with this format and this version of
@@ -816,25 +829,30 @@ mod tests {
 
     #[test]
     fn fonts_come_from_the_project_or_are_built_in() {
-        let built_in: &[u8] = b"built in";
+        let (noto, stencil): (&[u8], &[u8]) = (b"noto", b"stencil");
+        let built_in = [(BUILT_IN_FONT, noto), (STENCIL_FONT, stencil)];
         let mut project = Project::new(Source::text("Hi"));
         assert_eq!(project.source, Source::Text { text: "Hi".to_owned(), font_mm: TEXT_MM, colour: Colour([0, 0, 0]) });
-        assert_eq!(project.font_data(built_in).unwrap(), [built_in]);
+        assert_eq!(project.font_data(&built_in).unwrap(), [noto]);
         // Saved, the project names the font it was cut in.
         let saved = read_project(&project.to_json()).unwrap();
         assert_eq!(saved.fonts, [Font { name: BUILT_IN_FONT.to_owned(), data: None }]);
-        assert_eq!(saved.font_data(built_in).unwrap(), [built_in]);
+        assert_eq!(saved.font_data(&built_in).unwrap(), [noto]);
 
+        // The stencil font, then the default for the letters it lacks.
+        project.fonts = vec![Font { name: STENCIL_FONT.to_owned(), data: None }];
+        assert_eq!(project.font_data(&built_in).unwrap(), [stencil, noto]);
         project.fonts = vec![
             Font { name: "Mine.otf".to_owned(), data: Some(b"mine".to_vec()) },
             Font { name: BUILT_IN_FONT.to_owned(), data: None },
         ];
-        assert_eq!(project.font_data(built_in).unwrap(), [b"mine".as_slice(), built_in]);
+        assert_eq!(project.font_data(&built_in).unwrap(), [b"mine".as_slice(), noto]);
         project.fonts.push(Font { name: "Elsewhere.ttf".to_owned(), data: None });
         assert_eq!(
-            project.font_data(built_in).unwrap_err().to_string(),
+            project.font_data(&built_in).unwrap_err().to_string(),
             "The project uses the font Elsewhere.ttf, which it does not include and which is not built in."
         );
+        assert!(Project::new(Source::text("Hi")).font_data(&[]).is_err());
         // A picture needs no font, and names none.
         let picture = Project::new(Source::Picture { name: String::new(), data: Vec::new() });
         assert_eq!(read_project(&picture.to_json()).unwrap().fonts, []);

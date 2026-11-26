@@ -4,12 +4,13 @@
     label: string;
     value: string;
     onchange: (value: string) => void;
+    stacked?: boolean;
   }
 
-  let { label, value, onchange }: Props = $props();
+  let { label, value, onchange, stacked = false }: Props = $props();
 </script>
 
-<label class="field">
+<label class="field" class:stacked>
   <span class="label">{label}</span>
   <span class="value">
     <input
@@ -37,6 +38,16 @@
     align-items: center;
     gap: 8px;
     font-size: 12px;
+  }
+
+  .stacked {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 6px;
+  }
+
+  .stacked .value {
+    min-height: 40px;
   }
 
   input {

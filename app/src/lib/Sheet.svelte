@@ -1,9 +1,3 @@
-<script lang="ts" module>
-  /** Room the rulers and the caption take around a sheet, in CSS pixels. */
-  export const RULER_SPACE = 26;
-  export const CAPTION_SPACE = 28;
-</script>
-
 <script lang="ts">
   // A sheet on the bench: its caption, rulers along the top and left edge, and whatever
   // is drawn on it, at a width the bench has worked out.

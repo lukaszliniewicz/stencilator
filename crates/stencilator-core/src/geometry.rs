@@ -136,12 +136,53 @@ pub fn bounds(shapes: &[Shape]) -> Option<(Point, Point)> {
     }))
 }
 
+/// Whole micrometres written as millimetres, exactly and without trailing zeros.
+pub(crate) struct Mm(pub(crate) i32);
+
+impl std::fmt::Display for Mm {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let um = self.0.unsigned_abs();
+        let sign = if self.0 < 0 { "-" } else { "" };
+        let (whole, part) = (um / 1000, um % 1000);
+        if part == 0 {
+            write!(f, "{sign}{whole}")
+        } else {
+            let digits = format!("{part:03}");
+            write!(f, "{sign}{whole}.{}", digits.trim_end_matches('0'))
+        }
+    }
+}
+
+/// SVG path data for `shapes` in millimetres, with y turned to point down from `height_um`
+/// as on a page. Holes are contours of their own, so fill it with the even-odd rule.
+pub fn svg_path(shapes: &[Shape], height_um: i32) -> String {
+    use std::fmt::Write as _;
+    let mut d = String::new();
+    for contour in shapes.iter().flatten() {
+        for (i, p) in contour.iter().enumerate() {
+            let command = if i == 0 { 'M' } else { 'L' };
+            let _ = write!(d, "{command}{} {}", Mm(p.x), Mm(height_um.saturating_sub(p.y)));
+        }
+        if !contour.is_empty() {
+            d.push('Z');
+        }
+    }
+    d
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn square(x0: i32, y0: i32, side: i32) -> Shapes {
         vec![vec![rectangle(x0, y0, x0 + side, y0 + side)]]
+    }
+
+    #[test]
+    fn paths_are_in_millimetres_from_the_top() {
+        let framed = vec![vec![rectangle(0, 0, 10_000, 5_000), rectangle(1_500, 1_000, 2_250, 2_000)]];
+        assert_eq!(svg_path(&framed, 5_000), "M0 5L10 5L10 0L0 0ZM1.5 4L2.25 4L2.25 3L1.5 3Z");
+        assert_eq!(svg_path(&[], 5_000), "");
     }
 
     #[test]

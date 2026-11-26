@@ -10,12 +10,15 @@
 
   let { bench }: Props = $props();
 
-  const views = $derived<{ value: View; label: string; disabled: boolean }[]>([
-    { value: 'picture', label: text.toolbar.views.picture, disabled: !bench.source },
-    { value: 'chart', label: text.toolbar.views.chart, disabled: !bench.chart },
-    { value: 'both', label: text.toolbar.views.both, disabled: !bench.chart },
-    { value: 'stencil', label: text.toolbar.views.stencil, disabled: !bench.stencilsPossible }
-  ]);
+  const views = $derived.by((): { value: View; label: string; disabled: boolean }[] => {
+    const labels = bench.isFreeform ? text.freeform.views : text.toolbar.views;
+    return [
+      { value: 'picture', label: labels.picture, disabled: !bench.artwork },
+      { value: 'chart', label: labels.chart, disabled: !bench.canShowFiles },
+      { value: 'both', label: labels.both, disabled: !bench.canShowFiles },
+      { value: 'stencil', label: labels.stencil, disabled: !bench.stencilsPossible }
+    ];
+  });
   const onFiles = $derived(bench.screen === 'files');
 </script>
 
@@ -26,7 +29,7 @@
       class="icon-button"
       aria-label={text.toolbar.undo}
       title={text.toolbar.undo}
-      disabled={!bench.canUndo}
+      disabled={!bench.canUndo || bench.opening}
       onclick={bench.undo}
     >
       <svg
@@ -47,7 +50,7 @@
       class="icon-button"
       aria-label={text.toolbar.redo}
       title={text.toolbar.redo}
-      disabled={!bench.canRedo}
+      disabled={!bench.canRedo || bench.opening}
       onclick={bench.redo}
     >
       <svg
@@ -98,13 +101,13 @@
         >
           <path d="M10 3L5 8l5 5" />
         </svg>
-        {text.toolbar.back}
+        {bench.isFreeform ? text.freeform.back : text.toolbar.back}
       </button>
     {:else}
       <button
         type="button"
         class="button primary"
-        disabled={!bench.chart}
+        disabled={!bench.canShowFiles || bench.opening}
         onclick={() => {
           bench.go('files');
         }}

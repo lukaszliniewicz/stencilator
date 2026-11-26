@@ -8,6 +8,8 @@
 
 pub mod freeform;
 
+use std::rc::Rc;
+
 use stencilator_core::chart::{ChartSettings, Sizing as CoreSizing, TileChart, build_chart, merge_paints};
 use stencilator_core::colour::Rgb;
 use stencilator_core::export::{ChartFormat, encode_chart};
@@ -168,7 +170,7 @@ impl TryFrom<&Settings> for ChartSettings {
 /// A decoded image, upright, as straight RGBA.
 #[wasm_bindgen]
 pub struct Source {
-    image: Image,
+    image: Rc<Image>,
     grid: (u32, u32),
 }
 
@@ -183,7 +185,7 @@ impl Source {
     pub fn new(bytes: &[u8]) -> Result<Source, JsError> {
         let image = decode(bytes).map_err(|e| error(&e))?;
         let grid = pixel_grid(&image);
-        Ok(Source { image, grid })
+        Ok(Source { image: Rc::new(image), grid })
     }
 
     /// Width in pixels.

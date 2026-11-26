@@ -27,7 +27,8 @@ fix:
 	cargo fmt --all
 	cargo clippy --workspace --all-targets --fix --allow-dirty --allow-staged
 
-# The browser build of the engine, into the app's source tree (ignored by git).
+# The browser build of the engine and its built-in fonts, into the app's source tree
+# (ignored by git).
 # Needs wasm-bindgen-cli at the same version as the wasm-bindgen crate, and binaryen.
 WASM_PKG ?= app/src/engine/wasm
 
@@ -35,6 +36,8 @@ wasm:
 	cargo build -p stencilator-wasm --target wasm32-unknown-unknown --profile wasm --locked
 	wasm-bindgen --target web --out-dir $(WASM_PKG) $(TARGET_DIR)/wasm32-unknown-unknown/wasm/stencilator_wasm.wasm
 	wasm-opt -Oz --strip-debug --strip-producers -o $(WASM_PKG)/stencilator_wasm_bg.wasm $(WASM_PKG)/stencilator_wasm_bg.wasm
+	mkdir -p $(WASM_PKG)/fonts
+	cp fonts/*.ttf $(WASM_PKG)/fonts/
 
 # The browser build and the command line must write identical files.
 parity: wasm

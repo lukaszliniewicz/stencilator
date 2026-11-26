@@ -55,7 +55,7 @@ impl Drawing {
     ///
     /// [`Error::Image`] when there is nothing to render onto.
     #[allow(clippy::cast_precision_loss, reason = "at most 16 million cells a side, exact in f32")]
-    pub(crate) fn render(&self, width: u32, height: u32) -> Result<Image, Error> {
+    pub fn render(&self, width: u32, height: u32) -> Result<Image, Error> {
         let mut pixmap = tiny_skia::Pixmap::new(width, height)
             .ok_or_else(|| Error::Image("The drawing is too large to draw.".to_owned()))?;
         let (sx, sy) = (width as f32 / self.size.0, height as f32 / self.size.1);
@@ -104,7 +104,11 @@ fn solid(group: &Group, paints: &mut BTreeSet<Rgb>) -> bool {
 fn options(fonts: &[&[u8]]) -> Result<usvg::Options<'static>, Error> {
     let mut db = fontdb::Database::new();
     for font in fonts {
+        let before = db.len();
         db.load_font_data(font.to_vec());
+        if db.len() == before {
+            return Err(Error::Image("The font could not be read. Use a TrueType or OpenType file.".to_owned()));
+        }
     }
     let mut options = usvg::Options {
         image_href_resolver: ImageHrefResolver {
@@ -117,9 +121,6 @@ fn options(fonts: &[&[u8]]) -> Result<usvg::Options<'static>, Error> {
         text_rendering: usvg::TextRendering::OptimizeSpeed,
         ..usvg::Options::default()
     };
-    if !fonts.is_empty() && db.is_empty() {
-        return Err(Error::Image("The font could not be read. Use a TrueType or OpenType file.".to_owned()));
-    }
     // Every generic family, and text that names a font the drawing does not have, uses the
     // first font given.
     let first = db.faces().next().and_then(|face| face.families.first()).map(|(name, _)| name.clone());

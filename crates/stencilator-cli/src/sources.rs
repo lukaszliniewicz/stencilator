@@ -3,10 +3,14 @@
 
 use std::path::{Path, PathBuf};
 
-use stencilator_core::project::{EXTENSION, Font, Project, Source, read_project};
+use stencilator_core::project::{BUILT_IN_FONT, EXTENSION, Font, Project, STENCIL_FONT, Source, read_project};
 
-/// The built-in font, [`stencilator_core::project::BUILT_IN_FONT`].
-const BUILT_IN: &[u8] = include_bytes!("../../../fonts/NotoSans-Bold.ttf");
+/// The built-in fonts: their names on the command line, their file names in projects, and
+/// the files themselves.
+const BUILT_IN: [(&str, &str, &[u8]); 2] = [
+    ("Noto Sans Bold", BUILT_IN_FONT, include_bytes!("../../../fonts/NotoSans-Bold.ttf")),
+    ("Allerta Stencil", STENCIL_FONT, include_bytes!("../../../fonts/AllertaStencil-Regular.ttf")),
+];
 
 /// What the command was given to work from.
 pub(crate) enum Input {
@@ -71,18 +75,24 @@ pub(crate) fn read(path: &Path) -> Result<Vec<u8>, String> {
     std::fs::read(path).map_err(|e| format!("{}: {e}", path.display()))
 }
 
-/// Fonts given on the command line, embedded in the project so that it opens anywhere.
-pub(crate) fn embed_fonts(paths: &[PathBuf]) -> Result<Vec<Font>, String> {
-    paths
+/// Fonts given on the command line: a built-in one by its name, which the project names,
+/// or a font file, which the project carries so that it opens anywhere.
+pub(crate) fn embed_fonts(fonts: &[PathBuf]) -> Result<Vec<Font>, String> {
+    fonts
         .iter()
-        .map(|path| {
-            let name = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
-            Ok(Font { name, data: Some(read(path)?) })
+        .map(|font| {
+            let given = font.to_string_lossy();
+            if let Some((_, file, _)) = BUILT_IN.iter().find(|(name, ..)| name.eq_ignore_ascii_case(&given)) {
+                return Ok(Font { name: (*file).to_owned(), data: None });
+            }
+            let name = font.file_name().unwrap_or_default().to_string_lossy().into_owned();
+            Ok(Font { name, data: Some(read(font)?) })
         })
         .collect()
 }
 
 /// The project's font files, the built-in one among them where it is named.
 pub(crate) fn font_data(project: &Project) -> Result<Vec<&[u8]>, String> {
-    project.font_data(BUILT_IN).map_err(|e| format!("{e} Give it with --font."))
+    let built_in: Vec<(&str, &[u8])> = BUILT_IN.iter().map(|&(_, file, data)| (file, data)).collect();
+    project.font_data(&built_in).map_err(|e| format!("{e} Give it with --font."))
 }

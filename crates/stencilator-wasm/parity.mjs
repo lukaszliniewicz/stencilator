@@ -102,7 +102,9 @@ for (const [n, fixture] of cases.entries()) {
 
 // Free-form: each case makes a project in the browser build and the same with the
 // command line's options.
-const FONT = readFileSync(join(root, "fonts/NotoSans-Bold.ttf"));
+// The built-in fonts, as every shell gives them to the engine.
+const fonts = new engine.Fonts();
+for (const name of engine.Fonts.builtIn()) fonts.add(name, readFileSync(join(root, "fonts", name)));
 const FOX = readFileSync(join(root, "fixtures/pixel-art/fox.png"));
 const freeform = [
   {
@@ -118,6 +120,16 @@ const freeform = [
       return project;
     },
     args: ["--text", "PAINT", "--text", "CLUB", "--font-size", "20", "--text-colour", "1d2f5c"],
+  },
+  {
+    name: "text in the stencil font",
+    project: () => {
+      const project = engine.Project.text("");
+      project.setText("ABBA 80", 25, 0);
+      project.addBuiltInFont("AllertaStencil-Regular.ttf");
+      return project;
+    },
+    args: ["--text", "ABBA 80", "--font-size", "25", "--font", "Allerta Stencil"],
   },
   {
     name: "fox picture, merged",
@@ -140,7 +152,7 @@ const freeform = [
 for (const [n, fixture] of freeform.entries()) {
   const project = fixture.project();
   if (fixture.before) project.setSettings(JSON.stringify(fixture.before));
-  const artwork = new engine.Artwork(project, FONT);
+  const artwork = new engine.Artwork(project, fonts);
   if (fixture.before) {
     artwork.labels(project).free();
     project.setSettings(JSON.stringify(fixture.settings));
