@@ -4,6 +4,7 @@
  */
 import { hexToNumber } from '../lib/colour';
 import { text } from '../lib/text';
+import { ProjectSaveError } from './protocol';
 import type {
   ArtworkEdits,
   ArtworkSource,
@@ -44,7 +45,13 @@ const file = (bytes: Uint8Array): Answer => ({ value: bytes, transfer: [bytes.bu
 function settingsOf(project: Wasm.Project): ProjectSettings {
   const settings = JSON.parse(project.settings) as ProjectSettings;
   const { mode, count, background } = settings.colours;
-  return { ...settings, colours: { mode, count, background } };
+  return {
+    ...settings,
+    // A drawing cannot make a tile chart. Use the same mode on open and when
+    // validating an unchanged import, even if its original bytes specify Tiles.
+    mode: project.kind === 'picture' ? settings.mode : 'freeform',
+    colours: { mode, count, background }
+  };
 }
 
 function releaseArtwork(workspace: Workspace): void {
@@ -59,28 +66,11 @@ function takePreview(preview: Wasm.RasterPreview): RasterPreview {
   return { width, height, rgba: preview.pixels() };
 }
 
-function applySettings(
+function applyActiveSettings(
   project: Wasm.Project,
   settings: ProjectSettings,
-  use: 'preview' | 'save',
-  strict = false
+  use: 'preview' | 'save'
 ): void {
-  // Keep the exact Rust seed on every write.
-  if (use === 'save') {
-    if (strict) {
-      // Autosave validates both modes and fails rather than falling back.
-      project.setSettings(JSON.stringify(settings), true);
-      return;
-    }
-    try {
-      project.setSettings(JSON.stringify(settings), true);
-      return;
-    } catch {
-      // The engine left the project unchanged. Retry with its last valid settings
-      // for the inactive mode, so an unfinished field there cannot block saving.
-    }
-  }
-
   const previous = settingsOf(project);
   const active =
     settings.mode === 'tiles'
@@ -97,6 +87,30 @@ function applySettings(
         }
       : { ...settings, tiles: previous.tiles };
   project.setSettings(JSON.stringify(active), true);
+}
+
+function applySaveSettings(
+  project: Wasm.Project,
+  settings: ProjectSettings,
+  strict: boolean
+): void {
+  try {
+    // Keep the exact Rust seed on every write.
+    project.setSettings(JSON.stringify(settings), true);
+  } catch (error) {
+    // The engine left the snapshot unchanged. Downloads can use the last valid settings
+    // for the inactive mode. Autosave tests that fallback only to explain what failed.
+    try {
+      applyActiveSettings(project, settings, 'save');
+    } catch (activeError) {
+      if (!strict) throw activeError;
+      throw new ProjectSaveError({ kind: 'settings' }, { cause: error });
+    }
+    if (strict) {
+      const mode = settings.mode === 'tiles' ? 'freeform' : 'tiles';
+      throw new ProjectSaveError({ kind: 'inactive-settings', mode }, { cause: error });
+    }
+  }
 }
 
 async function applyEdits(
@@ -255,7 +269,7 @@ export function createHandlers(
   ): Promise<Answer> {
     const w = opened();
     clearResults();
-    applySettings(w.project, settings, 'preview');
+    applyActiveSettings(w.project, settings, 'preview');
     await applyArtwork(w, edits);
     progress?.('paints');
     const artwork = await artworkOf(w);
@@ -320,7 +334,7 @@ export function createHandlers(
         const { project, picture } = opened();
         clearResults();
         if (!picture) throw new Error(text.errors.tilesNeedPicture);
-        applySettings(project, request.settings, 'preview');
+        applyActiveSettings(project, request.settings, 'preview');
         chart = project.tileChart(picture);
         const summary = {
           tilesX: chart.tilesX,
@@ -380,7 +394,7 @@ export function createHandlers(
         // Save a snapshot copy, so a queued autosave never disturbs the live preview.
         const snapshot = w.project.clone();
         try {
-          applySettings(snapshot, request.settings, 'save', request.strict === true);
+          applySaveSettings(snapshot, request.settings, request.strict === true);
           const changed = await applyEdits(
             snapshot,
             { fontRevision: w.fontRevision },
@@ -392,6 +406,9 @@ export function createHandlers(
             (await artworkFor(snapshot)).free();
           }
           return file(snapshot.file());
+        } catch (error) {
+          if (!request.strict || error instanceof ProjectSaveError) throw error;
+          throw new ProjectSaveError({ kind: 'artwork' }, { cause: error });
         } finally {
           snapshot.free();
         }

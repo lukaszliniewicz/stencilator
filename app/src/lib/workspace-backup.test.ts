@@ -1,7 +1,7 @@
 import { assert, describe, expect, it, vi } from 'vitest';
 
 import { sanitise } from './settings';
-import { decodeBackup, encodeBackup, previewRestore } from './workspace-backup';
+import { decodeBackup, encodeBackup, planBackups, previewRestore } from './workspace-backup';
 import type { PrinterProfile, SavedProject, WorkspaceSnapshot } from './workspace-store';
 
 /** The engine's validation is mocked: any declared "tiles" project opens. */
@@ -146,6 +146,81 @@ describe('workspace backups', () => {
 
     await expect(decodeBackup(file, validate)).rejects.toMatchObject({ code: 'too-large' });
     expect(validate).not.toHaveBeenCalled();
+  });
+
+  it('splits large workspaces without losing projects, unlinked profiles or printer links', async () => {
+    const shared = profile('shared', 'Textured sheet');
+    const defaultPrinter = profile('default', 'Smooth sheet');
+    const design = await project('p0', 'One', 'bytes', { profileId: shared.id });
+    const snapshot: WorkspaceSnapshot = {
+      revision: 1,
+      projects: Array.from({ length: 501 }, (_, i) => ({
+        ...design,
+        id: `p${String(i)}`,
+        title: `Project ${String(i)}`
+      })),
+      profiles: [
+        shared,
+        defaultPrinter,
+        ...Array.from({ length: 500 }, (_, i) =>
+          profile(`other-${String(i)}`, `Other ${String(i)}`)
+        )
+      ],
+      preferences: preferences({ theme: 'dark', defaultProfileId: defaultPrinter.id })
+    };
+    const parts = planBackups(snapshot);
+    expect(parts.map(({ projects }) => projects.length)).toEqual([500, 1, 0]);
+    const restored: WorkspaceSnapshot = {
+      revision: 0,
+      projects: [],
+      profiles: [],
+      preferences: preferences()
+    };
+    // Each file works on its own, including when restored out of order.
+    for (const part of parts.toReversed()) {
+      const backup = await decodeBackup(await encodeBackup(part), validateProject);
+      const plan = previewRestore(backup, restored);
+      restored.projects.push(...plan.projects.map(({ record }) => record));
+      restored.profiles.push(
+        ...plan.profiles.filter(({ action }) => action !== 'skip').map(({ record }) => record)
+      );
+      expect(plan.preferences.theme).toBe('dark');
+      expect(plan.preferences.defaultProfileId).toBe(defaultPrinter.id);
+    }
+    expect(restored.profiles).toHaveLength(snapshot.profiles.length);
+    expect(restored.projects).toHaveLength(snapshot.projects.length);
+    expect(restored.projects.every(({ profileId }) => profileId === shared.id)).toBe(true);
+    for (const part of parts) {
+      const backup = await decodeBackup(await encodeBackup(part), validateProject);
+      const plan = previewRestore(backup, restored);
+      expect([...plan.projects, ...plan.profiles].every(({ action }) => action === 'skip')).toBe(
+        true
+      );
+    }
+  });
+
+  it('splits by the total project bytes and refuses a single oversized project', async () => {
+    const original = await project('p', 'One', 'bytes');
+    const sizedFile = (size: number): Blob => {
+      const file = new Blob();
+      Object.defineProperty(file, 'size', { value: size });
+      return file;
+    };
+    const size = 32 * 1024 * 1024;
+    const snapshot: WorkspaceSnapshot = {
+      revision: 1,
+      projects: Array.from({ length: 4 }, (_, i) => ({
+        ...original,
+        id: `p${String(i)}`,
+        file: sizedFile(size)
+      })),
+      profiles: [],
+      preferences: preferences()
+    };
+    expect(planBackups(snapshot).map(({ projects }) => projects.length)).toEqual([3, 1]);
+    expect(() =>
+      planBackups({ ...snapshot, projects: [{ ...original, file: sizedFile(size + 1) }] })
+    ).toThrow(expect.objectContaining({ code: 'too-large' }));
   });
 
   it('skips already-imported copies on a repeat restore', async () => {

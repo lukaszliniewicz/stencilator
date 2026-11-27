@@ -1,5 +1,5 @@
 /**
- * One portable workspace backup and the restore preview built from it. The file is a
+ * Portable workspace backups and the restore preview built from them. Each file is a
  * versioned JSON envelope carrying each project's exact `.stencilator` bytes as base64.
  * Decoding validates everything before any write: size, envelope version, unique ids,
  * finite timestamps, profile dimensions within the engine's bed range, view shape, project
@@ -47,6 +47,23 @@ export interface WorkspaceBackup {
   profiles: PrinterProfile[];
   preferences: Omit<WorkspacePreferences, 'lastProjectId'>;
 }
+
+type EncodedProject = Omit<SavedProject, 'file'> & { file: string };
+
+function envelope(
+  { defaults, theme, defaultProfileId }: WorkspacePreferences,
+  projects: EncodedProject[] = [],
+  profiles: PrinterProfile[] = []
+) {
+  return {
+    [BACKUP_FORMAT]: BACKUP_VERSION,
+    projects,
+    profiles,
+    preferences: { defaults, theme, defaultProfileId }
+  };
+}
+
+const jsonBytes = (value: unknown): number => new Blob([JSON.stringify(value)]).size;
 
 const asObject = (value: unknown): Record<string, unknown> | undefined =>
   typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -346,6 +363,72 @@ function planRecords<T extends { id: string; origin?: Origin }>(
   });
 }
 
+/**
+ * Splits one saved snapshot into files that can be imported independently. Every part
+ * carries the default profile and any profiles needed by its projects.
+ */
+export function planBackups(snapshot: WorkspaceSnapshot): WorkspaceSnapshot[] {
+  const allProfiles = new Map(
+    snapshot.profiles.map((profile) => [profile.id, { profile, bytes: jsonBytes(profile) + 1 }])
+  );
+  const defaultProfile = allProfiles.get(snapshot.preferences.defaultProfileId ?? '');
+  const unassigned = new Set(allProfiles.keys());
+  if (defaultProfile) unassigned.delete(defaultProfile.profile.id);
+
+  const emptyBytes = jsonBytes(envelope(snapshot.preferences)) + (defaultProfile?.bytes ?? 0);
+  let encodedBytes = emptyBytes;
+  let projectBytes = 0;
+  let projects: SavedProject[] = [];
+  const profiles = new Map<string, PrinterProfile>();
+  if (defaultProfile) profiles.set(defaultProfile.profile.id, defaultProfile.profile);
+  const parts: WorkspaceSnapshot[] = [];
+
+  function finishPart(): void {
+    parts.push({ ...snapshot, projects, profiles: [...profiles.values()] });
+    projects = [];
+    profiles.clear();
+    if (defaultProfile) profiles.set(defaultProfile.profile.id, defaultProfile.profile);
+    projectBytes = 0;
+    encodedBytes = emptyBytes;
+  }
+
+  if (emptyBytes > MAX_FILE_BYTES) throw new WorkspaceError('too-large');
+  for (const project of snapshot.projects) {
+    const size = project.file.size;
+    if (size > MAX_PROJECT_BYTES) throw new WorkspaceError('too-large');
+    // Base64 uses four ASCII bytes per three input bytes. Reserve one byte for the comma.
+    const bytes = jsonBytes({ ...project, file: '' }) + 4 * Math.ceil(size / 3) + 1;
+    const linked = allProfiles.get(project.profileId ?? '');
+    const profileBytes = () => (linked && !profiles.has(linked.profile.id) ? linked.bytes : 0);
+    if (
+      projects.length === MAX_ITEMS ||
+      projectBytes + size > MAX_TOTAL_BYTES ||
+      (profileBytes() > 0 && profiles.size === MAX_ITEMS) ||
+      encodedBytes + bytes + profileBytes() > MAX_FILE_BYTES
+    ) {
+      finishPart();
+    }
+    if (encodedBytes + bytes + profileBytes() > MAX_FILE_BYTES)
+      throw new WorkspaceError('too-large');
+    projects.push(project);
+    projectBytes += size;
+    encodedBytes += bytes + profileBytes();
+    if (linked) {
+      profiles.set(linked.profile.id, linked.profile);
+      unassigned.delete(linked.profile.id);
+    }
+  }
+  for (const { profile, bytes } of allProfiles.values()) {
+    if (!unassigned.has(profile.id)) continue;
+    if (profiles.size === MAX_ITEMS || encodedBytes + bytes > MAX_FILE_BYTES) finishPart();
+    if (encodedBytes + bytes > MAX_FILE_BYTES) throw new WorkspaceError('too-large');
+    profiles.set(profile.id, profile);
+    encodedBytes += bytes;
+  }
+  finishPart();
+  return parts;
+}
+
 export async function encodeBackup(snapshot: WorkspaceSnapshot): Promise<Blob> {
   if (snapshot.projects.length > MAX_ITEMS || snapshot.profiles.length > MAX_ITEMS) {
     throw new WorkspaceError('too-large');
@@ -356,25 +439,21 @@ export async function encodeBackup(snapshot: WorkspaceSnapshot): Promise<Blob> {
     snapshot.projects.some(({ file }) => file.size > MAX_PROJECT_BYTES)
   )
     throw new WorkspaceError('too-large');
-  const projects: (Omit<SavedProject, 'file'> & { file: string })[] = [];
+  const projects: EncodedProject[] = [];
   for (const project of snapshot.projects) {
     projects.push({
       ...project,
       file: bytesToBase64(new Uint8Array(await project.file.arrayBuffer()))
     });
   }
-  const preferences: Omit<WorkspacePreferences, 'lastProjectId'> = {
-    defaults: snapshot.preferences.defaults,
-    theme: snapshot.preferences.theme,
-    defaultProfileId: snapshot.preferences.defaultProfileId
-  };
-  const envelope = {
-    [BACKUP_FORMAT]: BACKUP_VERSION,
-    projects,
-    profiles: snapshot.profiles,
-    preferences
-  };
-  return new Blob([JSON.stringify(envelope)], { type: 'application/json' });
+  const backup = new Blob(
+    [JSON.stringify(envelope(snapshot.preferences, projects, snapshot.profiles))],
+    {
+      type: 'application/json'
+    }
+  );
+  if (backup.size > MAX_FILE_BYTES) throw new WorkspaceError('too-large');
+  return backup;
 }
 
 export async function decodeBackup(

@@ -208,11 +208,14 @@ export const text = {
     nameLabel: 'Project name',
     rename: 'Rename…',
     renameTitle: 'Rename project',
+    renameChanged: (title: string) =>
+      `This project is now called “${title}”. Check your new name, then choose Save name again.`,
     duplicate: 'Duplicate',
     remove: 'Remove from this browser…',
     removeTitle: 'Remove project',
     removeConfirm: (name: string) =>
       `Remove “${name}” from this browser? Downloaded files are unchanged.`,
+    removeChanged: 'The project has changed. Reopen this dialog to confirm removal.',
     removeButton: 'Remove project',
     cancel: 'Cancel',
     close: 'Close',
@@ -256,7 +259,11 @@ export const text = {
       'too-large':
         'This workspace is too large for a single backup. Keep the individual project files.',
       full: 'The browser ran out of storage space.',
-      unavailable: 'Browser storage is unavailable.'
+      unavailable: 'Browser storage is unavailable.',
+      saveSettings: 'Check the settings for this project before saving.',
+      saveInactiveSettings: (mode: string) => `Check the ${mode} settings before saving.`,
+      saveArtwork: 'Check the artwork and any text or fonts before saving.',
+      saveFile: 'The draft could not be written as a project file.'
     }
   },
 
@@ -264,12 +271,17 @@ export const text = {
     open: 'Back up or restore…',
     title: 'Back up or restore',
     exportTitle: 'Back up this browser',
-    exportBody: 'One file with your saved projects, printer profiles and app preferences.',
+    exportBody: 'Keep a copy of your saved projects, printer profiles and app preferences.',
     export: 'Download backup',
     exportSaved: 'Download saved projects only',
+    split: (count: number) =>
+      `This workspace needs ${num(count)} backup files. Keep them together and import each one when restoring.`,
+    exportPart: (part: number, count: number) => `Download file ${num(part)} of ${num(count)}`,
     excluded: (name: string) => `Unsaved changes in “${name}” will be left out of the backup.`,
     importTitle: 'Import a backup',
     importBody: 'Review the contents before adding them. Your existing work stays here.',
+    importTooLarge: (name: string) =>
+      `“${name}” is too large to import as a single backup. No changes were made.`,
     choose: 'Choose backup…',
     input: 'Workspace backup file',
     preview: 'Preview import',
@@ -521,6 +533,7 @@ export const text = {
     placement:
       'Click two ends in Top view, or enter their positions from the bottom-left of the plate.',
     placing: (end: number) => `Place end ${num(end + 1)} on solid material`,
+    placed: 'Adjust the ends or choose Apply support to check their positions.',
     coordinate: (end: number, axis: 'X' | 'Y') => `End ${num(end + 1)} ${axis} (mm)`,
     apply: 'Apply support',
     cancel: 'Cancel',

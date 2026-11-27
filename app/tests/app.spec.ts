@@ -35,7 +35,10 @@ async function openProjectActions(page: Page): Promise<void> {
 async function downloadProject(page: Page) {
   const file = page.waitForEvent('download');
   await openProjectActions(page);
-  await page.getByRole('button', { name: 'Download project', exact: true }).click();
+  await page
+    .getByRole('dialog', { name: 'Project actions' })
+    .getByRole('button', { name: 'Download project', exact: true })
+    .click();
   return file;
 }
 
@@ -703,6 +706,28 @@ test('replacing a picture starts fresh undo history for the fitted artwork', asy
   await expect(page.getByRole('button', { name: 'Redo (Ctrl+Shift+Z)' })).toBeDisabled();
 });
 
+test('replacing a raster picture keeps settings-only undo', async ({ page }) => {
+  await page.goto('/');
+  await openPicture(page);
+  const tile = page.getByLabel('Tile (mm)', { exact: true });
+  await tile.fill('6');
+  const undo = page.getByRole('button', { name: 'Undo (Ctrl+Z)' });
+  await expect(undo).toBeEnabled();
+
+  await page
+    .getByLabel('Picture file', { exact: true })
+    .setInputFiles(fileURLToPath(new URL('../../fixtures/pixel-art/fox.png', import.meta.url)));
+  await page
+    .getByRole('dialog', { name: 'Open “fox”' })
+    .getByRole('button', { name: 'Replace artwork', exact: true })
+    .click();
+  await expect(page.getByText('fox.png', { exact: true })).toBeVisible();
+  await expect(undo).toBeEnabled();
+  await undo.click();
+  await expect(tile).toHaveValue('5');
+  await expect(page.getByText('fox.png', { exact: true })).toBeVisible();
+});
+
 test('a picture can switch modes and be saved with an unfinished setting in the other mode', async ({
   page
 }) => {
@@ -728,6 +753,9 @@ test('a picture can switch modes and be saved with an unfinished setting in the 
   await expect(page.getByRole('button', { name: 'Per pixel' })).toHaveAttribute(
     'aria-pressed',
     'true'
+  );
+  await expect(page.getByRole('region', { name: 'Could not save in this browser' })).toContainText(
+    'Check the Free-form settings before saving.'
   );
 
   const design = await downloadProject(page);
@@ -928,6 +956,69 @@ test('a stale draft cannot bring a removed project back under its old name', asy
   await expect(tile).toHaveValue('7');
 });
 
+test('a rename form asks again if the name changed while it was open', async ({
+  page,
+  context
+}) => {
+  await page.goto('/');
+  await openPicture(page);
+  await saved(page);
+  const other = await context.newPage();
+  await other.goto('/');
+
+  await openProjectActions(page);
+  await page.getByRole('button', { name: 'Rename…' }).click();
+  const rename = page.getByRole('dialog', { name: 'Rename project' });
+  await rename.getByRole('textbox', { name: 'Project name' }).fill('Garden draft');
+  await renameProject(other, 'Garden final');
+  await expect(page.locator('header').getByText('Garden final', { exact: true })).toBeVisible();
+  await rename.getByRole('button', { name: 'Save name' }).click();
+  await expect(rename.getByRole('alert')).toContainText('“Garden final”');
+  await expect(rename.getByRole('textbox', { name: 'Project name' })).toHaveValue('Garden draft');
+  await expect(other.getByRole('button', { name: 'Garden final', exact: true })).toBeVisible();
+  await rename.getByRole('button', { name: 'Save name' }).click();
+  await saved(page);
+  await expect(other.getByRole('button', { name: 'Garden draft', exact: true })).toBeVisible();
+
+  await openProjectActions(page);
+  await page.getByRole('button', { name: 'Rename…' }).click();
+  await rename.getByRole('textbox', { name: 'Project name' }).fill('Garden sign');
+  await other.getByLabel('Tile (mm)', { exact: true }).fill('6');
+  await saved(other);
+  await expect(page.getByLabel('Tile (mm)', { exact: true })).toHaveValue('6');
+  await rename.getByRole('button', { name: 'Save name' }).click();
+  await saved(page);
+  await expect(other.getByRole('button', { name: 'Garden sign', exact: true })).toBeVisible();
+  await expect(other.getByLabel('Tile (mm)', { exact: true })).toHaveValue('6');
+});
+
+test('removal needs a new confirmation after another tab saves', async ({ page, context }) => {
+  await page.goto('/');
+  await openPicture(page);
+  await saved(page);
+  const other = await context.newPage();
+  await other.goto('/');
+
+  await openProjectActions(page);
+  await page.getByRole('button', { name: 'Remove from this browser…' }).click();
+  const dialog = page.getByRole('dialog', { name: 'Remove project' });
+  const remove = dialog.getByRole('button', { name: 'Remove project', exact: true });
+  const size = 'Tile (mm)';
+  await other.getByLabel(size, { exact: true }).fill('6');
+  await saved(other);
+  await expect(page.getByLabel(size, { exact: true })).toHaveValue('6');
+  await expect(remove).toBeDisabled();
+  await expect(dialog.getByRole('alert')).toContainText('Reopen this dialog to confirm');
+  await dialog.getByRole('button', { name: 'Cancel' }).click();
+  await other.reload();
+  await expect(other.getByLabel(size, { exact: true })).toHaveValue('6');
+
+  await openProjectActions(page);
+  await page.getByRole('button', { name: 'Remove from this browser…' }).click();
+  await remove.click();
+  await expect(page.getByRole('heading', { name: 'What are you making?' })).toBeVisible();
+});
+
 test('settings and theme remembered by v0.1.0 carry over to a new workspace', async ({ page }) => {
   await page.addInitScript(() => {
     if (localStorage.getItem('stencilator.settings') === null) {
@@ -943,6 +1034,29 @@ test('settings and theme remembered by v0.1.0 carry over to a new workspace', as
   await page.getByRole('button', { name: 'Try the fox' }).click();
   await expect(page.getByLabel('Tile (mm)', { exact: true })).toHaveValue('6');
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
+});
+
+test('starting a separate project with an incoming picture uses the workspace mode', async ({
+  page
+}) => {
+  await page.addInitScript(() => {
+    localStorage.setItem('stencilator.settings', JSON.stringify({ projectMode: 'freeform' }));
+  });
+  await page.goto('/');
+  await openPicture(page);
+  await saved(page);
+  const modes = page.getByRole('group', { name: 'Stencil mode' });
+  await expect(modes.getByRole('button', { name: 'Tiles', exact: true })).toHaveAttribute(
+    'aria-pressed',
+    'true'
+  );
+
+  await page.getByLabel('Picture file', { exact: true }).setInputFiles(IMAGE);
+  await page.getByRole('button', { name: 'Start new project', exact: true }).click();
+  await expect(modes.getByRole('button', { name: 'Free-form', exact: true })).toHaveAttribute(
+    'aria-pressed',
+    'true'
+  );
 });
 
 test('a browser without storage keeps the draft editable and asks before leaving it', async ({
@@ -1171,6 +1285,118 @@ test('printer profiles keep an applied bed until explicitly updated, and backups
   }
 });
 
+test('an unchanged drawn import keeps its bytes and can be restored from backup', async ({
+  page,
+  browser
+}) => {
+  await page.addInitScript(() => {
+    const create = URL.createObjectURL.bind(URL);
+    URL.createObjectURL = (blob) => {
+      if (blob instanceof Blob) document.documentElement.dataset.blobType = blob.type;
+      return create(blob);
+    };
+  });
+  await page.goto('/');
+  const original = Buffer.from(
+    '{"stencilator":1,"mode":"tiles","source":{"kind":"text","text":"O","font_mm":30,"colour":"#1d2f5c"}}'
+  );
+  await page.getByLabel('Stencilator project file').setInputFiles({
+    name: 'Letter.stencilator',
+    mimeType: '',
+    buffer: original
+  });
+  await saved(page);
+  const design = await downloadProject(page);
+  expect(await readFile(await design.path())).toEqual(original);
+  await expect.soft(page.locator('html')).toHaveAttribute('data-blob-type', 'application/json');
+
+  const download = page.waitForEvent('download');
+  await (await backups(page, 'Letter')).getByRole('button', { name: 'Download backup' }).click();
+  const bytes = await readFile(await (await download).path());
+  const fresh = await browser.newPage();
+  try {
+    await fresh.goto(page.url());
+    await backups(fresh);
+    await importBackup(fresh, bytes);
+    const preview = fresh.getByRole('dialog', { name: 'Preview import' });
+    await expect(preview.getByText('Letter', { exact: true })).toBeVisible();
+    await expect(preview.getByText(/^Free-form ·/)).toBeVisible();
+    await preview.getByRole('button', { name: 'Import backup' }).click();
+    await expect(fresh.getByText('Workspace imported.')).toBeVisible();
+    await fresh.keyboard.press('Escape');
+    await (await projects(fresh)).getByRole('button', { name: /^Letter/ }).click();
+    await expect(fresh.getByRole('textbox', { name: 'Text', exact: true })).toHaveValue('O');
+  } finally {
+    await fresh.close();
+  }
+});
+
+test('an oversized backup import identifies the file that could not be read', async ({ page }) => {
+  await page.goto('/');
+  const dialog = await backups(page);
+  await dialog.getByLabel('Workspace backup file').evaluate((element) => {
+    const input = element as HTMLInputElement;
+    const file = new File([''], 'Studio archive.json', { type: 'application/json' });
+    Object.defineProperty(file, 'size', { value: 161 * 1024 * 1024 });
+    // The native FileList exposes a new File wrapper, so override the getter for this test.
+    Object.defineProperty(input, 'files', { value: [file] });
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+  });
+  await expect(dialog.getByRole('alert')).toContainText('“Studio archive.json” is too large');
+  await expect(dialog.getByRole('button', { name: 'Choose backup…' })).toBeEnabled();
+});
+
+test('two restores can be backed up as separate files when the workspace outgrows one', async ({
+  page
+}) => {
+  await page.goto('/');
+  const dialog = await backups(page);
+  const profiles = (offset: number) =>
+    Array.from({ length: 300 }, (_, index) => ({
+      id: `printer-${String(index + offset)}`,
+      name: `Printer ${String(index + offset)}`,
+      revision: 1,
+      widthMm: 200,
+      depthMm: 200
+    }));
+  for (const offset of [0, 300]) {
+    await importBackup(
+      page,
+      Buffer.from(
+        JSON.stringify({
+          stencilator_workspace: 1,
+          projects: [],
+          profiles: profiles(offset),
+          preferences: { defaults: {}, theme: 'auto', defaultProfileId: null }
+        })
+      )
+    );
+    const preview = page.getByRole('dialog', { name: 'Preview import' });
+    await expect(preview.getByText('Add', { exact: true })).toHaveCount(300);
+    await preview.getByRole('button', { name: 'Import backup' }).click();
+    await expect(dialog).toBeVisible();
+  }
+  await expect(dialog.getByText('0 projects · 600 printer profiles')).toBeVisible();
+  await dialog.getByRole('button', { name: 'Download backup', exact: true }).click();
+  const files: string[] = [];
+  for (const part of [1, 2]) {
+    const file = page.waitForEvent('download');
+    await dialog.getByRole('button', { name: `Download file ${String(part)} of 2` }).click();
+    const downloaded = await file;
+    expect(downloaded.suggestedFilename()).toBe(`stencilator-workspace-${String(part)}-of-2.json`);
+    files.push(await downloaded.path());
+  }
+  await expect(dialog.getByText('Backup downloaded.')).toBeVisible();
+  for (const [index, path] of files.entries()) {
+    await importBackup(page, await readFile(path));
+    const preview = page.getByRole('dialog', { name: 'Preview import' });
+    await expect(preview.getByText('Skip: already here', { exact: true })).toHaveCount(
+      index === 0 ? 500 : 100
+    );
+    await preview.getByRole('button', { name: 'Back to backup options' }).click();
+  }
+});
+
 test('an older tab stops writing when another connection upgrades the database', async ({
   page,
   context
@@ -1270,7 +1496,17 @@ test.describe('narrow workspace', () => {
     await expect(bench(page).getByRole('status')).toContainText('Place end 2');
     await panels.getByRole('button', { name: 'Settings' }).tap();
     expect(Number(await supports.getByLabel('End 1 X (mm)').inputValue())).toBeCloseTo(tap.mm, 0);
-    await supports.getByRole('button', { name: 'Cancel', exact: true }).tap();
+    await panels.getByRole('button', { name: 'Canvas' }).tap();
+    await page.touchscreen.tap(tap.x, tap.y);
+    await expect(bench(page).getByRole('status')).toContainText('Apply support');
+    await bench(page).getByRole('button', { name: 'Apply support' }).tap();
+    await expect(bench(page).getByRole('alert')).toBeVisible();
+    await bench(page).getByRole('button', { name: 'Cancel', exact: true }).tap();
+
+    await panels.getByRole('button', { name: 'Settings' }).tap();
+    await supports.getByRole('button', { name: 'Add support', exact: true }).press('Enter');
+    await expect(supports.getByLabel('End 1 X (mm)')).toBeFocused();
+    await supports.getByRole('button', { name: 'Cancel', exact: true }).click();
     await panels.getByRole('button', { name: 'Canvas' }).tap();
     await expect(
       page.getByRole('button', { name: 'Painted result', exact: true })
@@ -1280,5 +1516,53 @@ test.describe('narrow workspace', () => {
     await page.setViewportSize({ width: 1024, height: 768 });
     await page.getByRole('button', { name: 'Back to the artwork' }).tap();
     await expect(canvas).toBeInViewport();
+  });
+
+  test('two-finger panning preserves zoom at the limits', async ({ page }) => {
+    await page.goto('/');
+    await openPicture(page);
+    const canvas = page.getByRole('application', { name: 'Canvas view' });
+    const scene = canvas.locator(':scope > div');
+    const transform = () =>
+      scene.evaluate((element) => {
+        const matrix = new DOMMatrix(getComputedStyle(element).transform);
+        return { scale: matrix.a, x: matrix.e };
+      });
+    const limits = [
+      { scale: 10, key: '+', expand: true },
+      { scale: 0.3, key: '-', expand: false }
+    ];
+    for (const { scale, key, expand } of limits) {
+      await canvas.press('0');
+      for (let step = 0; step < 13; step++) await canvas.press(key);
+      const start = await transform();
+      expect(start.scale).toBe(scale);
+      const bounds = await canvas.boundingBox();
+      if (!bounds) throw new Error('The viewport has no box.');
+      const left = Math.round(bounds.x + bounds.width / 2 - 50);
+      const y = Math.round(bounds.y + bounds.height / 2);
+      const points = (a: number, b: number) => [
+        { x: left + a, y, id: 1 },
+        { x: left + 100 + b, y, id: 2 }
+      ];
+      const touch = await page.context().newCDPSession(page);
+      await touch.send('Input.dispatchTouchEvent', {
+        type: 'touchStart',
+        touchPoints: points(0, 0)
+      });
+      await touch.send('Input.dispatchTouchEvent', {
+        type: 'touchMove',
+        touchPoints: expand ? points(0, 10) : points(10, 0)
+      });
+      await touch.send('Input.dispatchTouchEvent', {
+        type: 'touchMove',
+        touchPoints: points(10, 10)
+      });
+      await touch.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+      await touch.detach();
+      const moved = await transform();
+      expect(moved.scale).toBe(scale);
+      expect(moved.x - start.x).toBeCloseTo(10, 0);
+    }
   });
 });

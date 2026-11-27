@@ -30,6 +30,7 @@
   let y = $state(0);
   let moving = $state(false);
   let suppressClick = false;
+  let pinchStart: { scale: number; distance: number } | undefined;
   interface Pointer {
     startX: number;
     startY: number;
@@ -42,6 +43,7 @@
     x = 0;
     y = 0;
     scale = 1;
+    pinchStart = undefined;
     onreset?.();
   }
 
@@ -55,7 +57,7 @@
     const node = viewport;
     function wheel(event: WheelEvent): void {
       event.preventDefault();
-      zoom(event.deltaY < 0 ? ZOOM : 1 / ZOOM, event.clientX, event.clientY);
+      zoomTo(event.deltaY < 0 ? scale * ZOOM : scale / ZOOM, event.clientX, event.clientY);
     }
     function click(event: MouseEvent): void {
       if (!suppressClick || event.detail === 0) return;
@@ -71,8 +73,8 @@
     };
   });
 
-  function zoom(factor: number, clientX?: number, clientY?: number): void {
-    const next = Math.min(10, Math.max(0.3, scale * factor));
+  function zoomTo(targetScale: number, clientX?: number, clientY?: number): void {
+    const next = Math.min(10, Math.max(0.3, targetScale));
     if (next === scale) return;
     const box = viewport?.getBoundingClientRect();
     const offsetX = clientX === undefined || !box ? 0 : clientX - box.left - box.width / 2;
@@ -123,10 +125,20 @@
     const dy = clientY - pointer.y;
     const sibling = [...pointers.values()].find((point) => point !== pointer);
     if (sibling) {
-      const distance = Math.hypot(pointer.x - sibling.x, pointer.y - sibling.y);
-      const next = Math.hypot(clientX - sibling.x, clientY - sibling.y);
-      if (distance > 0)
-        zoom(next / distance, (pointer.x + sibling.x) / 2, (pointer.y + sibling.y) / 2);
+      pinchStart ??= {
+        scale,
+        distance: Math.hypot(pointer.x - sibling.x, pointer.y - sibling.y)
+      };
+      const distance = Math.hypot(clientX - sibling.x, clientY - sibling.y);
+      // Start from the unclamped gesture so returning to the same separation
+      // keeps the same zoom, even if one pointer briefly moves beyond a limit.
+      if (pinchStart.distance > 0) {
+        zoomTo(
+          (pinchStart.scale * distance) / pinchStart.distance,
+          (pointer.x + sibling.x) / 2,
+          (pointer.y + sibling.y) / 2
+        );
+      } else pinchStart.distance = distance;
       pan(dx / 2, dy / 2);
     } else pan(dx, dy);
     pointer.x = clientX;
@@ -135,6 +147,7 @@
 
   function up(event: PointerEvent): void {
     if (!pointers.delete(event.pointerId)) return;
+    pinchStart = undefined;
     if (!pointers.size) moving = false;
   }
 
@@ -157,10 +170,10 @@
         break;
       case '+':
       case '=':
-        zoom(ZOOM);
+        zoomTo(scale * ZOOM);
         break;
       case '-':
-        zoom(1 / ZOOM);
+        zoomTo(scale / ZOOM);
         break;
       case '0':
         reset();
@@ -212,7 +225,7 @@
       class="button"
       aria-label={words.zoomOut}
       onclick={() => {
-        zoom(1 / ZOOM);
+        zoomTo(scale / ZOOM);
       }}
     >
       −
@@ -222,7 +235,7 @@
       class="button"
       aria-label={words.zoomIn}
       onclick={() => {
-        zoom(ZOOM);
+        zoomTo(scale * ZOOM);
       }}
     >
       +

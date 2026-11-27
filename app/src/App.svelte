@@ -19,6 +19,7 @@
   import Toolbar from './lib/Toolbar.svelte';
   import { fileKind, type Preset, Workbench } from './lib/workbench.svelte';
   import { suggestedTitle, TITLE_LIMIT, Workspace } from './lib/workspace.svelte';
+  import type { SavedProject } from './lib/workspace-store';
 
   type Panel = 'canvas' | 'artwork' | 'settings';
   type PickerUse = 'new' | 'replace' | 'incoming';
@@ -52,6 +53,9 @@
   let incoming = $state.raw<File>();
   let search = $state('');
   let rename = $state('');
+  let renameFrom = $state.raw<{ id: string; title: string }>();
+  let renameNotice = $state('');
+  let removeProject = $state.raw<SavedProject>();
   let main: HTMLElement | undefined = $state();
   let sizeHeading: HTMLElement | undefined = $state();
   const artworkId = $props.id();
@@ -83,15 +87,38 @@
   }
 
   function show(which: Popup): void {
+    if (which === 'remove') {
+      const candidate = workspace.removable;
+      if (!candidate) return;
+      removeProject = candidate;
+    }
     modal = which;
     workspace.message = '';
     if (which === 'projects') search = '';
-    if (which === 'rename') rename = workspace.title;
+    if (which === 'rename') {
+      renameFrom = { id: workspace.id, title: workspace.title };
+      rename = renameFrom.title;
+      renameNotice = '';
+    }
   }
 
   function dismiss(): void {
     modal = undefined;
     incoming = undefined;
+    renameFrom = undefined;
+    removeProject = undefined;
+  }
+
+  function submitRename(event: SubmitEvent): void {
+    event.preventDefault();
+    if (workspace.id !== renameFrom?.id || workspace.busy) return;
+    if (workspace.title !== renameFrom.title) {
+      renameFrom = { id: workspace.id, title: workspace.title };
+      renameNotice = words.renameChanged(renameFrom.title);
+      return;
+    }
+    workspace.rename(rename);
+    dismiss();
   }
 
   function choose(use: PickerUse): void {
@@ -511,15 +538,8 @@
     {#if workspace.message}<p class="notice" role="alert">{workspace.message}</p>{/if}
   </Modal>
 {:else if modal === 'rename'}
-  <Modal title={words.renameTitle} {dismiss}>
-    <form
-      class="dialog-form"
-      onsubmit={(event) => {
-        event.preventDefault();
-        workspace.rename(rename);
-        dismiss();
-      }}
-    >
+  <Modal title={words.renameTitle} {dismiss} busy={workspace.busy}>
+    <form class="dialog-form" onsubmit={submitRename}>
       <label class="dialog-field">
         <span class="label">{words.nameLabel}</span>
         <input
@@ -530,24 +550,30 @@
           bind:value={rename}
         />
       </label>
+      {#if renameNotice}<p class="notice" role="alert">{renameNotice}</p>{/if}
       <div class="button-row">
-        <button type="submit" class="button primary" disabled={!rename.trim()}>
+        <button
+          type="submit"
+          class="button primary"
+          disabled={!rename.trim() || workspace.busy || workspace.id !== renameFrom?.id}
+        >
           {words.saveName}
         </button>
         <button type="button" class="quiet" onclick={dismiss}>{words.cancel}</button>
       </div>
     </form>
   </Modal>
-{:else if modal === 'remove'}
+{:else if modal === 'remove' && removeProject}
+  {@const current = workspace.removable === removeProject}
   <Modal title={words.removeTitle} {dismiss} busy={workspace.busy}>
-    <p>{words.removeConfirm(workspace.title)}</p>
+    <p>{words.removeConfirm(removeProject.title)}</p>
     <div class="button-row">
       <button
         type="button"
         class="button primary"
-        disabled={workspace.busy}
+        disabled={workspace.busy || !current}
         onclick={async () => {
-          if (await workspace.remove()) dismiss();
+          if (removeProject && (await workspace.remove(removeProject))) dismiss();
         }}
       >
         {words.removeButton}
@@ -556,7 +582,11 @@
         {words.cancel}
       </button>
     </div>
-    {#if workspace.message}<p class="notice" role="alert">{workspace.message}</p>{/if}
+    {#if !current}
+      <p class="notice" role="alert">{words.removeChanged}</p>
+    {:else if workspace.message}
+      <p class="notice" role="alert">{workspace.message}</p>
+    {/if}
   </Modal>
 {:else if modal === 'incoming' && incoming}
   <Modal title={words.broughtIn(suggestedTitle(incoming))} {dismiss} busy={workspace.busy}>

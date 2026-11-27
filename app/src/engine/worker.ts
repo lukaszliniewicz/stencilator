@@ -1,6 +1,6 @@
 /** The Web Worker that runs the engine, so the interface never waits on it. */
 import { createHandlers } from './handlers';
-import type { Envelope, Reply } from './protocol';
+import { ProjectSaveError, type Envelope, type Reply } from './protocol';
 import allertaUrl from './wasm/fonts/AllertaStencil-Regular.ttf?url';
 import notoUrl from './wasm/fonts/NotoSans-Bold.ttf?url';
 import init, * as engine from './wasm/stencilator_wasm.js';
@@ -58,7 +58,11 @@ scope.onmessage = ({ data: { id, request } }) => {
       });
       scope.postMessage({ id, ok: true, value }, transfer);
     } catch (error) {
-      scope.postMessage({ id, ok: false, message: message(error) }, []);
+      const failure =
+        error instanceof ProjectSaveError
+          ? { saveProblem: error.problem }
+          : { message: message(error) };
+      scope.postMessage({ id, ok: false, ...failure }, []);
     }
   });
 };

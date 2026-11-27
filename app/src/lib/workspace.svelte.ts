@@ -1,5 +1,6 @@
 /** Keeps the live workbench and its saved browser record in step. */
 import { SvelteSet } from 'svelte/reactivity';
+import { ProjectSaveError } from '../engine/client';
 import { baseName, projectFileName } from './names';
 import type { Settings } from './settings';
 import { sanitise } from './settings';
@@ -9,7 +10,7 @@ import type { ThemeChoice } from './theme.svelte';
 import { type Preset, type Workbench } from './workbench.svelte';
 import {
   decodeBackup,
-  encodeBackup,
+  planBackups,
   previewRestore,
   type WorkspaceBackup
 } from './workspace-backup';
@@ -45,6 +46,19 @@ export function suggestedTitle(file: File): string {
 
 export function workspaceProblem(error: unknown): string {
   if (error instanceof WorkspaceError) return words.errors[error.code];
+  if (error instanceof ProjectSaveError) {
+    const { problem } = error;
+    switch (problem.kind) {
+      case 'settings':
+        return words.errors.saveSettings;
+      case 'inactive-settings':
+        return words.errors.saveInactiveSettings(text.project.modes[problem.mode]);
+      case 'artwork':
+        return words.errors.saveArtwork;
+      case 'file':
+        return words.errors.saveFile;
+    }
+  }
   if (error instanceof DOMException && error.name === 'QuotaExceededError')
     return words.errors.full;
   return words.errors.unavailable;
@@ -96,7 +110,7 @@ export class Workspace {
     this.profiles.find(({ id }) => id === this.snapshot?.preferences.defaultProfileId)
   );
   readonly remote = $derived(this.snapshot?.projects.find(({ id }) => id === this.id));
-  readonly removable = $derived(this.#record !== undefined && !this.conflict && !this.upgrade);
+  readonly removable = $derived(this.conflict || this.upgrade ? undefined : this.#record);
   readonly sample = $derived.by(
     () => this.id !== '' && this.#sampleVersion === this.bench.editVersion
   );
@@ -287,9 +301,7 @@ export class Workspace {
       return true;
     } catch (error) {
       if (error instanceof WorkspaceError && error.code === 'conflict') this.conflict = true;
-      else if (error instanceof DOMException || error instanceof WorkspaceError)
-        this.saveProblem = workspaceProblem(error);
-      else this.saveProblem = error instanceof Error ? error.message : words.errors.unavailable;
+      else this.saveProblem = workspaceProblem(error);
       return false;
     } finally {
       this.#failedVersion = version;
@@ -297,10 +309,15 @@ export class Workspace {
     }
   }
 
-  #fileFor(version: number): Promise<Blob> {
-    if (this.#readyBytes?.version === version) return Promise.resolve(this.#readyBytes.file);
-    if (this.#record && this.#savedVersion === version) return Promise.resolve(this.#record.file);
-    return this.bench.projectBytes(true);
+  async #fileFor(version: number): Promise<Blob> {
+    if (this.#readyBytes?.version === version) return this.#readyBytes.file;
+    if (this.#record && this.#savedVersion === version) return this.#record.file;
+    try {
+      return await this.bench.projectBytes(true);
+    } catch (error) {
+      if (error instanceof ProjectSaveError) throw error;
+      throw new ProjectSaveError({ kind: 'file' }, { cause: error });
+    }
   }
 
   async #rememberLast(store: WorkspaceStore, id: string): Promise<void> {
@@ -535,12 +552,12 @@ export class Workspace {
     }
   }
 
-  remove = (): Promise<boolean> =>
+  remove = (confirmed: SavedProject): Promise<boolean> =>
     this.#transition(async () => {
       if (this.#flight) await this.#flight;
-      if (!this.#store || !this.#record) return false;
-      await this.#store.removeProject(this.id, this.#record.revision);
-      this.bench.forgetHistory(this.id);
+      if (!this.#store || this.removable !== confirmed) throw new WorkspaceError('conflict');
+      await this.#store.removeProject(confirmed.id, confirmed.revision);
+      this.bench.forgetHistory(confirmed.id);
       this.#activate('', '');
       this.starting = true;
       return true;
@@ -586,9 +603,9 @@ export class Workspace {
     }
   }
 
-  async backup(): Promise<Blob> {
+  async backupParts(): Promise<WorkspaceSnapshot[]> {
     const store = await this.#requireStore();
-    return encodeBackup(await store.snapshot());
+    return planBackups(await store.snapshot());
   }
 
   readBackup = (file: Blob): Promise<WorkspaceBackup> =>

@@ -3,8 +3,8 @@
   import Modal from './Modal.svelte';
   import { text } from './text';
   import { workspaceProblem, type Workspace } from './workspace.svelte';
-  import type { WorkspaceBackup } from './workspace-backup';
-  import type { RestorePlan } from './workspace-store';
+  import { encodeBackup, type WorkspaceBackup } from './workspace-backup';
+  import { WorkspaceError, type RestorePlan, type WorkspaceSnapshot } from './workspace-store';
 
   let { workspace, dismiss }: { workspace: Workspace; dismiss: () => void } = $props();
   const words = text.backup;
@@ -17,19 +17,31 @@
   let backup = $state.raw<WorkspaceBackup>();
   let preview = $state.raw<RestorePlan>();
   let preferences = $state(false);
+  let parts = $state.raw<WorkspaceSnapshot[]>([]);
+  let nextPart = $state(0);
 
-  async function action(task: () => Promise<void>): Promise<void> {
+  async function action(
+    task: () => Promise<void>,
+    describeProblem = workspaceProblem
+  ): Promise<void> {
     busy = true;
     note = '';
     problem = '';
     try {
       await task();
     } catch (error) {
-      problem = workspaceProblem(error);
+      problem = describeProblem(error);
     } finally {
       checking = false;
       busy = false;
     }
+  }
+
+  function downloaded(): void {
+    parts = [];
+    nextPart = 0;
+    excluded = '';
+    note = words.ready;
   }
 
   function download(savedOnly = false): void {
@@ -39,21 +51,42 @@
         excluded = workspace.title;
         return;
       }
-      save(await workspace.backup(), 'stencilator-workspace.json', 'application/json');
-      excluded = '';
-      note = words.ready;
+      const planned = await workspace.backupParts();
+      const [part] = planned;
+      if (!part) return;
+      if (planned.length === 1) {
+        save(await encodeBackup(part), 'stencilator-workspace.json', 'application/json');
+        downloaded();
+      } else parts = planned;
+    });
+  }
+
+  function downloadNext(): void {
+    const part = parts[nextPart];
+    if (!part) return;
+    void action(async () => {
+      const name = `stencilator-workspace-${String(nextPart + 1)}-of-${String(parts.length)}.json`;
+      save(await encodeBackup(part), name, 'application/json');
+      nextPart++;
+      if (nextPart === parts.length) downloaded();
     });
   }
 
   function inspect(file: File): void {
     checking = true;
-    void action(async () => {
-      await workspace.flush();
-      const decoded = await workspace.readBackup(file);
-      preview = await workspace.previewBackup(decoded);
-      backup = decoded;
-      preferences = false;
-    });
+    void action(
+      async () => {
+        await workspace.flush();
+        const decoded = await workspace.readBackup(file);
+        preview = await workspace.previewBackup(decoded);
+        backup = decoded;
+        preferences = false;
+      },
+      (error) =>
+        error instanceof WorkspaceError && error.code === 'too-large'
+          ? words.importTooLarge(file.name)
+          : workspaceProblem(error)
+    );
   }
 
   function restore(): void {
@@ -147,9 +180,16 @@
     <section>
       <h3>{words.exportTitle}</h3>
       <p class="note">{words.exportBody}</p>
-      <p class="note">{words.count(workspace.projects.length, workspace.profiles.length)}</p>
-      {#if excluded}
-        <p class="notice">{words.excluded(excluded)}</p>
+      {#if !parts.length}
+        <p class="note">{words.count(workspace.projects.length, workspace.profiles.length)}</p>
+      {/if}
+      {#if excluded}<p class="notice">{words.excluded(excluded)}</p>{/if}
+      {#if parts.length}
+        <p class="note">{words.split(parts.length)}</p>
+        <button type="button" class="button primary" disabled={busy} onclick={downloadNext}>
+          {words.exportPart(nextPart + 1, parts.length)}
+        </button>
+      {:else if excluded}
         <div class="button-row">
           <button
             type="button"

@@ -278,7 +278,24 @@ export interface Envelope {
   request: Request;
 }
 
+export type ProjectSaveProblem =
+  | { kind: 'settings' }
+  | { kind: 'inactive-settings'; mode: ProjectMode }
+  | { kind: 'artwork' }
+  | { kind: 'file' };
+
+export class ProjectSaveError extends Error {
+  constructor(
+    readonly problem: ProjectSaveProblem,
+    options?: ErrorOptions
+  ) {
+    super(problem.kind, options);
+    this.name = 'ProjectSaveError';
+  }
+}
+
 export type Reply =
   | { id: number; ok: true; value: Replies[Kind] }
+  | { id: number; ok: false; saveProblem: ProjectSaveProblem }
   | { id: number; ok: false; message: string }
   | { id: number; stage: FreeformStage };

@@ -217,13 +217,31 @@
       </label>
     </div>
   {/if}
+  {#if bench.supportDraft}
+    <div class="support-actions">
+      {#if bench.supportProblem}<p class="notice" role="alert">{bench.supportProblem}</p>{/if}
+      <div class="button-row">
+        <button
+          type="button"
+          class="button primary"
+          disabled={bench.checkingSupport || !bench.ready}
+          onclick={bench.applySupport}
+        >
+          {bench.checkingSupport ? text.supports.checking : text.supports.apply}
+        </button>
+        <button type="button" class="button" onclick={bench.cancelSupport}>
+          {text.supports.cancel}
+        </button>
+      </div>
+    </div>
+  {/if}
   <p class="status" role="status">
     {#if bench.opening}
       {text.project.opening}
     {:else if bench.progress}
       {stage}
     {:else if bench.supportDraft}
-      {text.supports.placing(bench.supportDraft.next)}
+      {bench.supportEndsSet ? text.supports.placed : text.supports.placing(bench.supportDraft.next)}
     {:else if summary}
       {words.summary(
         summary.widthMm,
@@ -259,6 +277,20 @@
     padding: 10px 16px;
     border-bottom: 1px solid var(--line);
     background: var(--panel);
+  }
+
+  .support-actions {
+    display: none;
+  }
+
+  @media (max-width: 1100px) {
+    .support-actions {
+      display: grid;
+      gap: 6px;
+      padding: 6px 10px;
+      border-top: 1px solid var(--line);
+      background: var(--panel);
+    }
   }
 
   .alongside {

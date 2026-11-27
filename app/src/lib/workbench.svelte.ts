@@ -113,6 +113,15 @@ const sameEdit = (a: Edit, b: Edit): boolean =>
   a.fonts === b.fonts &&
   a.profileId === b.profileId;
 
+const fittedToArtwork = ({ settings, fonts }: Edit): boolean =>
+  fonts.files.length > 0 ||
+  settings.merges.length > 0 ||
+  settings.skipped.length > 0 ||
+  settings.stencilCanvasColour ||
+  settings.registrationClearanceMm !== null ||
+  settings.paintOrder.length > 0 ||
+  settings.supportEdits.length > 0;
+
 export class Workbench {
   readonly #engine = new Engine();
   readonly #build = latest(async (input: Build) => {
@@ -214,6 +223,10 @@ export class Workbench {
     this.#paintedPaths?.forBuild === this.freeform ? this.#paintedPaths?.coats : undefined
   );
   readonly supportKind = $derived(this.settings.supportKind);
+  readonly supportEndsSet = $derived(
+    this.supportDraft?.ends.flat().every((v) => Number.isInteger(v) && Math.abs(v) <= 2 ** 30) ??
+      false
+  );
   readonly selectedSupport = $derived(
     this.#support && this.drawing?.supports?.includes(this.#support) ? this.#support : undefined
   );
@@ -513,7 +526,7 @@ export class Workbench {
   applySupport = async (): Promise<void> => {
     const draft = this.supportDraft;
     if (!draft || !this.ready || this.checkingSupport || this.selectedPlate !== draft.plate) return;
-    if (!draft.ends.flat().every((v) => Number.isInteger(v) && Math.abs(v) <= 2 ** 30)) {
+    if (!this.supportEndsSet) {
       this.supportProblem = text.supports.bothEnds;
       return;
     }
@@ -661,8 +674,13 @@ export class Workbench {
       const cached = remembered?.revision === resume?.revision ? remembered : undefined;
       if (resume) this.#histories.delete(resume.id);
       const view = resume?.view ?? (replace ? this.projectView : undefined);
-      clearTimeout(this.#recordTimer);
-      this.#recordTimer = undefined;
+      let keepHistory = false;
+      if (replace && kind === 'picture' && this.artwork?.kind === 'picture') {
+        this.#flush();
+        // Undo leaves the replacement picture in place. Even an undone edit must
+        // not bring back paint choices, a fitted frame or supports for the old picture.
+        keepHistory = !this.#history.some(fittedToArtwork);
+      }
 
       if (this.pictureUrl) URL.revokeObjectURL(this.pictureUrl);
       const picture = pictureBytes ? new Blob([pictureBytes.slice()]) : file;
@@ -701,17 +719,18 @@ export class Workbench {
                 : preset === 'tile'
                   ? 'canvas'
                   : guessSizing(source.info);
-            this.settings.projectMode = preset === 'freeform' ? 'freeform' : 'tiles';
+            if (preset) this.settings.projectMode = preset === 'freeform' ? 'freeform' : 'tiles';
           }
-        } else this.settings.sizeMode = 'natural';
+          if (this.settings.sizeMode === 'natural') this.settings.sizeMode = 'width';
+        } else {
+          this.settings.sizeMode = 'natural';
+          this.settings.projectMode = 'freeform';
+        }
         if (source.kind === 'text') {
           this.settings.mode = 'colour';
           this.settings.colours = Math.max(2, this.settings.colours);
         }
       }
-      if (source.kind !== 'picture') this.settings.projectMode = 'freeform';
-      else if (kind !== 'project' && this.settings.sizeMode === 'natural')
-        this.settings.sizeMode = 'width';
       if (this.settings.projectMode === 'tiles' && this.view === 'result') this.view = 'chart';
 
       this.artwork = source;
@@ -719,12 +738,14 @@ export class Workbench {
       this.editVersion++;
       if (cached) this.settings = { ...cached.edit.settings };
       this.typed = cached ? cached.edit.typed : source.kind === 'text' ? source.style : undefined;
-      this.fonts = cached?.edit.fonts ?? { revision: 0, files: fonts };
+      if (!keepHistory) this.fonts = cached?.edit.fonts ?? { revision: 0, files: fonts };
       this.profileId = options.profileId;
       if (cached) {
+        clearTimeout(this.#recordTimer);
+        this.#recordTimer = undefined;
         this.#history = cached.history;
         this.#syncHistory();
-      } else this.resetHistory();
+      } else if (!keepHistory) this.resetHistory();
       return true;
     } catch (error) {
       this.#actionProblem = message(error);

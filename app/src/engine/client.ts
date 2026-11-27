@@ -21,6 +21,9 @@ import type {
   SupportIssue
 } from './protocol';
 import { text } from '../lib/text';
+import { ProjectSaveError } from './protocol';
+
+export { ProjectSaveError };
 
 export type {
   About,
@@ -76,6 +79,7 @@ export class Engine {
       }
       this.#waiting.delete(data.id);
       if (data.ok) waiting?.resolve(data.value);
+      else if ('saveProblem' in data) waiting?.reject(new ProjectSaveError(data.saveProblem));
       else waiting?.reject(new Error(data.message));
     };
     this.#worker.onerror = (event) => {
@@ -179,7 +183,7 @@ export class Engine {
     return this.#call({ kind: 'projectFile', settings, edits, strict });
   }
 
-  /** Validates a project file's bytes without opening or changing the workspace. */
+  /** Validates a file and returns the mode the app would open it in, without opening it. */
   async validateProject(file: Blob): Promise<ProjectMode> {
     const bytes = await file.arrayBuffer();
     return this.#call({ kind: 'validateProject', bytes }, [bytes]);
