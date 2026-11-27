@@ -2,20 +2,24 @@
 
 #![allow(clippy::unwrap_used, reason = "a failed setup or protocol exchange should stop the test")]
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
 use std::process::{Child, ChildStdin, Command, Stdio};
 use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use serde_json::{Value, json};
+
+const REPLY_TIMEOUT: Duration = Duration::from_secs(20);
 
 struct Session {
     child: Child,
     input: Option<ChildStdin>,
     replies: Receiver<Value>,
-    next_id: u32,
+    next_id: u64,
+    pending_replies: BTreeMap<u64, Value>,
     metadata: Option<Value>,
 }
 
@@ -39,7 +43,7 @@ impl Session {
                 }
             }
         });
-        Self { child, input: Some(input), replies, next_id: 1, metadata: None }
+        Self { child, input: Some(input), replies, next_id: 1, pending_replies: BTreeMap::new(), metadata: None }
     }
 
     fn start(workspace: &Path) -> Self {
@@ -75,16 +79,26 @@ impl Session {
         writeln!(self.input.as_mut().unwrap(), "{message}").unwrap();
     }
 
-    fn send(&mut self, method: &str, params: &Value) -> u32 {
+    fn send(&mut self, method: &str, params: &Value) -> u64 {
         let id = self.next_id;
         self.next_id += 1;
         self.write(json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params}));
         id
     }
 
-    fn reply(&self, id: u32) -> Value {
-        let reply = self.replies.recv_timeout(Duration::from_secs(20)).unwrap();
-        assert_eq!(reply["id"], id, "{reply}");
+    fn reply(&mut self, id: u64) -> Value {
+        let reply = self.pending_replies.remove(&id).unwrap_or_else(|| {
+            let deadline = Instant::now() + REPLY_TIMEOUT;
+            loop {
+                let reply = self.replies.recv_timeout(deadline.saturating_duration_since(Instant::now())).unwrap();
+                let received_id = reply["id"].as_u64().unwrap();
+                assert!((1..self.next_id).contains(&received_id), "{reply}");
+                if received_id == id {
+                    break reply;
+                }
+                assert!(self.pending_replies.insert(received_id, reply).is_none());
+            }
+        });
         assert!(reply.get("error").is_none(), "{reply}");
         reply["result"].clone()
     }
@@ -116,7 +130,8 @@ impl Session {
 
     fn finish(mut self) {
         drop(self.input.take());
-        assert_eq!(self.replies.recv_timeout(Duration::from_secs(20)), Err(RecvTimeoutError::Disconnected));
+        assert!(self.pending_replies.is_empty(), "{:?}", self.pending_replies);
+        assert_eq!(self.replies.recv_timeout(REPLY_TIMEOUT), Err(RecvTimeoutError::Disconnected));
         assert!(self.child.wait().unwrap().success());
     }
 }
@@ -177,58 +192,30 @@ fn discovers_and_calls_a_tool_without_a_legacy_handshake() {
 }
 
 #[test]
-fn lists_tools_during_a_build_and_does_not_publish_a_cancelled_export() {
+fn closing_input_drains_pending_replies_and_exits_cleanly() {
     let protocols: [fn(&Path) -> Session; 2] = [Session::start, |workspace| Session::discover(workspace).0];
     for start in protocols {
         let temp = tempfile::tempdir().unwrap();
         let mut session = start(temp.path());
-        let badge = json!({
-            "source": {"kind": "svg", "svg": include_str!("../../../fixtures/svg/badge.svg")},
-            "settings": {"freeform": {"size": {"width_mm": 120}, "cell_mm": 0.14}}
-        });
-        let pending = session.send(
-            "tools/call",
-            &json!({"name": "export_stencil", "arguments": {"design": badge, "path": "cancelled.3mf"}}),
-        );
-        // Give the badge build a head start. Assert reply order, not a speed threshold.
-        std::thread::sleep(Duration::from_millis(75));
-        assert_eq!(session.request("tools/list", &json!({}))["tools"].as_array().unwrap().len(), 2);
-        session.write(json!({
-            "jsonrpc": "2.0", "method": "notifications/cancelled", "params": {"requestId": pending}
-        }));
-        let ring = json!({
+        let design = json!({
             "source": {"kind": "text", "text": "O"},
             "settings": {"freeform": {"size": {"width_mm": 20}}}
         });
-        assert_eq!(session.check(&ring)["mode"], "freeform");
+        let mut export = |path| {
+            session
+                .send("tools/call", &json!({"name": "export_stencil", "arguments": {"design": design, "path": path}}))
+        };
+        let first = export("ring.stencilator");
+        let second = export("another-ring.stencilator");
+        drop(session.input.take());
+        for (id, path) in [(second, "another-ring.stencilator"), (first, "ring.stencilator")] {
+            let result = session.reply(id);
+            assert_eq!(result["isError"], false, "{result}");
+            assert_eq!(result["structuredContent"]["written"], json!([path]));
+            assert!(temp.path().join(path).is_file());
+        }
         session.finish();
-        assert_eq!(fs::read_dir(temp.path()).unwrap().count(), 0);
     }
-}
-
-#[test]
-fn closing_input_drains_a_pending_reply_and_exits_cleanly() {
-    let temp = tempfile::tempdir().unwrap();
-    let mut session = Session::start(temp.path());
-    let id = session.send(
-        "tools/call",
-        &json!({
-            "name": "export_stencil",
-            "arguments": {
-                "path": "ring.stencilator",
-                "design": {
-                    "source": {"kind": "text", "text": "O"},
-                    "settings": {"freeform": {"size": {"width_mm": 20}}}
-                }
-            }
-        }),
-    );
-    drop(session.input.take());
-    let result = session.reply(id);
-    assert_eq!(result["isError"], false, "{result}");
-    assert_eq!(result["structuredContent"]["written"], json!(["ring.stencilator"]));
-    session.finish();
-    assert!(temp.path().join("ring.stencilator").is_file());
 }
 
 #[test]

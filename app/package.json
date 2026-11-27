@@ -1,7 +1,7 @@
 {
   "name": "stencilator-app",
   "private": true,
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "The Stencilator web app: the engine runs in the browser, and nothing is uploaded.",
   "license": "MIT",
   "type": "module",

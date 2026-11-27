@@ -1,6 +1,8 @@
 //! Local MCP access to the same project builds, reports and exports as the CLI.
 
 mod design;
+#[cfg(test)]
+mod tests;
 mod workspace;
 
 use std::path::{Path, PathBuf};

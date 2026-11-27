@@ -10,11 +10,11 @@ Stencilator to create.
 
 ## Set up
 
-Build the command with `cargo build --release --locked -p stencilator-cli`.
-There are no published downloads yet. You can also extract a matching
-standalone ZIP from a successful packaging run or [build one locally](#build-a-bundle).
-Use absolute paths for the executable and workspace when configuring the
-client. Quote paths that contain spaces.
+Download the matching standalone ZIP or Claude Desktop `.mcpb` from the
+[releases page](https://github.com/lukaszliniewicz/stencilator/releases). You
+can also build the command with `cargo build --release --locked -p stencilator-cli`
+or [build a bundle locally](#build-a-bundle). Use absolute paths for the executable
+and workspace when configuring the client. Quote paths that contain spaces.
 
 ### Claude Code
 

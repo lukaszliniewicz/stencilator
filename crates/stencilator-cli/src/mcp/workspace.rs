@@ -16,6 +16,8 @@ pub(super) const MAX_INPUT_BYTES: u64 = 128 * 1024 * 1024;
 pub(super) struct Workspace {
     path: PathBuf,
     root: Dir,
+    #[cfg(test)]
+    pub(super) pause_before_publish: Option<Box<dyn Fn() + Send + Sync>>,
 }
 
 pub(super) struct Destination<'a> {
@@ -33,7 +35,12 @@ impl Workspace {
         let path = fs::canonicalize(path).map_err(failed)?;
         #[cfg(windows)]
         let path = directory_path(&root).map_err(failed)?;
-        Ok(Self { path, root })
+        Ok(Self {
+            path,
+            root,
+            #[cfg(test)]
+            pause_before_publish: None,
+        })
     }
 
     fn resolve(&self, path: &Path) -> Result<PathBuf, String> {
@@ -107,6 +114,10 @@ impl Workspace {
         self.confirm_destination(destination)?;
         let publish = || {
             self.confirm_destination(destination)?;
+            #[cfg(test)]
+            if let Some(pause) = &self.pause_before_publish {
+                pause();
+            }
             before_publish()
         };
         let failed = |error: io::Error| match error.kind() {
