@@ -4,6 +4,8 @@ import type {
   ArtworkEdits,
   ChartFormat,
   ChartSummary,
+  Coat,
+  Ends,
   Envelope,
   FileKind,
   FreeformStage,
@@ -14,7 +16,8 @@ import type {
   ProjectSettings,
   Replies,
   Reply,
-  RequestOf
+  RequestOf,
+  SupportIssue
 } from './protocol';
 import { text } from '../lib/text';
 
@@ -25,20 +28,28 @@ export type {
   ArtworkSource,
   ChartFormat,
   ChartSummary,
+  Coat,
+  Ends,
   FileKind,
   FontSelection,
   FreeformStage,
   FreeformSummary,
+  Mark,
   Mode,
   OpenedProject,
   PlateDrawing,
   PlateReport,
+  Point,
   ProjectFont,
   ProjectMode,
   ProjectSettings,
   RasterPreview,
   Sizing,
   SourceInfo,
+  SupportDrawing,
+  SupportEdit,
+  SupportIssue,
+  SupportKind,
   TypedText
 } from './protocol';
 
@@ -134,8 +145,24 @@ export class Engine {
     return this.#call({ kind: 'plateDrawing', index });
   }
 
+  supportIssue(
+    index: number,
+    ends: Ends,
+    edit: number | undefined
+  ): Promise<SupportIssue | undefined> {
+    return this.#call({ kind: 'supportIssue', index, ends, edit });
+  }
+
+  paintPaths(): Promise<Coat[]> {
+    return this.#call({ kind: 'paintPaths' });
+  }
+
   plateFile(index: number): Promise<Uint8Array> {
     return this.#call({ kind: 'plateFile', index });
+  }
+
+  frameFile(): Promise<Uint8Array> {
+    return this.#call({ kind: 'frameFile' });
   }
 
   platesZip(): Promise<Uint8Array> {

@@ -36,13 +36,18 @@ function contentSecurityPolicy(): Plugin {
   };
 }
 
-function fontLicences(): Plugin {
+function licences(): Plugin {
   return {
-    name: 'stencilator:font-licences',
+    name: 'stencilator:licences',
     apply: 'build',
     generateBundle() {
-      for (const name of ['OFL-NotoSans.txt', 'OFL-AllertaStencil.txt']) {
-        const source = readFileSync(new URL(`../fonts/${name}`, import.meta.url));
+      for (const [name, path] of [
+        ['Stencilator.txt', '../LICENSE'],
+        ['three.txt', './node_modules/three/LICENSE'],
+        ['OFL-NotoSans.txt', '../fonts/OFL-NotoSans.txt'],
+        ['OFL-AllertaStencil.txt', '../fonts/OFL-AllertaStencil.txt']
+      ] as const) {
+        const source = readFileSync(new URL(path, import.meta.url));
         this.emitFile({ type: 'asset', fileName: `licenses/${name}`, source });
       }
     }
@@ -52,7 +57,7 @@ function fontLicences(): Plugin {
 export default defineConfig({
   // Relative paths, so the built folder works from any address.
   base: './',
-  plugins: [svelte(), contentSecurityPolicy(), fontLicences()],
+  plugins: [svelte(), contentSecurityPolicy(), licences()],
   worker: { format: 'es' },
   build: { target: 'es2022' }
 });

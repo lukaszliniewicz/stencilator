@@ -10,6 +10,13 @@ pub type Rgb = [u8; 3];
 /// A CIELAB colour: lightness 0 to 100, then a and b.
 pub type Lab = [f64; 3];
 
+/// A colour as `#rrggbb` in reports.
+#[allow(clippy::trivially_copy_pass_by_ref, reason = "serde passes fields by reference")]
+pub(crate) fn hex<S: serde::Serializer>(colour: &Rgb, serializer: S) -> Result<S::Ok, S::Error> {
+    let [r, g, b] = colour;
+    serializer.collect_str(&format_args!("#{r:02x}{g:02x}{b:02x}"))
+}
+
 const RGB_TO_XYZ: [[f64; 3]; 3] = [
     [0.412_456_4, 0.357_576_1, 0.180_437_5],
     [0.212_672_9, 0.715_152_2, 0.072_175_0],

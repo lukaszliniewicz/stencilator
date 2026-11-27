@@ -1,6 +1,9 @@
 <script lang="ts">
   import { CAPTION_SPACE, RULER_SPACE } from './bench-space';
+  import PaintedResult from './PaintedResult.svelte';
+  import PlateTop from './PlateTop.svelte';
   import Raster from './Raster.svelte';
+  import Segmented from './Segmented.svelte';
   import Sheet from './Sheet.svelte';
   import { text } from './text';
   import type { Workbench } from './workbench.svelte';
@@ -8,9 +11,10 @@
   interface Props {
     bench: Workbench;
     choose: () => void;
+    dark: boolean;
   }
 
-  let { bench, choose }: Props = $props();
+  let { bench, choose, dark }: Props = $props();
   const words = text.freeform;
   const PAIR_GAP = 24;
   let room: DOMRectReadOnly | undefined = $state();
@@ -29,10 +33,14 @@
     return original ? original.width / original.height : 1;
   });
   const stage = $derived(bench.progress === 'plates' ? words.building : words.finding);
+  const plateViews = (['top', '3d'] as const).map((value) => ({
+    value,
+    label: text.printPreview.views[value]
+  }));
 
-  function fittedWidth(aspect: number, availableWidth: number, rulers = false): number {
+  function fittedWidth(aspect: number, availableWidth: number, rulers = false, extra = 0): number {
     const border = rulers ? RULER_SPACE : 0;
-    const height = (room?.height ?? 0) - CAPTION_SPACE - border;
+    const height = (room?.height ?? 0) - CAPTION_SPACE - border - extra;
     return Math.max(0, Math.floor(Math.min(availableWidth - border, height * aspect)));
   }
 </script>
@@ -71,7 +79,69 @@
   {/if}
 {/snippet}
 
+{#snippet paintedResult(available: number)}
+  {#if summary}
+    <PaintedResult
+      {summary}
+      coats={bench.coatPaths}
+      width={fittedWidth(summary.widthMm / summary.heightMm, available, false, 98)}
+      {faded}
+    />
+  {/if}
+{/snippet}
+
+{#snippet selectedPlate(available: number)}
+  {#if plate && bench.plateView === '3d'}
+    {#key plate.paint}
+      {#await import('./PrintPreview.svelte')}
+        <p class="note">{text.printPreview.loading}</p>
+      {:then { default: Preview }}
+        <Preview
+          {bench}
+          {plate}
+          {dark}
+          width={available}
+          height={Math.max(120, Math.floor((room?.height ?? 0) - 124))}
+        />
+      {:catch}
+        <p class="notice">{text.printPreview.unavailable}</p>
+      {/await}
+    {/key}
+  {:else if drawing && plate}
+    <Sheet
+      widthMm={drawing.width_mm}
+      heightMm={drawing.height_mm}
+      width={fittedWidth(drawing.width_mm / drawing.height_mm, available, true)}
+      start={words.plateFor(plate.paint, plate.colour)}
+      end={words.openings(plate.openings)}
+      {faded}
+      bottomOrigin
+    >
+      {#snippet children({ width })}
+        <PlateTop {bench} {drawing} {plate} {islands} {webs} {openings} {width} />
+      {/snippet}
+    </Sheet>
+  {:else}
+    <p class="note">
+      {bench.progress ? stage : plate ? words.previewing : words.nothingSelected}
+    </p>
+  {/if}
+{/snippet}
+
 <div class="bench">
+  {#if bench.view === 'stencil' && summary}
+    <div class="view-options">
+      <Segmented
+        label={text.printPreview.view}
+        options={plateViews}
+        value={bench.plateView}
+        onpick={bench.showPlate}
+      />
+      <label class="alongside note">
+        <input type="checkbox" bind:checked={bench.comparePaint} />{text.coating.alongside}
+      </label>
+    </div>
+  {/if}
   <div class="area" bind:contentRect={room}>
     {#if !bench.artwork}
       <div class="empty">
@@ -96,36 +166,17 @@
         </div>
       </div>
     {:else if bench.view === 'stencil' && summary}
-      {#if drawing && plate}
-        <Sheet
-          widthMm={drawing.width_mm}
-          heightMm={drawing.height_mm}
-          width={fittedWidth(drawing.width_mm / drawing.height_mm, width, true)}
-          start={words.plateFor(plate.paint, plate.colour)}
-          end={words.openings(plate.openings)}
-          {faded}
-        >
-          <svg
-            class="plate"
-            viewBox="0 0 {drawing.width_mm} {drawing.height_mm}"
-            role="img"
-            aria-label={words.plateFor(plate.paint, plate.colour)}
-          >
-            <path class="material" d={drawing.plate} fill-rule="evenodd" />
-            {#if islands}<path class="islands" d={drawing.islands} fill-rule="evenodd" />{/if}
-            {#if webs}<path class="webs" d={drawing.thin_webs} fill-rule="evenodd" />{/if}
-            {#if openings}<path
-                class="openings"
-                d={drawing.narrow_openings}
-                fill-rule="evenodd"
-              />{/if}
-          </svg>
-        </Sheet>
+      {#if bench.comparePaint}
+        {@const half = Math.max(0, (width - PAIR_GAP) / 2)}
+        <div class="pair">
+          {@render selectedPlate(half)}
+          {@render paintedResult(half)}
+        </div>
       {:else}
-        <p class="note">
-          {bench.progress ? stage : plate ? words.previewing : words.nothingSelected}
-        </p>
+        {@render selectedPlate(width)}
       {/if}
+    {:else if bench.view === 'result' && summary}
+      {@render paintedResult(width)}
     {:else if bench.view === 'both' && summary}
       {@const half = (width - PAIR_GAP) / 2}
       <div class="pair">
@@ -143,7 +194,7 @@
     {/if}
   </div>
 
-  {#if bench.view === 'stencil' && drawing}
+  {#if bench.view === 'stencil' && bench.plateView === 'top' && drawing}
     <div class="overlays" role="group" aria-label={words.highlights}>
       <label>
         <input type="checkbox" bind:checked={islands} class="island-choice" />{words.islandLayer}
@@ -161,6 +212,8 @@
       {text.project.opening}
     {:else if bench.progress}
       {stage}
+    {:else if bench.supportDraft}
+      {text.supports.placing(bench.supportDraft.next)}
     {:else if summary}
       {words.summary(
         summary.widthMm,
@@ -195,6 +248,22 @@
     display: grid;
     place-items: center;
     overflow: hidden;
+  }
+
+  .view-options {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 14px;
+    align-items: center;
+    padding: 10px 16px;
+    border-bottom: 1px solid var(--line);
+    background: var(--panel);
+  }
+
+  .alongside {
+    display: flex;
+    gap: 6px;
+    align-items: center;
   }
 
   .empty {
@@ -258,28 +327,6 @@
 
   .faded {
     opacity: 0.4;
-  }
-
-  .plate {
-    display: block;
-    width: 100%;
-    height: 100%;
-  }
-
-  .material {
-    fill: light-dark(#404040, #7a7a7a);
-  }
-
-  .islands {
-    fill: light-dark(#d97706, #f4aa44);
-  }
-
-  .webs {
-    fill: light-dark(#dc2626, #ff6262);
-  }
-
-  .openings {
-    fill: light-dark(#2563eb, #60a5fa);
   }
 
   .overlays {

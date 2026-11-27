@@ -8,6 +8,7 @@
   const words = text.freeform;
   const plates = $derived(bench.freeform?.plates ?? []);
   const frame = $derived(bench.freeform?.frame);
+  const thickness = $derived(bench.freeform?.thicknessMm ?? 0);
   const FORMATS = [
     { format: '3mf', name: words.threeMf, description: words.threeMfBody },
     { format: 'zip', name: words.zip, description: words.zipBody }
@@ -29,104 +30,105 @@
     {/if}
   </header>
 
-  <div class="columns">
-    <div class="column">
-      <section aria-labelledby="print-files-heading">
-        <h2 id="print-files-heading" class="group">{words.forPrinting}</h2>
-        {#if plates.length}
-          <ul class="formats">
-            {#each FORMATS as option (option.format)}
-              {@const name = platesFileName(bench.base, option.format)}
-              <li class:recommended={option.format === '3mf'}>
-                <div class="about">
-                  <p class="title">
-                    <strong>{option.name}</strong>
-                    {#if option.format === '3mf'}<span class="label badge">
-                        {text.files.best}
-                      </span>{/if}
-                  </p>
-                  <p class="note">{option.description}</p>
-                  <p class="mono filename">{name}</p>
-                </div>
-                <button
-                  type="button"
-                  class="button"
-                  class:primary={option.format === '3mf'}
-                  disabled={!bench.ready}
-                  onclick={() => void bench.savePlates(option.format)}
-                >
-                  {bench.saving === name ? text.files.saving : text.files.save(option.name)}
-                </button>
-              </li>
-            {/each}
-          </ul>
-        {:else}
-          <p class="notice">{words.noneTicked}</p>
-        {/if}
-      </section>
-
-      <section class="project" aria-labelledby="project-files-heading">
-        <h2 id="project-files-heading" class="group">{text.project.heading}</h2>
-        <p class="note">{text.project.body}</p>
-        <p class="mono filename">{bench.projectName}</p>
-        <button
-          type="button"
-          class="button"
-          disabled={!bench.canSaveProject}
-          onclick={bench.saveProject}
-        >
-          {bench.saving === bench.projectName ? text.files.saving : text.project.save}
-        </button>
-      </section>
-    </div>
-
+  <section aria-labelledby="print-files-heading">
+    <h2 id="print-files-heading" class="group">{words.forPrinting}</h2>
     {#if plates.length}
-      <div class="column">
-        <section aria-labelledby="plate-files-heading">
-          <h2 id="plate-files-heading" class="group">{words.plates}</h2>
-          <ul class="plates">
-            {#each plates as plate, i (plate.stencil)}
-              {@const name = stencilFileName(bench.base, plate.stencil)}
-              <li>
-                <p class="title">
-                  <span class="swatch" style:background={plate.colour} aria-hidden="true"></span>
-                  <strong>{words.plateFor(plate.paint, plate.colour)}</strong>
-                </p>
-                <p class="note">
-                  {words.artworkSize(plate.width_mm, plate.height_mm)} · {words.openings(
-                    plate.openings
-                  )}
-                </p>
-                <PlateIssues {plate} />
-                <button
-                  type="button"
-                  class="button small"
-                  disabled={!bench.ready}
-                  aria-label={words.savePlate(plate.paint, plate.colour)}
-                  onclick={() => void bench.savePlate(i)}
-                >
-                  {bench.saving === name ? text.files.saving : text.files.saveStl}
-                </button>
-              </li>
-            {/each}
-          </ul>
-        </section>
-
-        <section class="advice" aria-labelledby="freeform-advice-heading">
-          <h2 id="freeform-advice-heading" class="label">{text.files.beforeYouPrint}</h2>
-          <ul class="note">
-            <li>{words.inspect}</li>
-            {#if plates.some((p) => p.islands.length)}<li>{words.supportIslands}</li>{/if}
-            {#if plates.some((p) => p.thin_webs.length)}<li>{words.inspectThinWebs}</li>{/if}
-            {#if plates.some((p) => p.narrow_openings.length)}<li>
-                {words.inspectNarrowOpenings}
-              </li>{/if}
-            {#if plates.some((p) => !p.fits_bed)}<li>{words.resize}</li>{/if}
-          </ul>
-        </section>
-      </div>
+      <ul class="formats">
+        {#each FORMATS as option (option.format)}
+          {@const name = platesFileName(bench.base, option.format)}
+          <li class:recommended={option.format === '3mf'}>
+            <div class="about">
+              <p class="title">
+                <strong>{option.name}</strong>
+                {#if option.format === '3mf'}<span class="label badge">
+                    {text.files.best}
+                  </span>{/if}
+              </p>
+              <p class="note">{option.description}</p>
+              <p class="mono filename">{name}</p>
+            </div>
+            <button
+              type="button"
+              class="button"
+              class:primary={option.format === '3mf'}
+              disabled={!bench.ready}
+              onclick={() => void bench.savePlates(option.format)}
+            >
+              {bench.saving === name ? text.files.saving : text.files.save(option.name)}
+            </button>
+          </li>
+        {/each}
+      </ul>
+    {:else}
+      <p class="notice">{words.noneTicked}</p>
     {/if}
-  </div>
+  </section>
+
+  {#if plates.length}
+    <section aria-labelledby="plate-files-heading">
+      <h2 id="plate-files-heading" class="group">{words.parts}</h2>
+      {#if frame}
+        {@const name = stencilFileName(bench.base, frame.file)}
+        <div class="frame">
+          <div class="about">
+            <strong>{text.registration.heading}</strong>
+            <p class="note">
+              {words.partSize(frame.width_mm, frame.height_mm, thickness)} ·
+              {frame.fits_bed ? text.registration.fits : words.bedWarning}
+            </p>
+          </div>
+          <button type="button" class="button" disabled={!bench.ready} onclick={bench.saveFrame}>
+            {bench.saving === name ? text.files.saving : text.registration.save}
+          </button>
+        </div>
+      {/if}
+      <ul class="plates">
+        {#each plates as plate, i (plate.stencil)}
+          {@const name = stencilFileName(bench.base, plate.stencil)}
+          <li>
+            <span class="label">{text.coating.number(i + 1)}</span>
+            <p class="title">
+              <span class="swatch" style:background={plate.colour} aria-hidden="true"></span>
+              <strong>{words.plateFor(plate.paint, plate.colour)}</strong>
+            </p>
+            <p class="note">
+              {words.partSize(
+                plate.width_mm,
+                plate.height_mm,
+                plate.height_with_supports_mm ?? thickness
+              )}
+              · {words.openings(plate.openings)}
+            </p>
+            {#if plate.ral}<p class="note">{text.finishing.ral(plate.ral.code)}</p>{/if}
+            <PlateIssues {plate} />
+            <button
+              type="button"
+              class="button small"
+              disabled={!bench.ready}
+              aria-label={words.savePlate(plate.paint, plate.colour)}
+              onclick={() => void bench.savePlate(i)}
+            >
+              {bench.saving === name ? text.files.saving : text.files.saveStl}
+            </button>
+          </li>
+        {/each}
+      </ul>
+    </section>
+  {/if}
+
+  <section class="project" aria-labelledby="project-files-heading">
+    <h2 id="project-files-heading" class="group">{text.project.heading}</h2>
+    <p class="note">{text.project.body}</p>
+    <p class="mono filename">{bench.projectName}</p>
+    <button
+      type="button"
+      class="button"
+      disabled={!bench.canSaveProject}
+      onclick={bench.saveProject}
+    >
+      {bench.saving === bench.projectName ? text.files.saving : text.project.save}
+    </button>
+  </section>
 </div>
 
 <style>
@@ -150,20 +152,6 @@
     letter-spacing: -0.02em;
   }
 
-  .columns {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 28px;
-    align-items: flex-start;
-  }
-
-  .column {
-    flex: 1 1 280px;
-    min-width: 0;
-    display: grid;
-    gap: 24px;
-  }
-
   section {
     display: grid;
     gap: 10px;
@@ -185,7 +173,8 @@
     gap: 8px;
   }
 
-  .formats li {
+  .formats li,
+  .frame {
     display: flex;
     flex-wrap: wrap;
     align-items: center;
@@ -230,8 +219,7 @@
     font-size: 12px;
   }
 
-  .project,
-  .advice {
+  .project {
     border-top: 1px solid var(--line);
     padding-top: 12px;
   }
@@ -264,13 +252,6 @@
   .small {
     min-height: 34px;
     font-size: 11px;
-  }
-
-  .advice ul {
-    margin: 0;
-    padding-left: 18px;
-    display: grid;
-    gap: 5px;
   }
 
   @media (max-width: 720px) {

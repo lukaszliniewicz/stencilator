@@ -14,8 +14,8 @@ use stencilator_core::artwork::{ArtworkSettings, LabelMap, label_drawing, label_
 use stencilator_core::chart::{build_chart, merge_paints};
 use stencilator_core::drawing::{Drawing, parse_svg, text_drawing};
 use stencilator_core::plate::{
-    Plate, PlateProblems, PlateReport, build_plates, inspect_plate, plate_drawing, plate_files, plates_3mf,
-    registration_frame, reports_json,
+    Plate, PlateProblems, PlateReport, PlateSettings, SupportIssue, build_plates, inspect_plate, paint_paths_json,
+    plate_drawing, plate_files, plates_3mf, registration_frame, reports_json,
 };
 use stencilator_core::project::{self, BUILT_IN_FONTS, Colour, Font, Source, read_project};
 use stencilator_core::source::{Image, decode};
@@ -439,7 +439,7 @@ impl Labels {
             .map_err(|e| error(&e))?
             .into_iter()
             .unzip();
-        Ok(Plates { built: plates, reports, problems })
+        Ok(Plates { built: plates, reports, problems, settings, art_height_mm: self.map.height_mm() })
     }
 }
 
@@ -477,12 +477,20 @@ fn preview_size(width: f64, height: f64, longest: f64) -> (u32, u32) {
     (side(width), side(height))
 }
 
-/// The plates of a free-form project, in palette order, with their reports.
+/// The plates of a free-form project, in coat order, with their reports.
 #[wasm_bindgen]
 pub struct Plates {
     built: Vec<Plate>,
     reports: Vec<PlateReport>,
     problems: Vec<PlateProblems>,
+    settings: PlateSettings,
+    art_height_mm: f64,
+}
+
+impl Plates {
+    fn plate(&self, index: u32) -> Result<&Plate, JsError> {
+        self.built.get(index as usize).ok_or_else(|| JsError::new("There is no such plate."))
+    }
 }
 
 #[wasm_bindgen]
@@ -506,6 +514,26 @@ impl Plates {
     #[must_use]
     pub fn report(&self) -> String {
         reports_json(&self.built, &self.reports).to_string()
+    }
+
+    /// The openings against the work in coat order, as SVG paths in JSON.
+    #[wasm_bindgen(js_name = paintPaths)]
+    #[must_use]
+    pub fn paint_paths(&self) -> String {
+        paint_paths_json(&self.built, &self.settings, self.art_height_mm)
+    }
+
+    /// Checks a proposed pair of support ends without changing the plate. The answer is
+    /// a reason code when the support cannot fit.
+    ///
+    /// # Errors
+    ///
+    /// When there is no such plate or there are not two ends.
+    #[wasm_bindgen(js_name = supportIssue)]
+    pub fn support_issue(&self, index: u32, ends: &[i32], edit: Option<u32>) -> Result<Option<String>, JsError> {
+        let &[x0, y0, x1, y1] = ends else { return Err(JsError::new("Place both ends of the support.")) };
+        let issue = self.plate(index)?.support_issue([[x0, y0], [x1, y1]], edit.map(|i| i as usize));
+        Ok(issue.map(SupportIssue::code).map(str::to_owned))
     }
 
     /// The registration frame's dimensions and fit on the bed, as JSON, when there is one.
@@ -536,9 +564,7 @@ impl Plates {
     ///
     /// When there is no such plate or the thickness is out of range.
     pub fn stl(&self, index: u32, project: &Project) -> Result<Vec<u8>, JsError> {
-        let plate = usize::try_from(index).ok().and_then(|i| self.built.get(i));
-        let plate = plate.ok_or_else(|| JsError::new("There is no such plate."))?;
-        plate.stl(project.project.stencils.thickness_mm).map_err(|e| error(&e))
+        self.plate(index)?.stl(project.project.stencils.thickness_mm).map_err(|e| error(&e))
     }
 
     /// The plates and any registration frame as STL files in one zip.

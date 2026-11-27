@@ -96,9 +96,8 @@ pub(crate) fn run(args: &TilesArgs) -> Result<(), String> {
     let mut project = input.project()?;
     args.apply(&mut project);
     // Settings first, so that a typing mistake is reported before a large picture is read.
+    project.check().map_err(|e| e.to_string())?;
     let settings = project.chart_settings();
-    settings.check().map_err(|e| e.to_string())?;
-    project.plate_settings().check().map_err(|e| e.to_string())?;
     if !matches!(project.source, Source::Picture { .. }) {
         return Err(
             "tiles take PNG, JPEG and WebP pictures; use stencilator freeform for SVG drawings and text".to_owned()

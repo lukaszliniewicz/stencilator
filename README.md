@@ -20,6 +20,8 @@ and, later, behind an AI assistant, giving the same result everywhere.
 Early, but usable. Both modes work on the command line and in the
 [web app](https://stencilator.liniewicz.eu). The app runs entirely in your browser,
 so your artwork is never uploaded. There are no prebuilt releases of the command yet.
+The island supports, registration and finishing below are available in a local
+build. The hosted app still runs the preceding version.
 
 ## Trying it
 
@@ -96,12 +98,12 @@ default. Try `--font "Allerta Stencil"` for letters with bridges already drawn i
 give `--font` a font file for text or SVG artwork. Adding a font to an SVG project keeps
 its existing fonts unless you supply a file with the same name.
 
-In the web app, pick **Free-form** to use an image, an SVG or typed text. The **Plate**
-view highlights islands, thin webs and narrow openings. **Files** offers 3MF, a zip of
-STLs, or a single plate. Save a `.stencilator` project to reopen the artwork and all its
-settings in the app or on the command line.
+In the app, pick **Free-form** to use an image, an SVG or typed text. **Plate → Top**
+highlights islands, thin webs and narrow openings. In **3D** you can turn the actual print
+geometry. **Files** offers 3MF, an STL zip and individual parts in paint order. Save a
+`.stencilator` project to reopen the artwork and settings in the app or on the command line.
 
-#### Flat bridges for brush work
+#### Island supports
 
 Add `--flat-bridges` to hold islands in place with 1.2 mm-wide bars that print flat
 with the plate. Set another width with `--flat-bridges=1.6` (0.6 to 5 mm), or use
@@ -110,9 +112,20 @@ unpainted. The report shows how much of the opening they cover and flags loose i
 and islands with just one bridge towards the rim. Small or awkward islands may have
 nowhere for a bridge to land.
 
-In a local build of the app, turn on **Flat bridges for brush work** under **Plates**
-and inspect the result in **Plate** view. Projects with bridges alone use format 2;
-the hosted app still uses the preceding release, which opens format 1.
+For spray work, `--raised-connectors` substitutes beams on feet that leave the openings
+clear against the work. The trial dimensions are 1.2 mm wide, 4 mm from the work face
+to the underside of the beam, and 1 mm beam thickness. Set these with
+`--raised-connectors=MM`, `--connector-clearance` and `--beam-thickness`. Long spans
+step in from both sides; `--warn-span` sets the free span to warn above (40 mm by default).
+Set `--raised-connectors=0` to switch them off. Print and spray a sample to check strength
+and paint coverage with your own printer and paint.
+
+In the app, choose **None**, **Flat** or **Raised** under **Island supports**. Select
+a numbered support on the plate or in the list, then move its ends or remove it.
+To add or move one, place both ends in **Top** view or enter their coordinates in
+millimetres from the plate’s bottom-left corner. A saved support that no longer fits
+appears dashed and is left out of the print. **Restore suggestions** clears the
+manual edits for the selected plate.
 
 #### Registration frame
 
@@ -130,8 +143,33 @@ target/release/stencilator freeform drawing.svg --registration \
 
 The 3MF and STL folder or zip include the frame and the plates. `--frame` saves
 only the frame as STL. The report checks each part separately against `--bed`.
-A project with a frame uses format 3. A local app build can open and save it and
-include the frame in 3MF and STL zip downloads. Frame controls are still planned.
+In the app, enable **Use a keyed frame** and set the clearance. Choose **Seated**
+or **Exploded** in **3D** to inspect the key and its pocket. **Files** also offers
+the frame STL on its own.
+
+#### Paint order and finishing
+
+Move a coat earlier or later from the paint list, or pass
+`--paint-order c6532d,1d2f5c` to put those paints first. Plate numbers and filenames
+stay tied to their paints. Use `--palette-order` to clear a saved order.
+**Painted result** shows the openings at the work face
+as consecutive coats, including gaps left by flat bridges. You can show it beside
+the plate, or step through the coats on their own. It doesn’t simulate spray angle
+or bleed.
+
+- `--overlap 0.3` lets earlier coats extend up to 0.3 mm into openings of later
+  coats, where they meet. The plate check reports if overlap had to be limited
+  to keep the stencil intact. Skipped paints apply no coat.
+- `--chamfer 0.4` widens the openings in steps on the spray side, keeping the
+  contact face as it was. Leave at least 0.2 mm of plate below the chamfer.
+- `--mark number` or `--mark ral` debosses a plate number or matched RAL code in the
+  solid margin if there is room. `--match-ral` shows approximate RAL Classic
+  matches alongside source colours. The painted preview can use these swatches;
+  the paint assignments stay the same. Check a physical fan deck for real colours.
+
+Plain projects still use format 1, flat bridges alone use format 2, and a frame
+with either of those uses format 3. Raised connectors, manual support edits,
+paint order or finishing require format 4. The local build reads all four.
 
 ### In both modes
 
@@ -151,9 +189,8 @@ include the frame in 3MF and STL zip downloads. Frame controls are still planned
 
 ## Roadmap
 
-Raised connectors for spray painting are being tested. Plate finishing, on-screen
-registration and paint previews are next. A local MCP server follows, so that an AI
-assistant can prepare stencils for you.
+Physical tests will inform the trial connector dimensions and frame fit. A local
+MCP server follows, so that an AI assistant can prepare stencils for you.
 
 ## Development
 

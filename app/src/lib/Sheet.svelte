@@ -13,10 +13,20 @@
     start: string;
     end: string;
     faded?: boolean;
+    bottomOrigin?: boolean;
     children: Snippet<[{ width: number; height: number }]>;
   }
 
-  let { widthMm, heightMm, width, start, end, faded = false, children }: Props = $props();
+  let {
+    widthMm,
+    heightMm,
+    width,
+    start,
+    end,
+    faded = false,
+    bottomOrigin = false,
+    children
+  }: Props = $props();
   const height = $derived(widthMm > 0 ? (width * heightMm) / widthMm : 0);
 </script>
 
@@ -28,7 +38,7 @@
   <div class="rulers">
     <span class="corner" aria-hidden="true"></span>
     <Ruler lengthMm={widthMm} sizePx={width} />
-    <Ruler lengthMm={heightMm} sizePx={height} vertical />
+    <Ruler lengthMm={heightMm} sizePx={height} vertical {bottomOrigin} />
     <div class="content" style:width="{width}px" style:height="{height}px">
       {@render children({ width, height })}
     </div>

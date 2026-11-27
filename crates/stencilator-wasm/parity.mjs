@@ -5,7 +5,7 @@
 // Usage: node parity.mjs <wasm-pkg-dir> <stencilator-binary> <repo-root>
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -144,6 +144,44 @@ const freeform = [
     args: [badge, "--flat-bridges", "--registration=0.35"],
   },
   {
+    name: "raised O with finishing",
+    project: () => engine.Project.text("O"),
+    settings: {
+      freeform: {
+        raised_connectors: { width_mm: 1.2, clearance_mm: 4.2 },
+        registration_clearance_mm: 0.3,
+        finish: { chamfer_mm: 0.4, mark: "ral", match_ral: true },
+      },
+    },
+    args: ["--text", "O", "--raised-connectors", "--connector-clearance", "4.2", "--registration", "--chamfer", "0.4", "--mark", "ral", "--match-ral"],
+  },
+  {
+    name: "saved manual support edit",
+    project: () => engine.Project.text("O"),
+    settings: {
+      freeform: {
+        raised_connectors: {},
+        support_edits: [{
+          paint: "#000000", kind: "raised",
+          original: [[20200, 26983], [20200, 33400]],
+          ends: [[20220, 26983], [20200, 33400]],
+        }],
+      },
+    },
+    fromProject: true,
+  },
+  {
+    name: "badge in reverse coat order",
+    project: () => engine.Project.svg("badge.svg", readFileSync(badge)),
+    settings: {
+      freeform: {
+        paint_order: ["#ef7d2d", "#1d2f5c"],
+        finish: { overlap_mm: 0.3, mark: "number" },
+      },
+    },
+    args: [badge, "--paint-order", "ef7d2d,1d2f5c", "--overlap", "0.3", "--mark", "number"],
+  },
+  {
     name: "badge, every paint skipped",
     project: () => engine.Project.svg("badge.svg", readFileSync(badge)),
     settings: { stencils: { skipped: ["#1d2f5c", "#ef7d2d"] } },
@@ -213,8 +251,11 @@ for (const [n, fixture] of freeform.entries()) {
 
   const dir = join(work, `freeform-${n}`);
   mkdirSync(dir);
+  const input = join(dir, "input.stencilator");
+  if (fixture.fromProject) writeFileSync(input, browser["project.stencilator"]);
   // Its warnings are the report's, compared below; a failure still shows them.
-  const run = (extra) => execFileSync(cli, ["freeform", ...fixture.args, ...extra], { stdio: ["ignore", "pipe", "pipe"] });
+  const args = fixture.fromProject ? [input] : fixture.args;
+  const run = (extra) => execFileSync(cli, ["freeform", ...args, ...extra], { stdio: ["ignore", "pipe", "pipe"] });
   const printFiles = names.length ? ["--3mf", join(dir, "plates.3mf"), "--stencils", join(dir, "plates.zip")] : [];
   const frameFile = frame ? ["--frame", join(dir, frame.file)] : [];
   const report = JSON.parse(run([...printFiles, ...frameFile, "--save", join(dir, "project.stencilator"), "--json"]));

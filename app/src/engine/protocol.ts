@@ -5,6 +5,19 @@ export type Mode = 'colour' | 'greyscale' | 'black-white';
 export type Sizing = 'pixels' | 'canvas';
 export type ChartFormat = 'png' | 'jpeg' | 'pdf';
 export type ProjectMode = 'tiles' | 'freeform';
+export type SupportKind = 'flat' | 'raised';
+export type Mark = 'none' | 'number' | 'ral';
+export type SupportIssue = 'landings' | 'span' | 'conflict';
+export type Point = [number, number];
+/** Whole micrometres from the plate's bottom-left. */
+export type Ends = [Point, Point];
+
+export interface SupportEdit {
+  paint: string;
+  kind: SupportKind;
+  original?: Ends;
+  ends?: Ends;
+}
 
 export type ArtworkSize =
   'natural' | { width_mm: number } | { height_mm: number } | { within_mm: [number, number] };
@@ -29,7 +42,16 @@ export interface ProjectSettings {
     min_web_mm: number;
     min_opening_mm: number;
     bridge_width_mm?: number;
+    raised_connectors?: {
+      width_mm: number;
+      clearance_mm: number;
+      beam_mm: number;
+      warn_mm: number;
+    };
     registration_clearance_mm?: number;
+    support_edits?: SupportEdit[];
+    paint_order?: string[];
+    finish?: { chamfer_mm: number; overlap_mm: number; mark: Mark; match_ral: boolean };
   };
   stencils: {
     thickness_mm: number;
@@ -138,6 +160,13 @@ export interface PlateReport {
   narrow_openings: Spot[];
   fits_bed: boolean;
   flat_bridges?: { count: number; covered_mm2: number; single_bridge_islands: Spot[] };
+  raised_connectors?: { count: number; single_support_islands: Spot[]; long_spans: number };
+  height_with_supports_mm?: number;
+  unplaced_supports?: number;
+  mark?: { text: string; applied: boolean };
+  ral?: { code: number; colour: string };
+  chamfer_limited?: boolean;
+  overlap_limited?: boolean;
   stencil: string;
 }
 
@@ -148,6 +177,23 @@ export interface PlateDrawing {
   islands: string;
   thin_webs: string;
   narrow_openings: string;
+  chamfer?: string;
+  mark?: string;
+  supports?: SupportDrawing[];
+}
+
+export interface SupportDrawing {
+  ends: Ends;
+  path: string;
+  span_mm: number;
+  edit?: number;
+  issue?: SupportIssue;
+}
+
+export interface Coat {
+  paint: number;
+  colour: string;
+  path: string;
 }
 
 export interface FrameReport {
@@ -162,6 +208,8 @@ export interface FreeformSummary {
   widthMm: number;
   heightMm: number;
   cellMm: number;
+  thicknessMm: number;
+  background: string;
   palette: Uint8Array;
   counts: Uint32Array;
   artwork?: RasterPreview;
@@ -183,7 +231,10 @@ export type Request =
   | { kind: 'stencilsZip'; thicknessMm: number; skip: number[] }
   | { kind: 'freeform'; settings: ProjectSettings; edits: ArtworkEdits }
   | { kind: 'plateDrawing'; index: number }
+  | { kind: 'supportIssue'; index: number; ends: Ends; edit: number | undefined }
+  | { kind: 'paintPaths' }
   | { kind: 'plateFile'; index: number }
+  | { kind: 'frameFile' }
   | { kind: 'platesZip' }
   | { kind: 'threeMf' }
   | { kind: 'projectFile'; settings: ProjectSettings; edits: ArtworkEdits };
@@ -199,7 +250,10 @@ export interface Replies {
   stencilsZip: Uint8Array;
   freeform: FreeformSummary;
   plateDrawing: PlateDrawing;
+  supportIssue: SupportIssue | undefined;
+  paintPaths: Coat[];
   plateFile: Uint8Array;
+  frameFile: Uint8Array;
   platesZip: Uint8Array;
   threeMf: Uint8Array;
   projectFile: Uint8Array;

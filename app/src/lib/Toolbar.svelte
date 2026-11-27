@@ -12,12 +12,20 @@
 
   const views = $derived.by((): { value: View; label: string; disabled: boolean }[] => {
     const labels = bench.isFreeform ? text.freeform.views : text.toolbar.views;
-    return [
+    const views: { value: View; label: string; disabled: boolean }[] = [
       { value: 'picture', label: labels.picture, disabled: !bench.artwork },
       { value: 'chart', label: labels.chart, disabled: !bench.canShowFiles },
       { value: 'both', label: labels.both, disabled: !bench.canShowFiles },
       { value: 'stencil', label: labels.stencil, disabled: !bench.stencilsPossible }
     ];
+    if (bench.isFreeform) {
+      views.push({
+        value: 'result',
+        label: text.freeform.views.result,
+        disabled: !bench.canShowFiles
+      });
+    }
+    return views;
   });
   const onFiles = $derived(bench.screen === 'files');
 </script>

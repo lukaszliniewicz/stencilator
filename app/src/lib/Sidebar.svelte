@@ -2,6 +2,7 @@
   // Artwork, theme, shared paint controls, and the selected stencil or plate report.
   import ArtworkControls from './ArtworkControls.svelte';
   import PlateIssues from './PlateIssues.svelte';
+  import Segmented from './Segmented.svelte';
   import TileCanvas from './TileCanvas.svelte';
   import { num, text } from './text';
   import { THEMES, type Theme } from './theme.svelte';
@@ -23,6 +24,18 @@
   const picked = $derived(bench.selected);
   const pickedColour = $derived(bench.colours[picked] ?? '');
   const merges = $derived(bench.settings.merges);
+  const plateByPaint = $derived(
+    new Map(freeform?.plates.map((plate, i) => [plate.paint, { plate, i }]))
+  );
+  const rows = $derived([
+    ...plateByPaint.keys(),
+    ...bench.colours.map((_, i) => i).filter((i) => !plateByPaint.has(i))
+  ]);
+  const coatPosition = $derived(plateByPaint.get(picked)?.i ?? -1);
+  const palettes = (['source', 'ral'] as const).map((value) => ({
+    value,
+    label: text.finishing.palettes[value]
+  }));
 </script>
 
 <div class="sidebar">
@@ -109,12 +122,16 @@
     <section aria-labelledby="paints-heading">
       <h2 id="paints-heading" class="label heading split">
         <span>{text.paints.heading}</span>
-        <span class="aside">{text.paints.order(paints.counts.length)}</span>
+        <span class="aside">
+          {freeform ? text.coating.heading : text.paints.order(paints.counts.length)}
+        </span>
       </h2>
       <ul class="paints">
-        {#each bench.colours as colour, i (i)}
+        {#each rows as i (i)}
+          {@const colour = bench.colours[i] ?? ''}
           {@const count = paints.counts[i] ?? 0}
           {@const area = freeform ? count * freeform.cellMm ** 2 : 0}
+          {@const coat = plateByPaint.get(i)}
           <li class:off={bench.unstencilled.includes(colour)}>
             <button
               type="button"
@@ -127,8 +144,26 @@
               }}
             >
               <span class="swatch" style:background={colour}></span>
-              <span class="mono hex">{colour.toUpperCase()}</span>
-              <span class="count">{freeform ? text.freeform.area(area) : num(count)}</span>
+              <span class="paint-name">
+                <span class="mono hex">{colour.toUpperCase()}</span>
+                {#if coat?.plate.ral}
+                  <span class="note ral">
+                    <span
+                      class="swatch small"
+                      aria-hidden="true"
+                      style:background={coat.plate.ral.colour}
+                    ></span>
+                    {text.finishing.ral(coat.plate.ral.code)}
+                  </span>
+                {/if}
+              </span>
+              <span class="count">
+                {coat
+                  ? text.coating.number(coat.i + 1)
+                  : freeform
+                    ? text.freeform.area(area)
+                    : num(count)}
+              </span>
             </button>
             {#if bench.stencilsPossible}
               <input
@@ -144,6 +179,58 @@
         {/each}
       </ul>
       {#if bench.stencilsPossible}<p class="note">{text.paints.stencilNote}</p>{/if}
+
+      {#if freeform}
+        {#if freeform.plates.length > 1 || bench.settings.paintOrder.length}
+          <div class="coat-actions" role="group" aria-label={text.coating.heading}>
+            <button
+              type="button"
+              class="button"
+              disabled={!bench.ready || coatPosition < 1}
+              onclick={() => {
+                bench.moveCoat(-1);
+              }}
+            >
+              {text.coating.earlier}
+            </button>
+            <button
+              type="button"
+              class="button"
+              disabled={!bench.ready ||
+                coatPosition < 0 ||
+                coatPosition + 1 >= freeform.plates.length}
+              onclick={() => {
+                bench.moveCoat(1);
+              }}
+            >
+              {text.coating.later}
+            </button>
+            {#if bench.settings.paintOrder.length}
+              <button
+                type="button"
+                class="button"
+                onclick={() => {
+                  bench.change('paintOrder', []);
+                }}
+              >
+                {text.coating.reset}
+              </button>
+            {/if}
+          </div>
+        {/if}
+        <Segmented
+          label={text.finishing.palette}
+          options={palettes}
+          value={bench.settings.matchRal ? 'ral' : 'source'}
+          onpick={(value) => {
+            bench.change('matchRal', value === 'ral');
+          }}
+          stretch
+        />
+        {#if bench.settings.matchRal || bench.settings.mark === 'ral'}
+          <p class="note">{text.finishing.ralNote}</p>
+        {/if}
+      {/if}
 
       {#if bench.colours.length > 1}
         <div class="merge">
@@ -339,6 +426,30 @@
     display: flex;
     justify-content: space-between;
     gap: 8px;
+  }
+
+  .paint-name {
+    display: grid;
+    gap: 2px;
+  }
+
+  .ral {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    white-space: nowrap;
+  }
+
+  .coat-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
+  }
+
+  .coat-actions .button {
+    padding-inline: 7px;
+    min-height: 34px;
+    font-size: 11px;
   }
 
   .aside {

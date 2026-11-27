@@ -6,8 +6,9 @@
 //! out and take the engine's defaults. A drawing or typed text defaults to free-form mode
 //! at its own size; a picture to tile mode, and to 200 mm wide in free-form mode. Use the
 //! extension `.stencilator` to open the file in the web app.
-//! Flat bridges need format 2 and a registration frame needs format 3. Without
-//! either, projects still save as format 1.
+//! Flat bridges need format 2 and a registration frame needs format 3. Raised
+//! connectors, support edits, paint order and finishing need format 4. Projects
+//! save in the earliest format that describes their settings.
 //!
 //! ```json
 //! {
@@ -25,17 +26,18 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use crate::artwork::{ArtworkSettings, Size};
 use crate::chart::{ChartSettings, Sizing};
 use crate::colour::Rgb;
-use crate::plate::PlateSettings;
+use crate::plate::{FinishSettings, PlateSettings, RaisedSettings, SupportEdit};
 use crate::quantise::ColourMode;
 use crate::{Error, VERSION};
 
 /// The newest format this engine reads and writes.
-pub const FORMAT: u32 = REGISTRATION_FORMAT;
+pub const FORMAT: u32 = SHAPING_FORMAT;
 
 /// The format still understood by versions without flat bridges.
 const BASE_FORMAT: u32 = 1;
 const BRIDGES_FORMAT: u32 = 2;
 const REGISTRATION_FORMAT: u32 = 3;
+const SHAPING_FORMAT: u32 = 4;
 
 /// The extension of project files, without the dot.
 pub const EXTENSION: &str = "stencilator";
@@ -297,7 +299,7 @@ impl From<TileSizing> for Sizing {
 }
 
 /// Free-form mode's settings.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Freeform {
     /// How large the artwork is made.
@@ -318,6 +320,18 @@ pub struct Freeform {
     /// Gap at each edge of the registration frame in millimetres, when requested.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub registration_clearance_mm: Option<f64>,
+    /// Trial raised connectors, when requested.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub raised_connectors: Option<RaisedSettings>,
+    /// Manual changes to the supports suggested for a paint.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub support_edits: Vec<SupportEdit>,
+    /// Coat order by source paint, before the paints left in palette order.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub paint_order: Vec<Colour>,
+    /// Optional chamfer, overlap, marks and paint matches.
+    #[serde(skip_serializing_if = "FinishSettings::is_plain")]
+    pub finish: FinishSettings,
 }
 
 impl Default for Freeform {
@@ -332,6 +346,10 @@ impl Default for Freeform {
             min_opening_mm: plates.min_opening_mm,
             bridge_width_mm: plates.bridge_width_mm,
             registration_clearance_mm: plates.registration_clearance_mm,
+            raised_connectors: plates.raised_connectors,
+            support_edits: plates.support_edits,
+            paint_order: Vec::new(),
+            finish: plates.finish,
         }
     }
 }
@@ -514,6 +532,10 @@ impl Project {
             bed_mm: (self.stencils.bed_mm[0], self.stencils.bed_mm[1]),
             bridge_width_mm: f.bridge_width_mm,
             registration_clearance_mm: f.registration_clearance_mm,
+            raised_connectors: f.raised_connectors,
+            support_edits: f.support_edits.clone(),
+            paint_order: f.paint_order.iter().map(|colour| colour.0).collect(),
+            finish: f.finish,
         }
     }
 
@@ -526,6 +548,10 @@ impl Project {
         self.freeform.min_opening_mm = settings.min_opening_mm;
         self.freeform.bridge_width_mm = settings.bridge_width_mm;
         self.freeform.registration_clearance_mm = settings.registration_clearance_mm;
+        self.freeform.raised_connectors = settings.raised_connectors;
+        self.freeform.support_edits.clone_from(&settings.support_edits);
+        self.freeform.paint_order = settings.paint_order.iter().copied().map(Colour).collect();
+        self.freeform.finish = settings.finish;
     }
 
     /// The merges, as the engine takes them.
@@ -555,7 +581,7 @@ impl Project {
             mode: self.mode,
             colours: self.colours,
             tiles: self.tiles,
-            freeform: self.freeform,
+            freeform: self.freeform.clone(),
             stencils: self.stencils.clone(),
         }
     }
@@ -602,11 +628,16 @@ impl Project {
         }
     }
 
-    /// Checks every setting of both modes.
-    fn check(&self) -> Result<(), Error> {
+    /// Checks the settings of both modes. The plate's thickness only needs to
+    /// accommodate raised connectors and finishing when cutting free-form.
+    ///
+    /// # Errors
+    ///
+    /// The first settings error.
+    pub fn check(&self) -> Result<(), Error> {
         self.chart_settings().check()?;
         self.artwork_settings().check()?;
-        self.plate_settings().check()
+        if self.mode == Mode::Freeform { self.plate_settings().check() } else { self.plate_settings().check_values() }
     }
 
     /// The font files the artwork is set in, in order: each font the project names, from
@@ -654,7 +685,14 @@ impl Project {
     }
 
     fn required_format(&self) -> (u32, &'static str) {
-        if self.freeform.registration_clearance_mm.is_some() {
+        let freeform = &self.freeform;
+        if freeform.raised_connectors.is_some()
+            || !freeform.support_edits.is_empty()
+            || !freeform.paint_order.is_empty()
+            || !freeform.finish.is_plain()
+        {
+            (SHAPING_FORMAT, "raised connectors, support edits, paint order or finishing")
+        } else if freeform.registration_clearance_mm.is_some() {
             (REGISTRATION_FORMAT, "a registration frame")
         } else if self.freeform.bridge_width_mm.is_some() {
             (BRIDGES_FORMAT, "flat bridges")
@@ -898,8 +936,8 @@ mod tests {
         assert!(message("not json").starts_with("The project could not be read: expected"));
         assert_eq!(message(r#"{"source": {}}"#), "This is not a Stencilator project.");
         assert_eq!(
-            message(r#"{"stencilator": 4}"#),
-            "This project was saved by a newer version of Stencilator (format 4); this one opens up to format 3. \
+            message(r#"{"stencilator": 5}"#),
+            "This project was saved by a newer version of Stencilator (format 5); this one opens up to format 4. \
              Update Stencilator to open it."
         );
         let text = |colour: &str| {
@@ -920,6 +958,71 @@ mod tests {
         let frame = r#"{"stencilator": 2, "source": {"kind": "svg", "data": ""},
             "freeform": {"registration_clearance_mm": 0.3}}"#;
         assert_eq!(message(frame), "A project with a registration frame needs format 3.");
+    }
+
+    #[test]
+    fn finishing_support_edits_and_order_round_trip_in_format_four() {
+        use crate::plate::{Mark, SupportKind};
+
+        let mut project = Project::new(text_source());
+        let mut settings = project.plate_settings();
+        for (format, change) in [(1, None), (2, Some(1.2))] {
+            settings.bridge_width_mm = change;
+            project.set_plate_settings(&settings);
+            assert_eq!(read_project(&project.to_json()).unwrap().stencilator, format);
+        }
+        settings.registration_clearance_mm = Some(0.35);
+        project.set_plate_settings(&settings);
+        assert_eq!(read_project(&project.to_json()).unwrap().stencilator, 3);
+
+        settings.bridge_width_mm = None;
+        settings.raised_connectors = Some(RaisedSettings { width_mm: 1.61, ..RaisedSettings::default() });
+        settings.support_edits = vec![
+            SupportEdit {
+                paint: Colour([0; 3]),
+                kind: SupportKind::Raised,
+                original: Some([[1000, 2000], [3000, 4000]]),
+                ends: None,
+            },
+            SupportEdit {
+                paint: Colour([0; 3]),
+                kind: SupportKind::Raised,
+                original: None,
+                ends: Some([[50, 42], [90, 90]]),
+            },
+        ];
+        settings.paint_order = vec![[8, 9, 10], [0; 3]];
+        settings.finish = FinishSettings { chamfer_mm: 0.4, overlap_mm: 0.2, mark: Mark::Ral, match_ral: true };
+        project.set_plate_settings(&settings);
+        let bytes = project.to_json();
+        let loaded = read_project(&bytes).unwrap();
+        assert_eq!(loaded.stencilator, 4);
+        assert_eq!(loaded.plate_settings(), settings);
+        assert_eq!(loaded.to_json(), bytes);
+
+        let mut older: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        older["stencilator"] = 3.into();
+        assert!(
+            read_project(&serde_json::to_vec(&older).unwrap()).unwrap_err().to_string().ends_with("needs format 4.")
+        );
+    }
+
+    #[test]
+    fn tile_thickness_only_has_to_fit_the_tile_settings() {
+        let mut project = Project::new(Source::Picture { name: "fox.png".to_owned(), data: Vec::new() });
+        project.freeform.raised_connectors = Some(RaisedSettings::default());
+        project.stencils.thickness_mm = 5.0;
+        let opened = read_project(&project.to_json()).unwrap();
+        assert_eq!(opened.plate_settings(), project.plate_settings());
+        project.mode = Mode::Freeform;
+        assert!(project.check().unwrap_err().to_string().contains("connector clearance"));
+
+        project.freeform.raised_connectors = None;
+        project.freeform.finish.chamfer_mm = 0.4;
+        project.stencils.thickness_mm = 0.3;
+        assert!(project.check().unwrap_err().to_string().contains("work face"));
+        project.mode = Mode::Tiles;
+        assert!(read_project(&project.to_json()).is_ok());
     }
 
     #[test]

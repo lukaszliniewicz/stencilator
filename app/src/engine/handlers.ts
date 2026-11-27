@@ -7,6 +7,7 @@ import { text } from '../lib/text';
 import type {
   ArtworkEdits,
   ArtworkSource,
+  Coat,
   FrameReport,
   FreeformStage,
   FreeformSummary,
@@ -16,7 +17,8 @@ import type {
   ProjectSettings,
   RasterPreview,
   Replies,
-  Request
+  Request,
+  SupportIssue
 } from './protocol';
 import type * as Wasm from './wasm/stencilator_wasm.js';
 
@@ -247,6 +249,8 @@ export function createHandlers(
       widthMm: labels.widthMm,
       heightMm: labels.heightMm,
       cellMm: labels.cellMm,
+      thicknessMm: settings.stencils.thickness_mm,
+      background: settings.colours.background,
       palette: labels.palette(),
       counts: labels.cellCounts(),
       painted: takePreview(labels.preview()),
@@ -327,8 +331,20 @@ export function createHandlers(
           value: JSON.parse(builtPlates().drawing(request.index)) as PlateDrawing,
           transfer: []
         };
+      case 'supportIssue': {
+        const issue = builtPlates().supportIssue(
+          request.index,
+          Int32Array.from(request.ends.flat()),
+          request.edit
+        );
+        return { value: issue as SupportIssue | undefined, transfer: [] };
+      }
+      case 'paintPaths':
+        return { value: JSON.parse(plates?.paintPaths() ?? '[]') as Coat[], transfer: [] };
       case 'plateFile':
         return file(builtPlates().stl(request.index, opened().project));
+      case 'frameFile':
+        return file(builtPlates().frameStl(opened().project));
       case 'platesZip':
         return file(builtPlates().zip(opened().project));
       case 'threeMf':

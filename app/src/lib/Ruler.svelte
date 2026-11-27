@@ -8,9 +8,10 @@
     lengthMm: number;
     sizePx: number;
     vertical?: boolean;
+    bottomOrigin?: boolean;
   }
 
-  let { lengthMm, sizePx, vertical = false }: Props = $props();
+  let { lengthMm, sizePx, vertical = false, bottomOrigin = false }: Props = $props();
 
   const DEPTH = 22;
   const scale = $derived(lengthMm > 0 ? sizePx / lengthMm : 0);
@@ -21,6 +22,8 @@
     positions(lengthMm, steps.major).filter((mm) => mm * scale < sizePx - (vertical ? 50 : 40))
   );
   const at = (mm: number): number => Math.round(mm * scale) + 0.5;
+  const y = (mm: number): number => (bottomOrigin ? sizePx - at(mm) : at(mm));
+  const unitY = $derived(bottomOrigin ? 2 : sizePx - 2);
 </script>
 
 <svg
@@ -31,15 +34,28 @@
 >
   {#if vertical}
     {#each minor as mm (mm)}
-      <line x1={DEPTH - 4} x2={DEPTH} y1={at(mm)} y2={at(mm)} />
+      <line x1={DEPTH - 4} x2={DEPTH} y1={y(mm)} y2={y(mm)} />
     {/each}
     {#each major as mm (mm)}
-      <line x1={DEPTH - 8} x2={DEPTH} y1={at(mm)} y2={at(mm)} />
-      <text x={10} y={at(mm) + 3} text-anchor="end" transform="rotate(-90 10 {at(mm) + 3})">
+      {@const labelY = y(mm) + (bottomOrigin ? -3 : 3)}
+      <line x1={DEPTH - 8} x2={DEPTH} y1={y(mm)} y2={y(mm)} />
+      <text
+        x={10}
+        y={labelY}
+        text-anchor={bottomOrigin ? 'start' : 'end'}
+        transform="rotate(-90 10 {labelY})"
+      >
         {num(mm, 1)}
       </text>
     {/each}
-    <text x={10} y={sizePx - 2} transform="rotate(-90 10 {sizePx - 2})">mm</text>
+    <text
+      x={10}
+      y={unitY}
+      text-anchor={bottomOrigin ? 'end' : 'start'}
+      transform="rotate(-90 10 {unitY})"
+    >
+      mm
+    </text>
   {:else}
     {#each minor as mm (mm)}
       <line x1={at(mm)} x2={at(mm)} y1={DEPTH - 4} y2={DEPTH} />

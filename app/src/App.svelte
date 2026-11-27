@@ -61,6 +61,11 @@
   }
 
   function keydown(event: KeyboardEvent): void {
+    if (event.key === 'Escape' && bench.supportDraft) {
+      event.preventDefault();
+      bench.cancelSupport();
+      return;
+    }
     if (!(event.ctrlKey || event.metaKey) || event.altKey) return;
     const key = event.key.toLowerCase();
     if (key === 'z') {
@@ -127,7 +132,7 @@
         <Files {bench} dark={theme.dark} />
       {/if}
     {:else if bench.isFreeform}
-      <FreeformBench {bench} {choose} />
+      <FreeformBench {bench} {choose} dark={theme.dark} />
     {:else}
       <Bench {bench} dark={theme.dark} {choose} />
     {/if}

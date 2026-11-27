@@ -9,9 +9,10 @@ use stencilator_core::artwork::{LabelMap, label_drawing, label_picture};
 use stencilator_core::colour::Rgb;
 use stencilator_core::drawing::{parse_svg, text_drawing};
 use stencilator_core::plate::{
-    Plate, PlateReport, Spot, build_plates, check_plate, plate_files, plates_3mf, registration_frame, reports_json,
+    Mark, Plate, PlateReport, Spot, build_plates, check_plate, plate_files, plates_3mf, registration_frame,
+    reports_json,
 };
-use stencilator_core::project::{ArtworkSize, Colour, Mode, Project, Source};
+use stencilator_core::project::{ArtworkSize, Colour, Freeform, Mode, Project, Source};
 use stencilator_core::registration::FrameReport;
 use stencilator_core::{source, zip};
 
@@ -85,9 +86,26 @@ pub(crate) struct FreeformArgs {
         num_args = 0..=1,
         require_equals = true,
         default_missing_value = "1.2",
+        conflicts_with = "raised_connectors",
         help_heading = "Plates"
     )]
     flat_bridges: Option<f64>,
+    /// Trial: hold islands above the openings (1.2 mm wide). Pass =MM for a different
+    /// width, or =0 to turn them off.
+    #[arg(
+        long, value_name = "MM", num_args = 0..=1, require_equals = true,
+        default_missing_value = "1.2", help_heading = "Plates"
+    )]
+    raised_connectors: Option<f64>,
+    /// Minimum height beneath a raised beam, from the work face [default: 4]
+    #[arg(long, value_name = "MM", help_heading = "Plates")]
+    connector_clearance: Option<f64>,
+    /// Thickness of a raised beam [default: 1]
+    #[arg(long, value_name = "MM", help_heading = "Plates")]
+    beam_thickness: Option<f64>,
+    /// Warn about free spans longer than this [default: 40]
+    #[arg(long, value_name = "MM", help_heading = "Plates")]
+    warn_span: Option<f64>,
     /// Key the plates to one registration frame (0.3 mm clearance at each edge).
     /// Pass =MM to set the clearance, or =0 for plain plates.
     #[arg(
@@ -99,6 +117,8 @@ pub(crate) struct FreeformArgs {
         help_heading = "Plates"
     )]
     registration: Option<f64>,
+    #[command(flatten)]
+    finishing: FinishingArgs,
 
     #[command(flatten)]
     colours: ColourArgs,
@@ -122,6 +142,46 @@ pub(crate) struct FreeformArgs {
     /// corner, as everywhere in the report.
     #[arg(long, help_heading = "Output")]
     json: bool,
+}
+
+#[derive(Args)]
+struct FinishingArgs {
+    /// Widen openings on the spray side, in steps [default: 0]
+    #[arg(long, value_name = "MM", help_heading = "Finishing")]
+    chamfer: Option<f64>,
+    /// Tuck earlier coats under later ones wherever their openings meet [default: 0]
+    #[arg(long, value_name = "MM", help_heading = "Finishing")]
+    overlap: Option<f64>,
+    /// Deboss the margin [possible values: none, number, ral]
+    #[arg(long, value_name = "MARK", value_parser = ["none", "number", "ral"], help_heading = "Finishing")]
+    mark: Option<String>,
+    /// Show approximate RAL Classic paint matches. Pass =false to turn these off.
+    #[arg(long, num_args = 0..=1, require_equals = true, default_missing_value = "true", help_heading = "Finishing")]
+    match_ral: Option<bool>,
+    /// Apply these paints first, in this order; others follow in palette order.
+    #[arg(long, value_name = "RRGGBB,...", value_delimiter = ',', value_parser = parse_colour, help_heading = "Finishing")]
+    paint_order: Vec<Rgb>,
+    /// Clear the paint order in a saved project.
+    #[arg(long, conflicts_with = "paint_order", help_heading = "Finishing")]
+    palette_order: bool,
+}
+
+impl FinishingArgs {
+    fn apply(&self, freeform: &mut Freeform) {
+        let finish = &mut freeform.finish;
+        finish.chamfer_mm = self.chamfer.unwrap_or(finish.chamfer_mm);
+        finish.overlap_mm = self.overlap.unwrap_or(finish.overlap_mm);
+        finish.match_ral = self.match_ral.unwrap_or(finish.match_ral);
+        finish.mark = match self.mark.as_deref() {
+            Some("number") => Mark::Number,
+            Some("ral") => Mark::Ral,
+            Some("none") => Mark::None,
+            _ => finish.mark,
+        };
+        if self.palette_order || !self.paint_order.is_empty() {
+            freeform.paint_order = self.paint_order.iter().copied().map(Colour).collect();
+        }
+    }
 }
 
 impl FreeformArgs {
@@ -179,8 +239,32 @@ impl FreeformArgs {
                 *field = (value != 0.0).then_some(value);
             }
         }
+        self.apply_connectors(f)?;
+        self.finishing.apply(f);
         self.colours.apply(project);
         self.stencil_settings.apply(project);
+        Ok(())
+    }
+
+    fn apply_connectors(&self, f: &mut Freeform) -> Result<(), String> {
+        if self.flat_bridges.is_some_and(|width| width != 0.0) {
+            f.raised_connectors = None;
+        }
+        if let Some(width) = self.raised_connectors {
+            if width == 0.0 {
+                f.raised_connectors = None;
+            } else {
+                f.bridge_width_mm = None;
+                f.raised_connectors.get_or_insert_default().width_mm = width;
+            }
+        }
+        let dimensions = [self.connector_clearance, self.beam_thickness, self.warn_span];
+        if dimensions.iter().any(Option::is_some) {
+            let raised = f.raised_connectors.as_mut().ok_or("Add --raised-connectors to set beam dimensions.")?;
+            raised.clearance_mm = self.connector_clearance.unwrap_or(raised.clearance_mm);
+            raised.beam_mm = self.beam_thickness.unwrap_or(raised.beam_mm);
+            raised.warn_mm = self.warn_span.unwrap_or(raised.warn_mm);
+        }
         Ok(())
     }
 }
@@ -381,6 +465,8 @@ impl Report<'_> {
                     ));
                 }
             }
+            traced_mm2 = report.traced_mm2.unwrap_or(traced_mm2);
+            warnings.extend(Self::shaping_warnings(report, &name));
             if report.paint_mm2 > 0.0 && traced_mm2 < TRACED_ENOUGH * report.paint_mm2 {
                 warnings.push(format!(
                     "{name}: only {:.0} % of the paint's area could be traced; detail finer than the {} mm cells is lost",
@@ -401,6 +487,46 @@ impl Report<'_> {
                 "the registration frame, {:.1} x {:.1} mm, does not fit a {bed_w} x {bed_h} mm bed",
                 frame.width_mm, frame.height_mm
             ));
+        }
+        warnings
+    }
+
+    fn shaping_warnings(report: &PlateReport, name: &str) -> Vec<String> {
+        let mut warnings = Vec::new();
+        if let Some(raised) = &report.raised_connectors {
+            let single = &raised.single_support_islands;
+            if !single.is_empty() {
+                warnings.push(format!(
+                    "{name}: {} only one raised support towards the rim, {}",
+                    count(single.len(), "island has", "islands have"),
+                    places(single),
+                ));
+            }
+            if raised.long_spans > 0 {
+                warnings.push(format!(
+                    "{name}: {} may be too long to bridge in printing",
+                    count(raised.long_spans, "free span", "free spans"),
+                ));
+            }
+        }
+        if report.unplaced_supports > 0 {
+            let supports = count(
+                report.unplaced_supports,
+                "saved support no longer fits and was left out",
+                "saved supports no longer fit and were left out",
+            );
+            warnings.push(format!("{name}: {supports}"));
+        }
+        if let Some(mark) = &report.mark
+            && !mark.applied
+        {
+            warnings.push(format!("{name}: there is not enough solid margin or thickness to deboss {}.", mark.text));
+        }
+        if report.chamfer_limited {
+            warnings.push(format!("{name}: the chamfer is limited to keep the rim around the openings."));
+        }
+        if report.overlap_limited {
+            warnings.push(format!("{name}: paint overlap is limited to keep the stencil intact."));
         }
         warnings
     }
@@ -467,11 +593,16 @@ impl Report<'_> {
             println!("plates   none (every paint is skipped)");
         }
         for r in self.reports {
-            let bridges = r.flat_bridges.as_ref().map_or_else(String::new, |flat| {
+            let supports = r.flat_bridges.as_ref().map_or_else(String::new, |flat| {
                 format!(", {} covering {:.1} mm²", count(flat.count, "flat bridge", "flat bridges"), flat.covered_mm2)
             });
+            let supports = r.raised_connectors.as_ref().map_or(supports, |raised| {
+                format!(", {}", count(raised.count, "trial raised connector", "trial raised connectors"))
+            });
+            let matched =
+                r.ral.map_or_else(String::new, |ral| format!(", RAL {} (approx. {})", ral.code, hex(ral.colour)));
             println!(
-                "  {:>2}  {}  {}, {}, {}, {}{bridges}",
+                "  {:>2}  {}  {}, {}, {}, {}{supports}{matched}",
                 r.paint + 1,
                 hex(r.colour),
                 count(r.openings, "opening", "openings"),

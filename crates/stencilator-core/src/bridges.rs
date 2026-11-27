@@ -1,4 +1,4 @@
-//! Flat bridges across openings in a free-form plate.
+//! Suggested supports across openings in a free-form plate.
 //!
 //! Sweep strips the width of a bridge across the plate in both directions. The
 //! projection of a contour edge onto a strip marks where the full width is not
@@ -80,13 +80,13 @@ struct Landing {
 }
 
 #[derive(Clone, Copy)]
-struct Bridge {
+pub(crate) struct Bridge {
     axis: Axis,
     /// Opposite corners of the rectangle in plate coordinates.
     lo: Point,
     hi: Point,
-    pieces: [usize; 2],
-    gap: i32,
+    pub(crate) pieces: [usize; 2],
+    pub(crate) gap: i32,
 }
 
 impl Bridge {
@@ -94,9 +94,13 @@ impl Bridge {
         self.lo.x <= other.hi.x && other.lo.x <= self.hi.x && self.lo.y <= other.hi.y && other.lo.y <= self.hi.y
     }
 
-    fn end(self, side: usize) -> Point {
+    pub(crate) fn end(self, side: usize) -> Point {
         let (lo, hi) = (self.axis.orient(self.lo), self.axis.orient(self.hi));
         self.axis.orient(Point::new(if side == 0 { lo.x } else { hi.x }, i32::midpoint(lo.y, hi.y)))
+    }
+
+    pub(crate) fn shape(self) -> crate::geometry::Shape {
+        vec![rectangle(self.lo.x, self.lo.y, self.hi.x, self.hi.y)]
     }
 
     /// Prefer a different side of the piece, with room between the tabs even
@@ -125,9 +129,8 @@ fn crosses_one_opening(shadows: &[Shadow], pieces: [usize; 2], width: i32) -> bo
     coverage == [i64::from(width); 2]
 }
 
-fn across_strip(shadows: &mut [Shadow], axis: Axis, low: i32, high: i32, out: &mut Vec<Bridge>) {
+fn across_strip(shadows: &mut [Shadow], axis: Axis, low: i32, high: i32, tab: i32, out: &mut Vec<Bridge>) {
     shadows.sort_unstable_by_key(|shadow| shadow.lo);
-    let tab = (high - low) / 2;
     let mut shadow_end = 0;
     let mut piece = 0;
     let mut last: Option<(Landing, usize)> = None;
@@ -155,7 +158,15 @@ fn across_strip(shadows: &mut [Shadow], axis: Axis, low: i32, high: i32, out: &m
     }
 }
 
-fn scan(solid: &Shapes, extents: &[(Point, Point)], axis: Axis, size: Point, width: i32, out: &mut Vec<Bridge>) {
+fn scan(
+    solid: &Shapes,
+    extents: &[(Point, Point)],
+    axis: Axis,
+    size: Point,
+    width: i32,
+    tab: i32,
+    out: &mut Vec<Bridge>,
+) {
     let size = axis.orient(size).y;
     let step = (width / 2).max((size + MAX_BANDS - 1) / MAX_BANDS);
     let centres = extents[1..].iter().map(|&(lo, hi)| i32::midpoint(axis.orient(lo).y, axis.orient(hi).y));
@@ -191,7 +202,7 @@ fn scan(solid: &Shapes, extents: &[(Point, Point)], axis: Axis, size: Point, wid
         active.extend(arrived.iter().filter(|edge| edge.to.y >= low));
         shadows.clear();
         shadows.extend(active.iter().map(|edge| edge.shadow(low, high, low + width / 2)));
-        across_strip(&mut shadows, axis, low, high, out);
+        across_strip(&mut shadows, axis, low, high, tab, out);
     }
 }
 
@@ -259,9 +270,9 @@ fn choose(candidates: &[Bridge], extents: &[(Point, Point)], width: i32) -> Sele
     selected
 }
 
-/// The bridge footprints and indices of the pieces with just one bridge towards
-/// the rim. The first shape of `solid` is the rim; loose pieces never anchor a bridge.
-pub(super) fn flat_bridges(solid: &Shapes, size_um: (i32, i32), width: i32) -> (Shapes, Vec<usize>) {
+/// The suggested supports, and the pieces with one support towards the rim.
+/// The first shape of `solid` is the rim.
+pub(crate) fn suggestions(solid: &Shapes, size_um: (i32, i32), width: i32, tab: i32) -> (Vec<Bridge>, Vec<usize>) {
     if solid.len() < 2 {
         return (Vec::new(), Vec::new());
     }
@@ -271,8 +282,8 @@ pub(super) fn flat_bridges(solid: &Shapes, size_um: (i32, i32), width: i32) -> (
         .collect();
     let mut candidates = Vec::new();
     let size = Point::new(size_um.0, size_um.1);
-    scan(solid, &extents, Axis::X, size, width, &mut candidates);
-    scan(solid, &extents, Axis::Y, size, width, &mut candidates);
+    scan(solid, &extents, Axis::X, size, width, tab, &mut candidates);
+    scan(solid, &extents, Axis::Y, size, width, tab, &mut candidates);
     // For equal gaps, prefer the island's centre line to a bridge near a corner.
     candidates.sort_by_key(|bridge| {
         let middle = i32::midpoint(bridge.axis.orient(bridge.lo).y, bridge.axis.orient(bridge.hi).y);
@@ -288,14 +299,7 @@ pub(super) fn flat_bridges(solid: &Shapes, size_um: (i32, i32), width: i32) -> (
         (bridge.gap, off_centre)
     });
     let selected = choose(&candidates, &extents, width);
-    let shapes = selected
-        .picked
-        .iter()
-        .map(|&i| {
-            let Bridge { lo, hi, .. } = candidates[i];
-            vec![rectangle(lo.x, lo.y, hi.x, hi.y)]
-        })
-        .collect();
+    let chosen = selected.picked.iter().map(|&i| candidates[i]).collect();
     let single = selected
         .ends
         .iter()
@@ -303,5 +307,5 @@ pub(super) fn flat_bridges(solid: &Shapes, size_um: (i32, i32), width: i32) -> (
         .skip(1)
         .filter_map(|(piece, ends)| (ends.len() == 1).then_some(piece))
         .collect();
-    (shapes, single)
+    (chosen, single)
 }

@@ -6,6 +6,8 @@ import {
   type ArtworkSource,
   type ChartFormat,
   type ChartSummary,
+  type Coat,
+  type Ends,
   type FileKind,
   type FontSelection,
   type FreeformStage,
@@ -13,8 +15,12 @@ import {
   type OpenedProject,
   type PlateDrawing,
   type PlateReport,
+  type Point,
   type ProjectFont,
   type ProjectMode,
+  type SupportDrawing,
+  type SupportEdit,
+  type SupportKind,
   type TypedText
 } from '../engine/client';
 import badgeUrl from '../../../fixtures/svg/badge.svg?no-inline';
@@ -43,8 +49,21 @@ import {
 import { readStored, writeStored } from './storage';
 import { text } from './text';
 
-export type View = 'picture' | 'chart' | 'both' | 'stencil';
+export type View = 'picture' | 'chart' | 'both' | 'stencil' | 'result';
 export type Screen = 'bench' | 'files';
+
+interface SupportDraft {
+  plate: PlateReport;
+  support: SupportDrawing | undefined;
+  ends: Ends;
+  next: 0 | 1;
+}
+
+export interface PrintMeshes {
+  plate: Uint8Array;
+  frame: Uint8Array | undefined;
+  insetMm: number;
+}
 
 const SETTINGS_KEY = 'stencilator.settings';
 /** Changes closer together than this become one step of undo. */
@@ -79,6 +98,11 @@ const message = (error: unknown): string =>
 const sameEdit = (a: Edit, b: Edit): boolean =>
   equalSettings(a.settings, b.settings) && a.typed === b.typed && a.fonts === b.fonts;
 
+const fittedToArtwork = ({ settings }: Edit): boolean =>
+  settings.registrationClearanceMm !== null ||
+  settings.paintOrder.length > 0 ||
+  settings.supportEdits.length > 0;
+
 export class Workbench {
   readonly #engine = new Engine();
   readonly #build = latest(async (input: Build) => {
@@ -94,6 +118,7 @@ export class Workbench {
     return { mode: settings.mode, summary };
   });
   readonly #draw = latest((index: number) => this.#engine.plateDrawing(index));
+  readonly #paths = latest<undefined, Coat[]>(() => this.#engine.paintPaths());
   #history: History<Edit>;
   #savedEdit: Edit | undefined;
   #recordTimer: ReturnType<typeof setTimeout> | undefined;
@@ -103,6 +128,7 @@ export class Workbench {
   #buildProblem = $state('');
   #actionProblem = $state('');
   #drawn = $state.raw<{ forPlate: PlateReport; drawing: PlateDrawing }>();
+  #paintedPaths = $state.raw<{ forBuild: FreeformSummary; coats: Coat[] }>();
 
   settings: Settings = $state(sanitise(readStored(SETTINGS_KEY)));
   artwork = $state.raw<ArtworkSource>();
@@ -119,8 +145,14 @@ export class Workbench {
   progress = $state<FreeformStage>();
   saving = $state('');
   view: View = $state('chart');
+  plateView = $state<'top' | '3d'>('top');
+  comparePaint = $state(false);
   screen: Screen = $state('bench');
   selected = $state(0);
+  #support = $state.raw<SupportDrawing>();
+  supportDraft = $state.raw<SupportDraft>();
+  supportProblem = $state('');
+  checkingSupport = $state(false);
   canUndo = $state(false);
   canRedo = $state(false);
   version = $state('');
@@ -155,6 +187,15 @@ export class Workbench {
   readonly drawing = $derived(
     this.#drawn?.forPlate === this.selectedPlate ? this.#drawn?.drawing : undefined
   );
+  readonly coatPaths = $derived(
+    this.#paintedPaths?.forBuild === this.freeform ? this.#paintedPaths?.coats : undefined
+  );
+  readonly supportKind = $derived<SupportKind | 'none'>(
+    this.settings.raised ? 'raised' : this.settings.bridgeWidthMm !== null ? 'flat' : 'none'
+  );
+  readonly selectedSupport = $derived(
+    this.#support && this.drawing?.supports?.includes(this.#support) ? this.#support : undefined
+  );
 
   constructor() {
     this.#history = new History(this.#snapshot(), sameEdit);
@@ -170,8 +211,13 @@ export class Workbench {
 
     $effect(() => {
       const now = this.#snapshot();
-      // Keep the frame with its imported project. New artwork starts without one.
-      writeStored(SETTINGS_KEY, { ...now.settings, registrationClearanceMm: null });
+      // Coordinates, paint order and a fitted frame belong to this artwork.
+      writeStored(SETTINGS_KEY, {
+        ...now.settings,
+        registrationClearanceMm: null,
+        paintOrder: [],
+        supportEdits: []
+      });
       clearTimeout(this.#recordTimer);
       this.#recordTimer = setTimeout(() => {
         this.#recordTimer = undefined;
@@ -222,11 +268,34 @@ export class Workbench {
     });
 
     $effect(() => {
+      const build = this.freeform;
+      if (
+        !this.isFreeform ||
+        !build ||
+        this.coatPaths ||
+        !this.ready ||
+        this.screen !== 'bench' ||
+        !(this.view === 'result' || (this.view === 'stencil' && this.comparePaint))
+      )
+        return;
+      void this.#paths(undefined).then(
+        (outcome) => {
+          if (!outcome.superseded && this.freeform === build && this.ready) {
+            this.#paintedPaths = { forBuild: build, coats: outcome.result };
+          }
+        },
+        (error: unknown) => {
+          if (this.freeform === build && this.ready) this.#actionProblem = message(error);
+        }
+      );
+    });
+
+    $effect(() => {
       const plate = this.selectedPlate;
       if (
         !plate ||
         this.drawing ||
-        this.view !== 'stencil' ||
+        (this.supportKind === 'none' && (this.view !== 'stencil' || this.plateView !== 'top')) ||
         this.screen !== 'bench' ||
         this.opening ||
         !this.current ||
@@ -266,6 +335,7 @@ export class Workbench {
     this.#actionProblem = '';
     this.current = false;
     this.#buildSerial++;
+    this.cancelSupport();
   }
 
   change = <K extends keyof Settings>(key: K, value: Settings[K]): void => {
@@ -277,6 +347,20 @@ export class Workbench {
   chooseMode = (mode: ProjectMode): void => {
     if (mode === 'tiles' && this.artwork && !this.source) return;
     this.change('projectMode', mode);
+    if (mode === 'tiles' && this.view === 'result') this.view = 'chart';
+  };
+
+  setSupportKind = (kind: 'none' | SupportKind): void => {
+    if (this.supportKind === kind) return;
+    this.#changing();
+    this.settings.raised = kind === 'raised';
+    this.settings.bridgeWidthMm = kind === 'flat' ? 1.2 : null;
+    if (kind === 'raised' && Number.isFinite(this.settings.thicknessMm)) {
+      this.settings.connectorClearanceMm = Math.max(
+        this.settings.connectorClearanceMm,
+        Math.ceil(this.settings.thicknessMm * 10 + 2) / 10
+      );
+    }
   };
 
   changeText = <K extends keyof TypedText>(key: K, value: TypedText[K]): void => {
@@ -307,16 +391,152 @@ export class Workbench {
   }
 
   select = (index: number): void => {
+    if (this.selected !== index) this.cancelSupport();
     this.selected = index;
   };
 
   show = (view: View): void => {
+    if (view !== 'stencil') this.cancelSupport();
     this.view = view;
   };
 
+  showPlate = (view: 'top' | '3d'): void => {
+    if (view !== 'top') this.cancelSupport();
+    this.plateView = view;
+  };
+
   go = (screen: Screen): void => {
+    if (screen !== 'bench') this.cancelSupport();
     this.screen = screen;
   };
+
+  moveCoat = (offset: -1 | 1): void => {
+    if (!this.ready || !this.isFreeform || !this.selectedPlate) return;
+    const order = this.freeform?.plates.map((plate) => plate.colour) ?? [];
+    const i = order.indexOf(this.selectedPlate.colour);
+    const j = i + offset;
+    const other = order[j];
+    if (i < 0 || other === undefined) return;
+    order[j] = this.selectedPlate.colour;
+    order[i] = other;
+    // A skipped paint can be switched back on later.
+    this.change(
+      'paintOrder',
+      [...order, ...this.settings.paintOrder.filter((c) => !order.includes(c))].slice(0, 256)
+    );
+  };
+
+  selectSupport = (support: SupportDrawing): void => {
+    if (!this.ready || this.supportDraft) return;
+    this.#support = support;
+  };
+
+  editSupport = (support?: SupportDrawing): void => {
+    const plate = this.selectedPlate;
+    if (!this.ready || !plate || this.supportKind === 'none') return;
+    this.screen = 'bench';
+    this.view = 'stencil';
+    this.plateView = 'top';
+    this.supportProblem = '';
+    this.supportDraft = {
+      plate,
+      support,
+      ends: support?.ends ?? [
+        [NaN, NaN],
+        [NaN, NaN]
+      ],
+      next: 0
+    };
+  };
+
+  setSupportEnd = (point: Point): void => {
+    const draft = this.supportDraft;
+    if (!draft || this.checkingSupport) return;
+    const ends: Ends = [...draft.ends];
+    ends[draft.next] = point;
+    this.supportProblem = '';
+    this.supportDraft = { ...draft, ends, next: draft.next === 0 ? 1 : 0 };
+  };
+
+  setSupportCoordinate = (end: 0 | 1, axis: 0 | 1, mm: number): void => {
+    const draft = this.supportDraft;
+    if (!draft || this.checkingSupport) return;
+    const ends: Ends = [...draft.ends];
+    ends[end] = [...ends[end]];
+    ends[end][axis] = Math.round(mm * 1000);
+    this.supportProblem = '';
+    this.supportDraft = { ...draft, ends };
+  };
+
+  cancelSupport = (): void => {
+    this.supportDraft = undefined;
+    this.supportProblem = '';
+    this.checkingSupport = false;
+  };
+
+  applySupport = async (): Promise<void> => {
+    const draft = this.supportDraft;
+    if (!draft || !this.ready || this.checkingSupport || this.selectedPlate !== draft.plate) return;
+    if (!draft.ends.flat().every((v) => Number.isInteger(v) && Math.abs(v) <= 2 ** 30)) {
+      this.supportProblem = text.supports.bothEnds;
+      return;
+    }
+    const index = this.freeform?.plates.indexOf(draft.plate) ?? -1;
+    if (index < 0) return;
+    this.checkingSupport = true;
+    try {
+      const issue = await this.#engine.supportIssue(index, draft.ends, draft.support?.edit);
+      // Leaving this edit or changing the project clears the draft.
+      if (this.supportDraft !== draft) return;
+      if (issue) this.supportProblem = text.supports.issues[issue];
+      else this.#storeSupport(draft.support, draft.ends);
+    } catch (error) {
+      if (this.supportDraft === draft) this.supportProblem = message(error);
+    } finally {
+      if (this.supportDraft === draft) this.checkingSupport = false;
+    }
+  };
+
+  removeSupport = (support: SupportDrawing): void => {
+    if (this.ready && this.drawing?.supports?.includes(support)) this.#storeSupport(support);
+  };
+
+  restoreSupports = (): void => {
+    const paint = this.selectedPlate?.colour;
+    if (!this.ready || !paint) return;
+    this.#commitSupportEdits(this.settings.supportEdits.filter((edit) => edit.paint !== paint));
+  };
+
+  #storeSupport(support: SupportDrawing | undefined, ends?: Ends): void {
+    const paint = this.selectedPlate?.colour;
+    const kind = this.supportKind;
+    if (!paint || kind === 'none') return;
+    const edits = $state.snapshot(this.settings.supportEdits);
+    const i = support?.edit;
+    const original = i === undefined ? support?.ends : edits[i]?.original;
+    const next: SupportEdit = {
+      paint,
+      kind,
+      ...(original ? { original } : {}),
+      ...(ends ? { ends } : {})
+    };
+    if (i !== undefined) edits.splice(i, 1, ...(original || ends ? [next] : []));
+    else edits.push(next);
+    if (edits.length > 512) {
+      this.supportProblem = text.supports.tooMany;
+      return;
+    }
+    this.#commitSupportEdits(edits);
+  }
+
+  #commitSupportEdits(edits: SupportEdit[]): void {
+    this.#flush();
+    this.#history.record(this.#snapshot());
+    this.change('supportEdits', edits);
+    this.#support = undefined;
+    this.#history.record(this.#snapshot());
+    this.#syncHistory();
+  }
 
   merge = (from: string, to: string): void => {
     this.#follow = to;
@@ -376,16 +596,20 @@ export class Workbench {
       return;
 
     this.opening = true;
+    this.cancelSupport();
     this.#actionProblem = '';
     try {
       const { project, file, kind } = await load();
       const { source, pictureBytes, fonts } = project;
-      const keepHistory =
+      const keepPictureView =
         kind === 'picture' &&
         (!this.artwork || this.artwork.kind === 'picture') &&
         this.fonts.files.length === 0;
-      if (keepHistory) this.#flush();
+      if (keepPictureView) this.#flush();
       else clearTimeout(this.#recordTimer);
+      // Undo changes settings, not the file. Do not bring back a fit or support
+      // that belongs to another picture, even if it was already undone.
+      const keepHistory = keepPictureView && !this.#history.some(fittedToArtwork);
 
       if (this.pictureUrl) URL.revokeObjectURL(this.pictureUrl);
       const picture = pictureBytes ? new Blob([pictureBytes.slice()]) : file;
@@ -394,13 +618,17 @@ export class Workbench {
       this.chart = undefined;
       this.freeform = undefined;
       this.#drawn = undefined;
+      this.#paintedPaths = undefined;
+      this.#support = undefined;
       this.valid = false;
       this.current = false;
       this.selected = 0;
       this.#follow = undefined;
       this.#buildProblem = '';
       this.screen = 'bench';
-      if (!keepHistory) this.view = 'chart';
+      this.plateView = 'top';
+      this.comparePaint = false;
+      if (!keepPictureView) this.view = 'chart';
 
       if (kind === 'project') this.settings = fromProjectSettings(project.settings);
       else {
@@ -408,6 +636,8 @@ export class Workbench {
         this.settings.skipped = [];
         this.settings.stencilCanvasColour = false;
         this.settings.registrationClearanceMm = null;
+        this.settings.paintOrder = [];
+        this.settings.supportEdits = [];
         if (source.kind === 'picture') this.settings.sizing = guessSizing(source.info);
         else this.settings.sizeMode = 'natural';
         if (source.kind === 'text') {
@@ -420,7 +650,7 @@ export class Workbench {
 
       this.artwork = source;
       this.typed = source.kind === 'text' ? source.style : undefined;
-      this.fonts = keepHistory ? this.fonts : { revision: 0, files: fonts };
+      this.fonts = keepPictureView ? this.fonts : { revision: 0, files: fonts };
       const initial = this.#snapshot();
       this.#savedEdit = initial;
       if (!keepHistory) {
@@ -451,6 +681,7 @@ export class Workbench {
     if (edit) {
       this.#changing();
       this.settings = { ...edit.settings };
+      if (this.settings.projectMode === 'tiles' && this.view === 'result') this.view = 'chart';
       this.typed = edit.typed;
       this.fonts = edit.fonts;
     }
@@ -510,6 +741,32 @@ export class Workbench {
       this.#engine.plateFile(index)
     );
   };
+
+  saveFrame = (): Promise<void> => {
+    const frame = this.freeform?.frame;
+    if (!this.ready || !this.isFreeform || !frame) return Promise.resolve();
+    return this.#save(stencilFileName(this.base, frame.file), 'model/stl', () =>
+      this.#engine.frameFile()
+    );
+  };
+
+  async printMeshes(plate: PlateReport): Promise<PrintMeshes | undefined> {
+    const build = this.freeform;
+    if (!this.ready || !build) return;
+    const index = build.plates.indexOf(plate);
+    if (index < 0) return;
+    const serial = this.#buildSerial;
+    const [mesh, frame] = await Promise.all([
+      this.#engine.plateFile(index),
+      build.frame ? this.#engine.frameFile() : undefined
+    ]);
+    if (serial !== this.#buildSerial || this.opening || this.selectedPlate !== plate) return;
+    return {
+      plate: mesh,
+      frame,
+      insetMm: build.frame ? (build.frame.width_mm - plate.width_mm) / 2 : 0
+    };
+  }
 
   saveProject = (): Promise<void> => {
     if (!this.canSaveProject) return Promise.resolve();

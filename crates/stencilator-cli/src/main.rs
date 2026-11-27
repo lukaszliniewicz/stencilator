@@ -29,6 +29,7 @@ struct Cli {
 }
 
 #[derive(Subcommand)]
+#[allow(clippy::large_enum_variant, reason = "only one set of command arguments is parsed per invocation")]
 enum Command {
     /// Lay a grid of square tiles over a picture, reduce its colours, and write the chart
     /// and one stencil per colour.

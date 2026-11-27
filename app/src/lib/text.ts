@@ -227,7 +227,13 @@ export const text = {
     stencilFontTip:
       'Allerta Stencil has bridges built into its letters to keep their centres in place.',
     tryStencilFont: 'Switch to Allerta Stencil',
-    views: { picture: 'Artwork', chart: 'Paints', both: 'Side by side', stencil: 'Plate' },
+    views: {
+      picture: 'Artwork',
+      chart: 'Paints',
+      both: 'Side by side',
+      stencil: 'Plate',
+      result: 'Painted result'
+    },
     back: 'Back to the artwork',
     finding: 'Finding paints…',
     building: 'Building and checking plates…',
@@ -260,9 +266,6 @@ export const text = {
     detailNote:
       'Smaller cells follow edges more closely. Patches below the area you set take the paints around them. Set it to 0 to keep every patch.',
     margin: 'Margin (mm)',
-    flatBridges: 'Flat bridges for brush work',
-    bridgeWidth: 'Bridge width (mm)',
-    bridgeNote: 'Bridges hold loose pieces in place and leave unpainted lines across the openings.',
     bed: 'Print bed',
     bedWidth: 'Bed width (mm)',
     bedDepth: 'Bed depth (mm)',
@@ -285,21 +288,117 @@ export const text = {
     includedFrame: (w: number, h: number) =>
       `Both print files include the registration frame (${size(num(w, 2), num(h, 2), 'mm')}).`,
     frameBedWarning: 'The registration frame is larger than your print bed.',
+    partSize: (w: number, h: number, z: number) => `${num(w, 2)} × ${num(h, 2)} × ${num(z, 2)} mm`,
     threeMf: '3MF',
     threeMfBody: 'Every plate in one slicer project, named and coloured by paint.',
     zip: 'STL zip',
     zipBody: 'One STL per ticked paint, in a single zip.',
     savePlate: (i: number, colour: string) => `Save plate ${num(i + 1)}, ${hex(colour)}`,
     allPlates: (n: number) => `All ${plural(n, 'plate', 'plates')}`,
+    parts: 'Individual parts',
     forPrinting: 'For the slicer',
     inspect: 'Check each plate at actual size in your slicer. Each plate goes on the bed flat.',
     supportIslands:
-      'Loose islands fall out after printing. Change the artwork or use a stencil font to keep them attached.',
+      'Loose islands fall out after printing. Add supports, change the artwork or use a stencil font.',
     inspectThinWebs:
       'Check that thin webs are filled in the slice. They can break when you lift the plate.',
     inspectNarrowOpenings:
       'Narrow openings may close up in the slice or let too little paint through.',
     resize: 'Reduce the artwork size or margin to fit your bed.'
+  },
+
+  supports: {
+    heading: 'Island supports',
+    kinds: { none: 'None', flat: 'Flat', raised: 'Raised' },
+    note: 'Flat bridges leave unpainted lines. Raised connectors leave the work-face openings clear.',
+    trial: 'Trial dimensions. Print and spray a sample to check strength and coverage.',
+    width: 'Width (mm)',
+    clearance: 'Above work (mm)',
+    beamSettings: 'Beam settings',
+    beam: 'Thickness (mm)',
+    warn: 'Warn beyond (mm)',
+    onPlate: (paint: number) => `Supports on plate ${num(paint + 1)}`,
+    item: (i: number, raised: boolean) => `${num(i + 1)} · ${raised ? 'Connector' : 'Flat bridge'}`,
+    span: (value: number) => `${num(value, 2)} mm span`,
+    none: 'No supports placed.',
+    add: 'Add support',
+    move: 'Move ends',
+    remove: 'Remove support',
+    restore: 'Restore suggestions',
+    placement:
+      'Click two ends in Top view, or enter their positions from the bottom-left of the plate.',
+    placing: (end: number) => `Place end ${num(end + 1)} on solid material`,
+    coordinate: (end: number, axis: 'X' | 'Y') => `End ${num(end + 1)} ${axis} (mm)`,
+    apply: 'Apply support',
+    cancel: 'Cancel',
+    checking: 'Checking landings…',
+    bothEnds: 'Enter both ends within the plate.',
+    tooMany:
+      'This project already has 512 support edits. Remove a manual addition or restore suggestions.',
+    issues: {
+      landings: 'Each end needs room for its full landing on solid material.',
+      span: 'The support must cross one opening between two separate pieces of the plate.',
+      conflict: 'This support would touch another manual support.'
+    },
+    count: (n: number) => plural(n, 'raised connector', 'raised connectors'),
+    single: (n: number) => `${plural(n, 'island', 'islands')} with one connector towards the rim`,
+    long: (n: number) => plural(n, 'long free span', 'long free spans'),
+    unplaced: (n: number) => plural(n, 'unplaced support edit', 'unplaced support edits')
+  },
+
+  finishing: {
+    heading: 'Plate finishing',
+    marks: { none: 'None', number: 'Plate no.', ral: 'RAL code' },
+    mark: 'Debossed mark',
+    chamfer: 'Chamfer (mm)',
+    overlap: 'Overlap (mm)',
+    note: 'Marks go in the margin. Chamfers widen openings on the spray side. Overlap tucks earlier coats under later ones.',
+    markSkipped: (mark: string) => `No room to deboss ${mark} in the solid margin.`,
+    chamferLimited: 'Chamfer limited to keep the rim.',
+    overlapLimited: 'Paint overlap limited to keep the stencil intact.',
+    palette: 'Paint matches',
+    palettes: { source: 'Source colours', ral: 'RAL Classic' },
+    ral: (code: number) => `RAL ${String(code)} (approx.)`,
+    ralNote: 'Screen matches are approximate. Check against a physical fan deck.'
+  },
+
+  coating: {
+    heading: 'Paint order',
+    number: (n: number) => `Coat ${num(n)}`,
+    earlier: 'Move coat earlier',
+    later: 'Move coat later',
+    reset: 'Use palette order',
+    options: 'Coats shown',
+    all: 'All coats',
+    alongside: 'Show painted result alongside',
+    loading: 'Drawing the painted result…',
+    preview: 'Painted result from the openings at the work face',
+    note: 'From the openings against the work. Spray angle and paint bleed aren’t simulated.'
+  },
+
+  registration: {
+    heading: 'Registration frame',
+    enable: 'Use a keyed frame',
+    clearance: 'Clearance per edge (mm)',
+    fitNote: 'The off-centre key keeps the plates facing the same way.',
+    clearanceNote: (mm: number) => `${num(mm, 2)} mm nominal clearance per edge`,
+    fits: 'Fits the bed',
+    save: 'Save frame STL',
+    lift: 'Lift at the key. Leave the frame in place for the next plate.',
+    assembly: 'Position of the plate in the frame',
+    poses: { seated: 'Seated', exploded: 'Exploded' },
+    seat: 'Hold the frame still and seat every plate against the same corner.'
+  },
+
+  printPreview: {
+    view: 'Plate view',
+    views: { top: 'Top', '3d': '3D' },
+    label: '3D preview of the print geometry',
+    loading: 'Loading print geometry…',
+    unavailable:
+      'The 3D preview could not be drawn. You can still use the Top view and save print files.',
+    interaction: 'Drag to turn, scroll to zoom. Arrow keys turn the model when it’s focused.',
+    reset: 'Reset view'
   },
 
   errors: {

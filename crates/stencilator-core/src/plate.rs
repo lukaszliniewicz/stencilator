@@ -3,8 +3,8 @@
 //!
 //! Every plate has the same outline, optionally keyed to fit a registration frame. The
 //! openings are the paint's cells traced into smooth outlines ([`crate::trace`]). A plate
-//! is one slab, meshed into a closed solid. Flat bridges can hold parts of it cut off from
-//! the rim. Any pieces still loose stay in the mesh, and [`check_plate`] reports them with
+//! is meshed from its cross-sections. Flat bridges or raised connectors can hold parts
+//! cut off from the rim. Any pieces still loose stay in the mesh, and [`check_plate`] reports them with
 //! everything else that may not print or paint well.
 //!
 //! Plate coordinates are in micrometres from the plate's bottom-left corner, y up, with
@@ -14,19 +14,28 @@ use std::ops::RangeInclusive;
 
 use serde::{Serialize, Serializer};
 
+mod finishing;
+mod supports;
+pub use finishing::{FinishSettings, Mark, MarkReport};
+pub use supports::{Ends, MAX_SUPPORT_EDITS, RaisedSettings, SupportDrawing, SupportEdit, SupportIssue, SupportKind};
+
 use crate::Error;
 use crate::artwork::LabelMap;
-use crate::bridges::flat_bridges;
-use crate::colour::Rgb;
+use crate::chart::COLOURS;
+use crate::colour::{Rgb, hex};
 use crate::geometry::{
     Corners, Point, Shape, Shapes, UM_PER_MM, area_mm2, bounds, difference, fits_bed, mm, offset, rectangle, svg_path,
-    translate, um,
+    translate, um, union,
 };
-use crate::mesh::{Mesh, Slab, mesh_slabs};
+use crate::mesh::{Mesh, mesh_slabs};
+use crate::ral;
 use crate::registration::{FRAME_FILE, FRAME_NAME, Frame, Registration};
 use crate::stencil::{RECOMMENDED_MIN_WEB_MM, check_thickness, encode_stl};
 use crate::threemf::{Object, write_3mf};
 use crate::trace::{TraceSettings, trace_mask};
+
+use finishing::{Finish, trap};
+use supports::{Spec, Supports, Surface, check_edits};
 
 /// Accepted margins around the artwork, in millimetres.
 pub const MARGIN_MM: RangeInclusive<f64> = 2.0..=100.0;
@@ -52,7 +61,7 @@ const LAYOUT_GAP_UM: i32 = 10_000;
 const SLIVER_UM: i32 = 10;
 
 /// How plates are made and checked.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct PlateSettings {
     /// Thickness of the plates in millimetres.
     pub thickness_mm: f64,
@@ -68,8 +77,16 @@ pub struct PlateSettings {
     pub bed_mm: (f64, f64),
     /// Width of flat bridges in millimetres, or `None` to leave the openings as traced.
     pub bridge_width_mm: Option<f64>,
+    /// Trial raised connectors, with openings clear at the work face.
+    pub raised_connectors: Option<RaisedSettings>,
+    /// Manual changes to the suggested supports.
+    pub support_edits: Vec<SupportEdit>,
     /// Gap at each edge between the plate and the frame, or `None` for plain plates.
     pub registration_clearance_mm: Option<f64>,
+    /// The order in which coats go on. Paints left out follow in palette order.
+    pub paint_order: Vec<Rgb>,
+    /// Spray-side chamfer, overlap and identifying marks.
+    pub finish: FinishSettings,
 }
 
 impl Default for PlateSettings {
@@ -81,7 +98,11 @@ impl Default for PlateSettings {
             min_opening_mm: 0.5,
             bed_mm: (256.0, 256.0),
             bridge_width_mm: None,
+            raised_connectors: None,
+            support_edits: Vec::new(),
             registration_clearance_mm: None,
+            paint_order: Vec::new(),
+            finish: FinishSettings::default(),
         }
     }
 }
@@ -94,6 +115,16 @@ impl PlateSettings {
     /// [`Error::Settings`] naming the first setting out of range, and the range, or
     /// [`Error::Stencil`] for the thickness, as in tile mode.
     pub fn check(&self) -> Result<(), Error> {
+        self.check_values()?;
+        let thickness = um(self.thickness_mm);
+        if let Some(raised) = self.raised_connectors {
+            raised.check_clearance(thickness)?;
+        }
+        self.finish.check_depth(thickness)
+    }
+
+    /// Tile mode shares the thickness, but does not use free-form geometry.
+    pub(crate) fn check_values(&self) -> Result<(), Error> {
         check_thickness(self.thickness_mm)?;
         let mm = |name: &str, value: f64, range: &RangeInclusive<f64>| {
             if range.contains(&value) {
@@ -110,10 +141,22 @@ impl PlateSettings {
         if let Some(width) = self.bridge_width_mm {
             mm("The flat bridge width", width, &BRIDGE_MM)?;
         }
+        if let Some(raised) = self.raised_connectors {
+            if self.bridge_width_mm.is_some() {
+                return Err(Error::Settings(
+                    "Choose either flat bridges or raised connectors for the plates.".to_owned(),
+                ));
+            }
+            raised.check()?;
+        }
+        check_edits(&self.support_edits)?;
         if let Some(clearance) = self.registration_clearance_mm {
             mm("The registration clearance", clearance, &FRAME_CLEARANCE_MM)?;
         }
-        Ok(())
+        if self.paint_order.len() > *COLOURS.end() {
+            return Err(Error::Settings("The paint order may list at most 256 colours.".to_owned()));
+        }
+        self.finish.check()
     }
 }
 
@@ -138,6 +181,12 @@ pub struct Plate {
     /// What the optional flat bridges changed.
     pub flat_bridges: Option<FlatBridgeReport>,
     registration: Option<Registration>,
+    finish: Finish,
+    supports: Supports,
+    /// The material before adding flat bridges, used when editing their landings.
+    flat_base: Option<Shapes>,
+    traced_mm2: Option<f64>,
+    overlap_limited: bool,
 }
 
 /// A place on a plate: the rectangle around it, in millimetres from the plate's
@@ -173,6 +222,17 @@ pub struct FlatBridgeReport {
     pub single_bridge_islands: Vec<Spot>,
 }
 
+/// What changed when raised connectors were requested.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct RaisedReport {
+    /// Number of connectors placed.
+    pub count: usize,
+    /// Islands with one support towards the rim.
+    pub single_support_islands: Vec<Spot>,
+    /// Beams still spanning further than the warning distance after stepping in their feet.
+    pub long_spans: usize,
+}
+
 /// What may not print or paint well on one plate. Warnings only: the plate is made anyway.
 ///
 /// As JSON, lengths and areas are rounded to thousandths and the colour is `#rrggbb`.
@@ -198,6 +258,9 @@ pub struct PlateReport {
     /// detail finer than tracing keeps.
     #[serde(serialize_with = "thousandths")]
     pub opening_mm2: f64,
+    /// Area traced before adding paint overlap or removing flat bridges, when trapping.
+    #[serde(skip_serializing_if = "Option::is_none", serialize_with = "optional_thousandths")]
+    pub traced_mm2: Option<f64>,
     /// Pieces of plate cut off from the rim, which fall out unless something holds them.
     pub islands: Vec<Spot>,
     /// Plate material narrower than [`PlateSettings::min_web_mm`] for longer than that:
@@ -211,6 +274,27 @@ pub struct PlateReport {
     /// What the optional flat bridges changed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub flat_bridges: Option<FlatBridgeReport>,
+    /// What the optional raised connectors changed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub raised_connectors: Option<RaisedReport>,
+    /// Overall height including raised connectors, when taller than the plate itself.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub height_with_supports_mm: Option<f64>,
+    /// Saved supports whose ends no longer fit.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub unplaced_supports: usize,
+    /// The nearest RAL Classic code when requested, with its unofficial screen colour.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ral: Option<ral::Match>,
+    /// Whether the requested digits could be cut into the margin.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mark: Option<MarkReport>,
+    /// Whether the spray-side chamfer was stopped short to keep the rim.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub chamfer_limited: bool,
+    /// Whether paint overlap was reduced or omitted to keep the plate intact.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub overlap_limited: bool,
 }
 
 /// A report with its plate's file name, as the command line prints it and the app reads it.
@@ -235,14 +319,20 @@ fn thousandths<S: Serializer>(value: &f64, serializer: S) -> Result<S::Ok, S::Er
     serializer.serialize_f64((value * 1000.0).round() / 1000.0)
 }
 
-/// A colour as `#rrggbb`.
-#[allow(clippy::trivially_copy_pass_by_ref, reason = "serde passes fields by reference")]
-fn hex<S: Serializer>(colour: &Rgb, serializer: S) -> Result<S::Ok, S::Error> {
-    let [r, g, b] = colour;
-    serializer.collect_str(&format_args!("#{r:02x}{g:02x}{b:02x}"))
+#[allow(clippy::ref_option, reason = "the serde callback must take the field by reference")]
+fn optional_thousandths<S: Serializer>(value: &Option<f64>, serializer: S) -> Result<S::Ok, S::Error> {
+    match value {
+        Some(value) => thousandths(value, serializer),
+        None => serializer.serialize_none(),
+    }
 }
 
-/// The plate of every paint not in `skip`, in palette order. Skipped paints are those
+#[allow(clippy::trivially_copy_pass_by_ref, reason = "serde passes fields by reference")]
+fn is_zero(count: &usize) -> bool {
+    *count == 0
+}
+
+/// The plate of every paint not in `skip`, in coat order. Skipped paints are those
 /// nobody paints, such as the canvas colour; the others keep their numbers. If every
 /// paint is skipped, there are no plates.
 ///
@@ -269,32 +359,58 @@ pub fn build_plates(map: &LabelMap, settings: &PlateSettings, skip: &[Rgb]) -> R
     let cell_mm2 = cell_mm * cell_mm;
     let counts = map.cell_counts();
 
-    map.palette
-        .iter()
-        .enumerate()
-        .filter(|(_, colour)| !skip.contains(colour))
-        .map(|(paint, &colour)| {
-            let openings = translate(&trace_mask(&map.mask(paint), map.width, map.height, &trace)?, margin, margin);
-            #[allow(clippy::cast_precision_loss, reason = "at most 16 million cells")]
-            let paint_mm2 = counts[paint] as f64 * cell_mm2;
-            let solid = plate_solid(&outline, &openings);
-            let mut plate = Plate {
-                paint,
-                paints: map.palette.len(),
-                colour,
-                size_um,
-                paint_mm2,
-                openings,
-                solid,
-                flat_bridges: None,
-                registration,
-            };
-            if let Some(width) = settings.bridge_width_mm {
-                plate.add_flat_bridges(&outline, um(width));
-            }
-            Ok(plate)
-        })
-        .collect()
+    let mut order: Vec<usize> =
+        map.palette.iter().enumerate().filter(|(_, colour)| !skip.contains(colour)).map(|(paint, _)| paint).collect();
+    let requested = &settings.paint_order;
+    order.sort_by_key(|&paint| {
+        requested.iter().position(|&colour| colour == map.palette[paint]).unwrap_or(requested.len())
+    });
+    let overlap = um(settings.finish.overlap_mm);
+    // Working backwards keeps overlap inside the openings the later coats will
+    // really use, including the parts already taken out by their flat bridges.
+    if overlap > 0 {
+        order.reverse();
+    }
+    let mut later = Shapes::new();
+    let mut plates = Vec::with_capacity(order.len());
+    for paint in order {
+        let traced = trace_mask(&map.mask(paint), map.width, map.height, &trace)?;
+        let traced_mm2 = (overlap > 0).then(|| area_mm2(&traced));
+        let openings = translate(&traced, margin, margin);
+        let (openings, overlap_limited) = if later.is_empty() {
+            (openings, false)
+        } else {
+            trap(&openings, &later, overlap, um(settings.min_web_mm))?
+        };
+        #[allow(clippy::cast_precision_loss, reason = "at most 16 million cells")]
+        let paint_mm2 = counts[paint] as f64 * cell_mm2;
+        let solid = plate_solid(&outline, &openings);
+        let mut plate = Plate {
+            paint,
+            paints: map.palette.len(),
+            colour: map.palette[paint],
+            size_um,
+            paint_mm2,
+            openings,
+            solid,
+            flat_bridges: None,
+            registration,
+            finish: Finish::default(),
+            supports: Supports::default(),
+            flat_base: None,
+            traced_mm2,
+            overlap_limited,
+        };
+        plate.shape(settings, body, &outline)?;
+        if overlap > 0 {
+            later = union(&later, &plate.openings);
+        }
+        plates.push(plate);
+    }
+    if overlap > 0 {
+        plates.reverse();
+    }
+    Ok(plates)
 }
 
 fn plate_solid(outline: &Shapes, openings: &Shapes) -> Shapes {
@@ -307,17 +423,56 @@ fn plate_solid(outline: &Shapes, openings: &Shapes) -> Shapes {
 }
 
 impl Plate {
-    fn add_flat_bridges(&mut self, outline: &Shapes, width: i32) {
-        let (bridges, singly_held) = flat_bridges(&self.solid, self.size_um, width);
-        let single_bridge_islands = singly_held.into_iter().filter_map(|i| spot(&self.solid[i])).collect();
+    fn shape(&mut self, settings: &PlateSettings, body: (i32, i32), outline: &Shapes) -> Result<(), Error> {
+        let unbridged = (!settings.finish.is_plain()).then(|| self.openings.clone());
+        let bridges = settings.bridge_width_mm.map_or_else(Vec::new, |width| {
+            self.supports = Supports::build(
+                Spec { width: um(width), raised: None },
+                &self.surface(),
+                self.colour,
+                &settings.support_edits,
+                0,
+            );
+            self.add_flat_bridges(outline)
+        });
+        if let Some(unbridged) = unbridged {
+            self.finish(settings, body, outline, &unbridged, &bridges)?;
+        }
+        if let Some(raised) = settings.raised_connectors {
+            self.supports = Supports::build(
+                Spec { width: um(raised.width_mm), raised: Some(raised) },
+                &self.surface(),
+                self.colour,
+                &settings.support_edits,
+                um(settings.finish.chamfer_mm),
+            );
+        }
+        Ok(())
+    }
+
+    fn surface(&self) -> Surface<'_> {
+        let base = self.flat_base.as_ref().unwrap_or(&self.solid);
+        let top = self.flat_base.as_ref().unwrap_or_else(|| self.finish.top_solid(&self.solid));
+        Surface { base, top, size: self.size_um }
+    }
+
+    fn add_flat_bridges(&mut self, outline: &Shapes) -> Shapes {
+        let bridges = self.supports.footprints();
+        let single_bridge_islands = self.supports.single.iter().filter_map(|&i| spot(&self.solid[i])).collect();
         let mut covered_mm2 = 0.0;
         if !bridges.is_empty() {
             let openings = difference(&self.openings, &bridges);
             covered_mm2 = (area_mm2(&self.openings) - area_mm2(&openings)).max(0.0);
-            self.solid = plate_solid(outline, &openings);
+            self.flat_base = Some(std::mem::replace(&mut self.solid, plate_solid(outline, &openings)));
             self.openings = openings;
         }
         self.flat_bridges = Some(FlatBridgeReport { count: bridges.len(), covered_mm2, single_bridge_islands });
+        bridges
+    }
+
+    /// Check two new ends against the current plate, ignoring the edited support itself.
+    pub fn support_issue(&self, ends: Ends, edit: Option<usize>) -> Option<SupportIssue> {
+        self.supports.issue(&self.surface(), ends, edit)
     }
 
     /// The name, such as `plate-03-c02f34`: the paint's number counted from 1, padded so
@@ -333,7 +488,7 @@ impl Plate {
         format!("{}.stl", self.name())
     }
 
-    /// The plate as a closed solid, from z = 0 to the thickness.
+    /// The plate as a closed solid, with the work face at z = 0.
     ///
     /// # Errors
     ///
@@ -341,7 +496,10 @@ impl Plate {
     /// mesh cannot be closed, which would be a fault in the engine.
     pub fn mesh(&self, thickness_mm: f64) -> Result<Mesh, Error> {
         check_thickness(thickness_mm)?;
-        mesh_slabs(&[Slab { z0: 0, z1: um(thickness_mm), shapes: self.solid.clone() }])
+        let thickness = um(thickness_mm);
+        let mut slabs = self.finish.slabs(&self.solid, thickness)?;
+        self.supports.extend_slabs(&mut slabs, thickness)?;
+        mesh_slabs(&slabs)
     }
 
     /// The plate as binary STL in millimetres.
@@ -379,7 +537,7 @@ pub fn plate_files(plates: &[Plate], thickness_mm: f64) -> Result<Vec<(String, V
 
 /// Every plate in one 3MF file, each an object named as [`Plate::name`] in its paint's
 /// colour, followed by the optional registration frame. They lie in a grid with at least
-/// 10 mm between them, in palette order from the top left.
+/// 10 mm between them, in coat order from the top left.
 ///
 /// # Errors
 ///
@@ -459,8 +617,21 @@ pub fn inspect_plate(plate: &Plate, settings: &PlateSettings) -> Result<(PlateRe
                 .collect(),
         )
     };
-    let (islands, island_spots) = placed(plate.solid.get(1..).unwrap_or_default().to_vec());
-    let (thin_webs, web_spots) = long(narrow_parts(&plate.solid, um(settings.min_web_mm))?, settings.min_web_mm);
+    let raised = plate.supports.raised();
+    let loose = if raised.is_some() {
+        plate.supports.loose.iter().map(|&i| plate.solid[i].clone()).collect()
+    } else {
+        plate.solid.get(1..).unwrap_or_default().to_vec()
+    };
+    let (islands, island_spots) = placed(loose);
+    let minimum = um(settings.min_web_mm);
+    let mut webs = narrow_parts(&plate.solid, minimum)?;
+    if plate.finish.top_openings.is_some() {
+        // The mark is recessed into a solid floor, not a narrow web through the plate.
+        let spray_face = union(plate.finish.top_solid(&plate.solid), &plate.finish.engraving);
+        webs = union(&webs, &narrow_parts(&spray_face, minimum)?);
+    }
+    let (thin_webs, web_spots) = long(webs, settings.min_web_mm);
     let (narrow_openings, narrow_spots) =
         long(narrow_parts(&plate.openings, um(settings.min_opening_mm))?, settings.min_opening_mm);
     let report = PlateReport {
@@ -471,11 +642,23 @@ pub fn inspect_plate(plate: &Plate, settings: &PlateSettings) -> Result<(PlateRe
         openings: plate.openings.len(),
         paint_mm2: plate.paint_mm2,
         opening_mm2: area_mm2(&plate.openings),
+        traced_mm2: plate.traced_mm2,
         islands: island_spots,
         thin_webs: web_spots,
         narrow_openings: narrow_spots,
         fits_bed: fits_bed((width_mm, height_mm), settings.bed_mm),
         flat_bridges: plate.flat_bridges.clone(),
+        raised_connectors: raised.map(|settings| RaisedReport {
+            count: plate.supports.count(),
+            single_support_islands: plate.supports.single.iter().filter_map(|&i| spot(&plate.solid[i])).collect(),
+            long_spans: plate.supports.long_spans(um(settings.warn_mm)),
+        }),
+        height_with_supports_mm: plate.supports.height().map(mm),
+        unplaced_supports: plate.supports.unplaced(),
+        ral: plate.finish.ral,
+        mark: plate.finish.mark.clone(),
+        chamfer_limited: plate.finish.chamfer_limited,
+        overlap_limited: plate.overlap_limited,
     };
     Ok((report, PlateProblems { islands, thin_webs, narrow_openings }))
 }
@@ -497,6 +680,15 @@ pub struct PlateDrawing {
     pub thin_webs: String,
     /// Openings too narrow to print well.
     pub narrow_openings: String,
+    /// Material removed around the openings by the spray-side chamfer.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub chamfer: Option<String>,
+    /// The digits recessed into the spray side.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub mark: String,
+    /// Projected connectors and any saved edits that could not fit.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub supports: Vec<SupportDrawing>,
 }
 
 impl PlateDrawing {
@@ -516,7 +708,42 @@ pub fn plate_drawing(plate: &Plate, problems: &PlateProblems) -> PlateDrawing {
         islands: svg_path(&problems.islands, height),
         thin_webs: svg_path(&problems.thin_webs, height),
         narrow_openings: svg_path(&problems.narrow_openings, height),
+        chamfer: plate
+            .finish
+            .top_openings
+            .as_ref()
+            .map(|openings| svg_path(&difference(openings, &plate.openings), height)),
+        mark: svg_path(&plate.finish.engraving, height),
+        supports: plate.supports.drawing(height),
     }
+}
+
+/// Work-face openings in coat order, as SVG paths in millimetres from the artwork's
+/// top-left corner. The workspace clips the views to the artwork rectangle.
+pub fn paint_paths_json(plates: &[Plate], settings: &PlateSettings, art_height_mm: f64) -> String {
+    #[derive(Serialize)]
+    struct Coat {
+        paint: usize,
+        #[serde(serialize_with = "hex")]
+        colour: Rgb,
+        path: String,
+    }
+
+    let margin = um(settings.margin_mm);
+    let height = um(art_height_mm);
+    let coats: Vec<_> = plates
+        .iter()
+        .map(|plate| Coat {
+            paint: plate.paint,
+            colour: if settings.finish.match_ral {
+                plate.finish.ral.map_or(plate.colour, |matched| matched.colour)
+            } else {
+                plate.colour
+            },
+            path: svg_path(&translate(&plate.openings, -margin, -margin), height),
+        })
+        .collect();
+    serde_json::to_string(&coats).unwrap_or_default()
 }
 
 fn spot(shape: &Shape) -> Option<Spot> {
@@ -548,6 +775,7 @@ fn narrow_parts(shapes: &Shapes, width_um: i32) -> Result<Shapes, Error> {
 mod tests {
     use super::*;
     use crate::mesh::inspect;
+    use crate::project::Colour;
 
     const INK: Rgb = [20, 20, 20];
     const PAPER: Rgb = [250, 250, 250];
@@ -666,6 +894,158 @@ mod tests {
         let report = check_plate(plate, &settings).unwrap();
         assert_eq!(report.flat_bridges.unwrap().count, 0);
         assert_eq!(report.islands.len(), 1);
+    }
+
+    #[test]
+    fn raised_supports_hold_the_ring_without_blocking_the_work_face() {
+        let art = map(200, 120, ring);
+        let plain = PlateSettings::default();
+        let original = &build_plates(&art, &plain, &[PAPER]).unwrap()[0];
+        let mut settings = PlateSettings {
+            raised_connectors: Some(RaisedSettings { warn_mm: 1.0, ..RaisedSettings::default() }),
+            ..plain
+        };
+        let raised = &build_plates(&art, &settings, &[PAPER]).unwrap()[0];
+        assert_eq!(raised.openings, original.openings);
+        assert_eq!(
+            paint_paths_json(std::slice::from_ref(raised), &settings, 12.0),
+            paint_paths_json(std::slice::from_ref(original), &settings, 12.0)
+        );
+        let (report, problems) = inspect_plate(raised, &settings).unwrap();
+        assert_eq!(
+            report.raised_connectors.unwrap(),
+            RaisedReport { count: 2, single_support_islands: vec![], long_spans: 2 }
+        );
+        assert_eq!(report.islands, []);
+        assert_eq!(report.height_with_supports_mm, Some(5.0));
+        let mesh = inspect(&raised.mesh(settings.thickness_mm).unwrap());
+        assert!(mesh.is_closed() && mesh.pieces == 1, "{mesh:?}");
+        assert_eq!(mesh.max_mm, [40.0, 32.0, 5.0]);
+
+        // Move one suggestion to a diagonal, remove the other, and leave the new
+        // support as the only one on the island.
+        let drawn = plate_drawing(raised, &problems);
+        let ends = [[12_000, 16_000], [20_000, 17_200]];
+        assert_eq!(raised.support_issue(ends, None), None);
+        assert_eq!(raised.support_issue([[500, 4000], [5000, 4000]], None), Some(SupportIssue::Span));
+        assert_eq!(raised.support_issue([[16_000, 16_000], [20_000, 17_000]], None), Some(SupportIssue::Landings));
+        settings.support_edits = drawn
+            .supports
+            .iter()
+            .enumerate()
+            .map(|(i, support)| SupportEdit {
+                paint: Colour(INK),
+                kind: SupportKind::Raised,
+                original: Some(support.ends),
+                ends: (i == 0).then_some(ends),
+            })
+            .collect();
+        let moved = &build_plates(&art, &settings, &[PAPER]).unwrap()[0];
+        let (report, problems) = inspect_plate(moved, &settings).unwrap();
+        assert_eq!(report.islands, []);
+        let raised = report.raised_connectors.unwrap();
+        assert_eq!((raised.count, raised.single_support_islands.len()), (1, 1));
+        assert_eq!(moved.support_issue(ends, None), Some(SupportIssue::Conflict));
+        assert_eq!(moved.support_issue(ends, Some(0)), None);
+        assert_eq!(plate_drawing(moved, &problems).supports[0].edit, Some(0));
+        let mesh = inspect(&moved.mesh(settings.thickness_mm).unwrap());
+        assert!(mesh.is_closed() && mesh.pieces == 1, "{mesh:?}");
+
+        settings.margin_mm = 2.0;
+        let resized = &build_plates(&art, &settings, &[PAPER]).unwrap()[0];
+        let (report, problems) = inspect_plate(resized, &settings).unwrap();
+        assert_eq!(report.unplaced_supports, 1);
+        let drawing = plate_drawing(resized, &problems);
+        let unplaced = drawing.supports.last().unwrap();
+        assert_eq!((unplaced.edit, unplaced.ends, unplaced.issue), (Some(0), ends, Some(SupportIssue::Landings)));
+        assert_eq!(unplaced.path, "");
+    }
+
+    #[test]
+    fn a_long_manual_connector_steps_in_from_both_landings() {
+        let art = map(1200, 100, |x, y| {
+            (40..1160).contains(&x) && (2..98).contains(&y) && !((584..616).contains(&x) && (32..68).contains(&y))
+        });
+        let settings = PlateSettings {
+            raised_connectors: Some(RaisedSettings { warn_mm: 35.0, ..RaisedSettings::default() }),
+            support_edits: vec![SupportEdit {
+                paint: Colour(INK),
+                kind: SupportKind::Raised,
+                original: None,
+                ends: Some([[12_000, 15_000], [69_900, 15_000]]),
+            }],
+            ..PlateSettings::default()
+        };
+        let plate = &build_plates(&art, &settings, &[PAPER]).unwrap()[0];
+        let (report, problems) = inspect_plate(plate, &settings).unwrap();
+        assert_eq!(report.unplaced_supports, 0);
+        assert_eq!(report.raised_connectors.unwrap().long_spans, 1);
+        assert_eq!(report.height_with_supports_mm, Some(13.0));
+        let drawing = plate_drawing(plate, &problems);
+        let manual = drawing.supports.iter().find(|support| support.edit == Some(0)).unwrap();
+        assert!((manual.span_mm - 39.5).abs() < 0.001, "{manual:?}");
+        let mesh = inspect(&plate.mesh(settings.thickness_mm).unwrap());
+        assert!(mesh.is_closed() && mesh.pieces == 1, "{mesh:?}");
+        assert_eq!(mesh.max_mm[2], 13.0);
+    }
+
+    #[test]
+    fn a_chamfer_and_mark_shape_the_spray_face_while_the_bottom_stays_clear() {
+        let art = map(200, 120, ring);
+        let mut settings = PlateSettings {
+            finish: FinishSettings { chamfer_mm: 0.35, mark: Mark::Ral, ..FinishSettings::default() },
+            ..PlateSettings::default()
+        };
+        let original = &build_plates(&art, &PlateSettings::default(), &[PAPER]).unwrap()[0];
+        let plate = &build_plates(&art, &settings, &[PAPER]).unwrap()[0];
+        assert_eq!(plate.openings, original.openings);
+        assert!(area_mm2(plate.finish.top_openings.as_ref().unwrap()) > area_mm2(&plate.openings));
+        let (report, problems) = inspect_plate(plate, &settings).unwrap();
+        let matched = report.ral.unwrap();
+        let mark = report.mark.unwrap();
+        assert_eq!(matched.code, 9005);
+        assert_eq!(mark.text, "9005");
+        assert!(mark.applied);
+        let drawing = plate_drawing(plate, &problems);
+        assert!(drawing.chamfer.unwrap().starts_with('M') && drawing.mark.starts_with('M'));
+        let mesh = inspect(&plate.mesh(settings.thickness_mm).unwrap());
+        assert!(mesh.is_closed() && mesh.pieces == 2, "{mesh:?}");
+        assert!(mesh.volume_mm3 < inspect(&original.mesh(1.2).unwrap()).volume_mm3);
+        assert_eq!(mesh.max_mm, [40.0, 32.0, 1.2]);
+
+        // A narrow margin cannot hold the digits. The plate still exports.
+        settings.margin_mm = 2.0;
+        let small = &build_plates(&art, &settings, &[PAPER]).unwrap()[0];
+        assert!(!check_plate(small, &settings).unwrap().mark.unwrap().applied);
+        assert_eq!(small.finish.engraving, Shapes::new());
+        assert!(inspect(&small.mesh(settings.thickness_mm).unwrap()).is_closed());
+    }
+
+    #[test]
+    fn overlap_follows_coat_order_without_renumbering_or_painting_a_skipped_colour() {
+        let art = map(80, 60, |x, _| x < 40);
+        let settings = PlateSettings::default();
+        let base = build_plates(&art, &settings, &[]).unwrap();
+        let settings = PlateSettings {
+            paint_order: vec![PAPER, INK],
+            finish: FinishSettings { overlap_mm: 0.5, ..FinishSettings::default() },
+            ..settings
+        };
+        let ordered = build_plates(&art, &settings, &[]).unwrap();
+        let [earlier, later] = ordered.as_slice() else { panic!("two coats") };
+        assert_eq!(earlier.file_name(), base[1].file_name());
+        assert_eq!(later.file_name(), base[0].file_name());
+        assert_eq!(later.openings, base[0].openings);
+        let extension = difference(&earlier.openings, &base[1].openings);
+        assert!(area_mm2(&extension) > 1.0);
+        assert_eq!(difference(&extension, &later.openings), Shapes::new());
+        assert_eq!(difference(&base[1].openings, &earlier.openings), Shapes::new());
+        assert!(!check_plate(earlier, &settings).unwrap().overlap_limited);
+        let paths: serde_json::Value = serde_json::from_str(&paint_paths_json(&ordered, &settings, 6.0)).unwrap();
+        assert_eq!(paths[0]["paint"], 1);
+        assert_eq!(paths[1]["paint"], 0);
+        let skipped = build_plates(&art, &settings, &[INK]).unwrap();
+        assert_eq!(skipped[0].openings, base[1].openings);
     }
 
     #[test]

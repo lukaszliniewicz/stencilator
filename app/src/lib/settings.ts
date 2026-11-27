@@ -1,11 +1,13 @@
 /** What the person sets, as the interface keeps it, remembers it and undoes it. */
 import type {
   ArtworkSize,
+  Mark,
   Mode,
   ProjectMode,
   ProjectSettings,
   Sizing,
-  SourceInfo
+  SourceInfo,
+  SupportEdit
 } from '../engine/client';
 
 export type SizeMode = 'natural' | 'width' | 'height' | 'within';
@@ -33,7 +35,18 @@ export interface Settings {
   minWebMm: number;
   minOpeningMm: number;
   bridgeWidthMm: number | null;
+  raised: boolean;
+  connectorWidthMm: number;
+  connectorClearanceMm: number;
+  beamMm: number;
+  warnSpanMm: number;
+  supportEdits: SupportEdit[];
   registrationClearanceMm: number | null;
+  paintOrder: string[];
+  mark: Mark;
+  chamferMm: number;
+  overlapMm: number;
+  matchRal: boolean;
   thicknessMm: number;
   bedWidthMm: number;
   bedDepthMm: number;
@@ -67,7 +80,18 @@ const DEFAULTS: Readonly<Settings> = {
   minWebMm: 0.6,
   minOpeningMm: 0.5,
   bridgeWidthMm: null,
+  raised: false,
+  connectorWidthMm: 1.2,
+  connectorClearanceMm: 4,
+  beamMm: 1,
+  warnSpanMm: 40,
+  supportEdits: [],
   registrationClearanceMm: null,
+  paintOrder: [],
+  mark: 'none',
+  chamferMm: 0,
+  overlapMm: 0,
+  matchRal: false,
   thicknessMm: 1.2,
   bedWidthMm: 256,
   bedDepthMm: 256,
@@ -110,6 +134,7 @@ export function sanitise(value: unknown): Settings {
   };
   const { mode, sizing, sizeMode } = stored;
   const bridgeWidth = stored.bridgeWidthMm;
+  const raised = stored.raised === true;
   return {
     projectMode: stored.projectMode === 'freeform' ? 'freeform' : DEFAULTS.projectMode,
     sizing:
@@ -135,8 +160,21 @@ export function sanitise(value: unknown): Settings {
     minWebMm: number('minWebMm'),
     minOpeningMm: number('minOpeningMm'),
     bridgeWidthMm:
-      typeof bridgeWidth === 'number' && Number.isFinite(bridgeWidth) ? bridgeWidth : null,
+      !raised && typeof bridgeWidth === 'number' && Number.isFinite(bridgeWidth)
+        ? bridgeWidth
+        : null,
+    raised,
+    connectorWidthMm: number('connectorWidthMm'),
+    connectorClearanceMm: number('connectorClearanceMm'),
+    beamMm: number('beamMm'),
+    warnSpanMm: number('warnSpanMm'),
+    supportEdits: [],
     registrationClearanceMm: null,
+    paintOrder: [],
+    mark: stored.mark === 'number' || stored.mark === 'ral' ? stored.mark : 'none',
+    chamferMm: number('chamferMm'),
+    overlapMm: number('overlapMm'),
+    matchRal: stored.matchRal === true,
     thicknessMm: number('thicknessMm'),
     bedWidthMm: number('bedWidthMm'),
     bedDepthMm: number('bedDepthMm'),
@@ -156,7 +194,20 @@ function same(a: unknown, b: unknown): boolean {
 }
 
 export function equalSettings(a: Settings, b: Settings): boolean {
-  return KEYS.every((key) => same(a[key], b[key]));
+  return KEYS.every((key) =>
+    key === 'supportEdits'
+      ? a.supportEdits.length === b.supportEdits.length &&
+        a.supportEdits.every((edit, i) => {
+          const other = b.supportEdits[i];
+          return (
+            edit.paint === other?.paint &&
+            edit.kind === other.kind &&
+            same(edit.original, other.original) &&
+            same(edit.ends, other.ends)
+          );
+        })
+      : same(a[key], b[key])
+  );
 }
 
 /** An empty input needs a range error from the engine, rather than JSON's null. */
@@ -201,8 +252,30 @@ export function toProjectSettings(s: Settings): ProjectSettings {
       min_web_mm: entered(s.minWebMm),
       min_opening_mm: entered(s.minOpeningMm),
       ...(s.bridgeWidthMm !== null ? { bridge_width_mm: entered(s.bridgeWidthMm) } : {}),
+      ...(s.raised
+        ? {
+            raised_connectors: {
+              width_mm: entered(s.connectorWidthMm),
+              clearance_mm: entered(s.connectorClearanceMm),
+              beam_mm: entered(s.beamMm),
+              warn_mm: entered(s.warnSpanMm)
+            }
+          }
+        : {}),
+      ...(s.supportEdits.length ? { support_edits: s.supportEdits } : {}),
       ...(s.registrationClearanceMm !== null
         ? { registration_clearance_mm: entered(s.registrationClearanceMm) }
+        : {}),
+      ...(s.paintOrder.length ? { paint_order: s.paintOrder } : {}),
+      ...(s.chamferMm !== 0 || s.overlapMm !== 0 || s.mark !== 'none' || s.matchRal
+        ? {
+            finish: {
+              chamfer_mm: entered(s.chamferMm),
+              overlap_mm: entered(s.overlapMm),
+              mark: s.mark,
+              match_ral: s.matchRal
+            }
+          }
         : {})
     },
     stencils: {
@@ -239,7 +312,18 @@ export function fromProjectSettings(p: ProjectSettings): Settings {
     minWebMm: f.min_web_mm,
     minOpeningMm: f.min_opening_mm,
     bridgeWidthMm: f.bridge_width_mm ?? null,
+    raised: f.raised_connectors !== undefined,
+    connectorWidthMm: f.raised_connectors?.width_mm ?? DEFAULTS.connectorWidthMm,
+    connectorClearanceMm: f.raised_connectors?.clearance_mm ?? DEFAULTS.connectorClearanceMm,
+    beamMm: f.raised_connectors?.beam_mm ?? DEFAULTS.beamMm,
+    warnSpanMm: f.raised_connectors?.warn_mm ?? DEFAULTS.warnSpanMm,
+    supportEdits: f.support_edits ?? [],
     registrationClearanceMm: f.registration_clearance_mm ?? null,
+    paintOrder: f.paint_order ?? [],
+    mark: f.finish?.mark ?? DEFAULTS.mark,
+    chamferMm: f.finish?.chamfer_mm ?? DEFAULTS.chamferMm,
+    overlapMm: f.finish?.overlap_mm ?? DEFAULTS.overlapMm,
+    matchRal: f.finish?.match_ral ?? DEFAULTS.matchRal,
     thicknessMm: s.thickness_mm,
     bedWidthMm: s.bed_mm[0],
     bedDepthMm: s.bed_mm[1],

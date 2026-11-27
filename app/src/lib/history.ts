@@ -28,6 +28,10 @@ export class History<T> {
     return this.#future.length > 0;
   }
 
+  some(matches: (snapshot: T) => boolean): boolean {
+    return matches(this.#present) || this.#past.some(matches) || this.#future.some(matches);
+  }
+
   record(next: T): void {
     if (this.#equal(next, this.#present)) return;
     this.#past.push(this.#present);

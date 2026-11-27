@@ -214,7 +214,7 @@ test('an SVG becomes checked plates and reopens with its project settings', asyn
   await islands.uncheck();
   await expect(islands).not.toBeChecked();
   await page.getByLabel('Bed width (mm)').fill('80');
-  await expect(page.getByText('Larger than your print bed.')).toBeVisible();
+  await expect(page.getByText('Larger than your print bed.', { exact: true })).toBeVisible();
 
   await page.getByRole('button', { name: 'Files', exact: true }).click();
   const printProject = page.getByRole('button', { name: 'Save 3MF' });
@@ -285,10 +285,11 @@ test('flat bridges hold a text island and stay with the saved project', async ({
   const loose = page.getByText('1 loose island', { exact: true });
   await expect(loose).toBeVisible();
 
-  const bridges = page.getByRole('checkbox', { name: 'Flat bridges for brush work' });
+  const modes = page.getByRole('group', { name: 'Island supports' });
+  const bridges = modes.getByRole('button', { name: 'Flat', exact: true });
   const added = page.getByText(/^2 flat bridges ·/);
-  const width = page.getByLabel('Bridge width (mm)');
-  await bridges.check();
+  const width = page.getByRole('region', { name: 'Island supports' }).getByLabel('Width (mm)');
+  await bridges.click();
   await expect(added).toBeVisible();
   await expect(loose).toHaveCount(0);
   await width.fill('1.4');
@@ -304,10 +305,10 @@ test('flat bridges hold a text island and stay with the saved project', async ({
     mimeType: 'application/json',
     buffer
   });
-  await expect(bridges).toBeChecked();
+  await expect(bridges).toHaveAttribute('aria-pressed', 'true');
   await expect(width).toHaveValue('1.4');
   await expect(added).toBeVisible();
-  await bridges.uncheck();
+  await modes.getByRole('button', { name: 'None', exact: true }).click();
   await expect(loose).toBeVisible();
   expect(problems).toEqual([]);
 });
@@ -349,6 +350,166 @@ test('an imported keyed project keeps its frame in the print files and when save
   await expect(included).toHaveCount(0);
   expect(await zipEntries(page, () => zip.click())).toBe(2);
   expect(problems).toEqual([]);
+});
+
+test('raised support edits validate both ends, persist and undo', async ({ page }) => {
+  const problems = watchForProblems(page);
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Type text', exact: true }).click();
+  await page.getByRole('textbox', { name: 'Text', exact: true }).fill('O');
+  const supports = page.getByRole('region', { name: 'Island supports' });
+  await supports.getByRole('button', { name: 'Raised', exact: true }).click();
+  const two = page.getByText('2 raised connectors', { exact: true });
+  await expect(two).toBeVisible();
+  const first = supports.getByRole('button', { name: /^1 · Connector/ });
+  await first.click();
+  await supports.getByRole('button', { name: 'Move ends' }).click();
+  await expect(page.getByRole('button', { name: 'Top', exact: true })).toHaveAttribute(
+    'aria-pressed',
+    'true'
+  );
+  const endX = supports.getByLabel('End 1 X (mm)');
+  const moved = String(Math.round(Number(await endX.inputValue()) * 1000 + 20) / 1000);
+  await endX.fill('-1');
+  const apply = supports.getByRole('button', { name: 'Apply support' });
+  await apply.click();
+  await expect(supports.getByRole('alert')).toHaveText(
+    'Each end needs room for its full landing on solid material.'
+  );
+  await endX.fill(moved);
+  await apply.click();
+  await expect(apply).toHaveCount(0);
+  await expect(first).toBeEnabled();
+
+  const saved = page.waitForEvent('download');
+  await page.getByRole('button', { name: 'Save project', exact: true }).click();
+  const design = await saved;
+  const buffer = await readFile(await design.path());
+  expect(buffer.toString('utf8')).toContain('"stencilator": 4');
+  expect(buffer.toString('utf8')).toContain('"support_edits": [');
+  await page.reload();
+  await page.getByLabel('Stencilator project file', { exact: true }).setInputFiles({
+    name: design.suggestedFilename(),
+    mimeType: 'application/json',
+    buffer
+  });
+  await expect(first).toBeEnabled();
+  await first.click();
+  await supports.getByRole('button', { name: 'Move ends' }).click();
+  await expect(endX).toHaveValue(moved);
+  await page.keyboard.press('Escape');
+  await expect(apply).toHaveCount(0);
+  await supports.getByRole('button', { name: 'Remove support' }).click();
+  await expect(page.getByText('1 raised connector', { exact: true })).toBeVisible();
+  await expect(page.getByText('1 island with one connector towards the rim')).toBeVisible();
+  await page.getByRole('button', { name: 'Undo (Ctrl+Z)' }).click();
+  await expect(two).toBeVisible();
+  await supports.getByRole('button', { name: 'Restore suggestions' }).click();
+  await expect(supports.getByRole('button', { name: 'Restore suggestions' })).toHaveCount(0);
+  await expect(two).toBeVisible();
+  expect(problems).toEqual([]);
+});
+
+test('the keyed 3D preview and print files follow the chosen paint order', async ({ page }) => {
+  const problems = watchForProblems(page);
+  await page.goto('/');
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="60mm" height="40mm" viewBox="0 0 60 40">
+    <path fill="#1d2f5c" d="M0 0H30V40H0Z"/><path fill="#c6532d" d="M30 0H60V40H30Z"/></svg>`;
+  await page.getByLabel('Picture file', { exact: true }).setInputFiles({
+    name: 'two-paints.svg',
+    mimeType: 'image/svg+xml',
+    buffer: Buffer.from(svg)
+  });
+  await page.getByRole('checkbox', { name: 'Use a keyed frame' }).check();
+  await page.getByRole('button', { name: 'RAL Classic', exact: true }).click();
+  await page.getByRole('button', { name: 'RAL code', exact: true }).click();
+  await page.getByLabel('Chamfer (mm)').fill('0.4');
+  await page.getByLabel('Overlap (mm)').fill('0.2');
+  await page.getByRole('button', { name: /^Paint 2, #C6532D,/ }).click();
+  await page.getByRole('button', { name: 'Move coat earlier' }).click();
+
+  await page.getByRole('button', { name: 'Painted result', exact: true }).click();
+  const result = page.getByRole('img', {
+    name: 'Painted result from the openings at the work face'
+  });
+  const coats = result.locator('path[data-paint]');
+  await expect(coats).toHaveCount(2);
+  await expect(coats.first()).toHaveAttribute('data-paint', '1');
+  await expect(coats.last()).toHaveAttribute('data-paint', '0');
+  await page.getByRole('combobox', { name: 'Coats shown' }).selectOption({ label: 'Coat 1' });
+  await expect(coats).toHaveCount(1);
+  await expect(coats.first()).toHaveAttribute('data-paint', '1');
+  await expect(coats.first()).not.toHaveAttribute('fill', '#c6532d');
+
+  await page.getByRole('button', { name: 'Plate', exact: true }).click();
+  await page.getByRole('checkbox', { name: 'Show painted result alongside' }).check();
+  await page.getByRole('button', { name: '3D', exact: true }).click();
+  const exploded = page.getByRole('button', { name: 'Exploded', exact: true });
+  await expect(exploded).toBeEnabled();
+  const model = page.getByRole('application', { name: '3D preview of the print geometry' });
+  const canvas = model.locator('canvas');
+  const seated = await canvas.screenshot();
+  await exploded.click();
+  expect(await canvas.screenshot()).not.toEqual(seated);
+  await expect(result).toBeVisible();
+
+  await page.getByRole('button', { name: 'Files', exact: true }).click();
+  const parts = page.getByRole('region', { name: 'Individual parts' });
+  await expect(parts.getByRole('list').getByRole('listitem').first()).toContainText('Plate 2');
+  expect(
+    await savedName(page, () => parts.getByRole('button', { name: 'Save frame STL' }).click())
+  ).toBe('two-paints-registration-frame.stl');
+  expect(
+    await savedName(page, () =>
+      parts.getByRole('button', { name: 'Save plate 2, #C6532D' }).click()
+    )
+  ).toBe('two-paints-plate-02-c6532d.stl');
+  expect(problems).toEqual([]);
+});
+
+test('the painted result shows all remaining coats when a step disappears', async ({ page }) => {
+  await page.goto('/');
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="60mm" height="40mm" viewBox="0 0 60 40">
+    <path fill="#1d2f5c" d="M0 0H20V40H0Z"/>
+    <path fill="#c6532d" d="M20 0H40V40H20Z"/>
+    <path fill="#edd4a8" d="M40 0H60V40H40Z"/>
+  </svg>`;
+  await page.getByLabel('Picture file', { exact: true }).setInputFiles({
+    name: 'three-paints.svg',
+    mimeType: 'image/svg+xml',
+    buffer: Buffer.from(svg)
+  });
+  await page.getByRole('button', { name: 'Painted result', exact: true }).click();
+  const steps = page.getByRole('combobox', { name: 'Coats shown' });
+  await steps.selectOption({ label: 'Coat 2' });
+  await page.getByRole('checkbox', { name: /^Stencil for paint \d+, #EDD4A8$/ }).uncheck();
+  await expect(steps.locator('option')).toHaveCount(2);
+  await expect(steps.locator('option:checked')).toHaveText('All coats');
+  const result = page.getByRole('img', {
+    name: 'Painted result from the openings at the work face'
+  });
+  await expect(result.locator('path[data-paint]')).toHaveCount(2);
+});
+
+test('replacing a picture starts fresh undo history for the fitted artwork', async ({ page }) => {
+  await page.goto('/');
+  await openPicture(page);
+  await page.getByRole('button', { name: 'Free-form', exact: true }).click();
+  const frame = page.getByRole('checkbox', { name: 'Use a keyed frame' });
+  await frame.check();
+  const undo = page.getByRole('button', { name: 'Undo (Ctrl+Z)' });
+  await expect(undo).toBeEnabled();
+  await page.getByRole('button', { name: /^Paint 2,/ }).click();
+  await page.getByRole('button', { name: 'Move coat earlier' }).click();
+
+  page.once('dialog', (dialog) => dialog.accept());
+  await page
+    .getByLabel('Picture file', { exact: true })
+    .setInputFiles(fileURLToPath(new URL('../../fixtures/pixel-art/fox.png', import.meta.url)));
+  await expect(page.getByText('fox.png', { exact: true })).toBeVisible();
+  await expect(frame).not.toBeChecked();
+  await expect(undo).toBeDisabled();
+  await expect(page.getByRole('button', { name: 'Redo (Ctrl+Shift+Z)' })).toBeDisabled();
 });
 
 test('a picture can switch modes and be saved with an unfinished setting in the other mode', async ({
