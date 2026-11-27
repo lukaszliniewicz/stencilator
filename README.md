@@ -125,7 +125,11 @@ a numbered support on the plate or in the list, then move its ends or remove it.
 To add or move one, place both ends in **Top** view or enter their coordinates in
 millimetres from the plate’s bottom-left corner. A saved support that no longer fits
 appears dashed and is left out of the print. **Restore suggestions** clears the
-manual edits for the selected plate.
+manual edits for the selected plate and support type. If a saved removal no longer
+matches a suggestion, the old removal is shown dashed so you can review the new
+suggestions. Custom widths and beam dimensions are kept in the project while
+supports are off. A bare `--flat-bridges` or `--raised-connectors` uses the saved
+dimensions, if any.
 
 #### Registration frame
 
@@ -161,7 +165,8 @@ or bleed.
   coats, where they meet. The plate check reports if overlap had to be limited
   to keep the stencil intact. Skipped paints apply no coat.
 - `--chamfer 0.4` widens the openings in steps on the spray side, keeping the
-  contact face as it was. Leave at least 0.2 mm of plate below the chamfer.
+  contact face as it was. Leave at least 0.2 mm of plate below the chamfer. The
+  plate check reports when the chamfer is limited to keep the stencil intact.
 - `--mark number` or `--mark ral` debosses a plate number or matched RAL code in the
   solid margin if there is room. `--match-ral` shows approximate RAL Classic
   matches alongside source colours. The painted preview can use these swatches;
@@ -169,7 +174,9 @@ or bleed.
 
 Plain projects still use format 1, flat bridges alone use format 2, and a frame
 with either of those uses format 3. Raised connectors, manual support edits,
-paint order or finishing require format 4. The local build reads all four.
+saved custom dimensions for disabled supports, paint order or finishing require
+format 4. A project keeps these free-form settings when switched to Tiles, so it
+can still need format 4 in that mode. The local build reads all four.
 
 ### In both modes
 

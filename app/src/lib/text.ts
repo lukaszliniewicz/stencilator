@@ -287,7 +287,6 @@ export const text = {
     bedWarning: 'Larger than your print bed.',
     includedFrame: (w: number, h: number) =>
       `Both print files include the registration frame (${size(num(w, 2), num(h, 2), 'mm')}).`,
-    frameBedWarning: 'The registration frame is larger than your print bed.',
     partSize: (w: number, h: number, z: number) => `${num(w, 2)} × ${num(h, 2)} × ${num(z, 2)} mm`,
     threeMf: '3MF',
     threeMfBody: 'Every plate in one slicer project, named and coloured by paint.',
@@ -324,6 +323,8 @@ export const text = {
     add: 'Add support',
     move: 'Move ends',
     remove: 'Remove support',
+    oldRemoval: 'Old removal',
+    discardRemoval: 'Discard old removal',
     restore: 'Restore suggestions',
     placement:
       'Click two ends in Top view, or enter their positions from the bottom-left of the plate.',
@@ -338,12 +339,18 @@ export const text = {
     issues: {
       landings: 'Each end needs room for its full landing on solid material.',
       span: 'The support must cross one opening between two separate pieces of the plate.',
-      conflict: 'This support would touch another manual support.'
+      conflict: 'This support would touch another manual support.',
+      suggestion:
+        'This saved removal no longer matches a suggested support. Review the new suggestions.'
     },
     count: (n: number) => plural(n, 'raised connector', 'raised connectors'),
     single: (n: number) => `${plural(n, 'island', 'islands')} with one connector towards the rim`,
     long: (n: number) => plural(n, 'long free span', 'long free spans'),
-    unplaced: (n: number) => plural(n, 'unplaced support edit', 'unplaced support edits')
+    unplaced: (n: number) => plural(n, 'unplaced support edit', 'unplaced support edits'),
+    unmatched: (n: number) =>
+      `${plural(n, 'saved removal no longer matches', 'saved removals no longer match')} the suggestions`,
+    missingPaints: (n: number) =>
+      `${plural(n, 'saved support edit', 'saved support edits')} for unticked or missing paints.`
   },
 
   finishing: {
@@ -354,7 +361,7 @@ export const text = {
     overlap: 'Overlap (mm)',
     note: 'Marks go in the margin. Chamfers widen openings on the spray side. Overlap tucks earlier coats under later ones.',
     markSkipped: (mark: string) => `No room to deboss ${mark} in the solid margin.`,
-    chamferLimited: 'Chamfer limited to keep the rim.',
+    chamferLimited: 'Chamfer limited to keep the stencil intact.',
     overlapLimited: 'Paint overlap limited to keep the stencil intact.',
     palette: 'Paint matches',
     palettes: { source: 'Source colours', ral: 'RAL Classic' },
@@ -383,6 +390,7 @@ export const text = {
     fitNote: 'The off-centre key keeps the plates facing the same way.',
     clearanceNote: (mm: number) => `${num(mm, 2)} mm nominal clearance per edge`,
     fits: 'Fits the bed',
+    bedWarning: 'The registration frame is larger than your print bed.',
     save: 'Save frame STL',
     lift: 'Lift at the key. Leave the frame in place for the next plate.',
     assembly: 'Position of the plate in the frame',

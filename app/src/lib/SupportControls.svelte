@@ -19,7 +19,12 @@
   const draft = $derived(bench.supportDraft);
   const supports = $derived(bench.drawing?.supports ?? []);
   const hasEdits = $derived(
-    bench.settings.supportEdits.some((edit) => edit.paint === plate?.colour)
+    bench.settings.supportEdits.some((edit) => edit.paint === plate?.colour && edit.kind === kind)
+  );
+  const missingPaintEdits = $derived(
+    bench.settings.supportEdits.filter(
+      (edit) => edit.kind === kind && !bench.freeform?.plates.some((p) => p.colour === edit.paint)
+    ).length
   );
   const set =
     (
@@ -56,7 +61,7 @@
         step={0.1}
         onchange={set('connectorClearanceMm')}
       />
-    {:else if bench.settings.bridgeWidthMm !== null}
+    {:else}
       <NumberField
         label={words.width}
         value={bench.settings.bridgeWidthMm}
@@ -84,6 +89,9 @@
     </details>
     <p class="note">{words.trial}</p>
   {/if}
+  {#if bench.current && missingPaintEdits}
+    <p class="notice">{words.missingPaints(missingPaintEdits)}</p>
+  {/if}
   {#if plate}
     <div class="editor">
       <h3 class="label">{words.onPlate(plate.paint)}</h3>
@@ -102,7 +110,11 @@
               >
                 <strong>{words.item(i, raised)}</strong>
                 <span class:invalid={!!support.issue} class="note">
-                  {support.issue ? words.unplaced(1) : words.span(support.span_mm)}
+                  {support.issue === 'suggestion'
+                    ? words.oldRemoval
+                    : support.issue
+                      ? words.unplaced(1)
+                      : words.span(support.span_mm)}
                 </span>
               </button>
             </li>
@@ -149,16 +161,18 @@
       {:else}
         {#if selected}
           <div class="actions">
-            <button
-              type="button"
-              class="button"
-              disabled={!bench.ready}
-              onclick={() => {
-                bench.editSupport(selected);
-              }}
-            >
-              {words.move}
-            </button>
+            {#if selected.issue !== 'suggestion'}
+              <button
+                type="button"
+                class="button"
+                disabled={!bench.ready}
+                onclick={() => {
+                  bench.editSupport(selected);
+                }}
+              >
+                {words.move}
+              </button>
+            {/if}
             <button
               type="button"
               class="button"
@@ -167,7 +181,7 @@
                 bench.removeSupport(selected);
               }}
             >
-              {words.remove}
+              {selected.issue === 'suggestion' ? words.discardRemoval : words.remove}
             </button>
           </div>
           {#if selected.issue}<p class="notice">{words.issues[selected.issue]}</p>{/if}

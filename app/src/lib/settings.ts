@@ -7,7 +7,8 @@ import type {
   ProjectSettings,
   Sizing,
   SourceInfo,
-  SupportEdit
+  SupportEdit,
+  SupportKind
 } from '../engine/client';
 
 export type SizeMode = 'natural' | 'width' | 'height' | 'within';
@@ -34,8 +35,8 @@ export interface Settings {
   marginMm: number;
   minWebMm: number;
   minOpeningMm: number;
-  bridgeWidthMm: number | null;
-  raised: boolean;
+  supportKind: SupportKind | 'none';
+  bridgeWidthMm: number;
   connectorWidthMm: number;
   connectorClearanceMm: number;
   beamMm: number;
@@ -79,8 +80,8 @@ const DEFAULTS: Readonly<Settings> = {
   marginMm: 10,
   minWebMm: 0.6,
   minOpeningMm: 0.5,
-  bridgeWidthMm: null,
-  raised: false,
+  supportKind: 'none',
+  bridgeWidthMm: 1.2,
   connectorWidthMm: 1.2,
   connectorClearanceMm: 4,
   beamMm: 1,
@@ -132,9 +133,10 @@ export function sanitise(value: unknown): Settings {
     const v = stored[key];
     return isHex(v) ? v : DEFAULTS[key];
   };
-  const { mode, sizing, sizeMode } = stored;
-  const bridgeWidth = stored.bridgeWidthMm;
-  const raised = stored.raised === true;
+  const { mode, sizing, sizeMode, supportKind } = stored;
+  // Older local settings represented the choice as a nullable bridge width.
+  const savedKind =
+    stored.raised === true ? 'raised' : typeof stored.bridgeWidthMm === 'number' ? 'flat' : 'none';
   return {
     projectMode: stored.projectMode === 'freeform' ? 'freeform' : DEFAULTS.projectMode,
     sizing:
@@ -159,11 +161,11 @@ export function sanitise(value: unknown): Settings {
     marginMm: number('marginMm'),
     minWebMm: number('minWebMm'),
     minOpeningMm: number('minOpeningMm'),
-    bridgeWidthMm:
-      !raised && typeof bridgeWidth === 'number' && Number.isFinite(bridgeWidth)
-        ? bridgeWidth
-        : null,
-    raised,
+    supportKind:
+      supportKind === 'none' || supportKind === 'flat' || supportKind === 'raised'
+        ? supportKind
+        : savedKind,
+    bridgeWidthMm: number('bridgeWidthMm'),
     connectorWidthMm: number('connectorWidthMm'),
     connectorClearanceMm: number('connectorClearanceMm'),
     beamMm: number('beamMm'),
@@ -233,6 +235,19 @@ function artworkSize(settings: Settings): ArtworkSize {
 }
 
 export function toProjectSettings(s: Settings): ProjectSettings {
+  const raised = {
+    width_mm: entered(s.connectorWidthMm),
+    clearance_mm: entered(s.connectorClearanceMm),
+    beam_mm: entered(s.beamMm),
+    warn_mm: entered(s.warnSpanMm)
+  };
+  const customFlat = Number.isFinite(s.bridgeWidthMm) && s.bridgeWidthMm !== DEFAULTS.bridgeWidthMm;
+  const customRaised =
+    [s.connectorWidthMm, s.connectorClearanceMm, s.beamMm, s.warnSpanMm].every(Number.isFinite) &&
+    (s.connectorWidthMm !== DEFAULTS.connectorWidthMm ||
+      s.connectorClearanceMm !== DEFAULTS.connectorClearanceMm ||
+      s.beamMm !== DEFAULTS.beamMm ||
+      s.warnSpanMm !== DEFAULTS.warnSpanMm);
   return {
     mode: s.projectMode,
     colours: { mode: s.mode, count: whole(s.colours), background: s.background },
@@ -251,17 +266,12 @@ export function toProjectSettings(s: Settings): ProjectSettings {
       margin_mm: entered(s.marginMm),
       min_web_mm: entered(s.minWebMm),
       min_opening_mm: entered(s.minOpeningMm),
-      ...(s.bridgeWidthMm !== null ? { bridge_width_mm: entered(s.bridgeWidthMm) } : {}),
-      ...(s.raised
-        ? {
-            raised_connectors: {
-              width_mm: entered(s.connectorWidthMm),
-              clearance_mm: entered(s.connectorClearanceMm),
-              beam_mm: entered(s.beamMm),
-              warn_mm: entered(s.warnSpanMm)
-            }
-          }
+      ...(s.supportKind === 'flat' ? { bridge_width_mm: entered(s.bridgeWidthMm) } : {}),
+      ...(s.supportKind === 'raised' ? { raised_connectors: raised } : {}),
+      ...(s.supportKind !== 'flat' && customFlat
+        ? { inactive_bridge_width_mm: s.bridgeWidthMm }
         : {}),
+      ...(s.supportKind !== 'raised' && customRaised ? { inactive_raised_connectors: raised } : {}),
       ...(s.supportEdits.length ? { support_edits: s.supportEdits } : {}),
       ...(s.registrationClearanceMm !== null
         ? { registration_clearance_mm: entered(s.registrationClearanceMm) }
@@ -293,6 +303,7 @@ export function fromProjectSettings(p: ProjectSettings): Settings {
   const t = p.tiles;
   const f = p.freeform;
   const s = p.stencils;
+  const raised = f.raised_connectors ?? f.inactive_raised_connectors;
   const settings: Settings = {
     ...DEFAULTS,
     projectMode: p.mode,
@@ -311,12 +322,12 @@ export function fromProjectSettings(p: ProjectSettings): Settings {
     marginMm: f.margin_mm,
     minWebMm: f.min_web_mm,
     minOpeningMm: f.min_opening_mm,
-    bridgeWidthMm: f.bridge_width_mm ?? null,
-    raised: f.raised_connectors !== undefined,
-    connectorWidthMm: f.raised_connectors?.width_mm ?? DEFAULTS.connectorWidthMm,
-    connectorClearanceMm: f.raised_connectors?.clearance_mm ?? DEFAULTS.connectorClearanceMm,
-    beamMm: f.raised_connectors?.beam_mm ?? DEFAULTS.beamMm,
-    warnSpanMm: f.raised_connectors?.warn_mm ?? DEFAULTS.warnSpanMm,
+    supportKind: f.raised_connectors ? 'raised' : f.bridge_width_mm !== undefined ? 'flat' : 'none',
+    bridgeWidthMm: f.bridge_width_mm ?? f.inactive_bridge_width_mm ?? DEFAULTS.bridgeWidthMm,
+    connectorWidthMm: raised?.width_mm ?? DEFAULTS.connectorWidthMm,
+    connectorClearanceMm: raised?.clearance_mm ?? DEFAULTS.connectorClearanceMm,
+    beamMm: raised?.beam_mm ?? DEFAULTS.beamMm,
+    warnSpanMm: raised?.warn_mm ?? DEFAULTS.warnSpanMm,
     supportEdits: f.support_edits ?? [],
     registrationClearanceMm: f.registration_clearance_mm ?? null,
     paintOrder: f.paint_order ?? [],

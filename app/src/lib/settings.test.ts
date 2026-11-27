@@ -7,7 +7,8 @@ import {
   isSkipped,
   sanitise,
   toProjectSettings,
-  toggledStencil
+  toggledStencil,
+  type Settings
 } from './settings';
 
 describe('settings', () => {
@@ -34,8 +35,8 @@ describe('settings', () => {
       marginMm: 10,
       minWebMm: 0.6,
       minOpeningMm: 0.5,
-      bridgeWidthMm: null,
-      raised: false,
+      supportKind: 'none',
+      bridgeWidthMm: 1.2,
       connectorWidthMm: 1.2,
       connectorClearanceMm: 4,
       beamMm: 1,
@@ -136,6 +137,7 @@ describe('settings', () => {
       sizeMode: 'within',
       artWidthMm: 175,
       artHeightMm: 135,
+      supportKind: 'flat',
       bridgeWidthMm: 1.4,
       registrationClearanceMm: 0.35,
       bedDepthMm: 210,
@@ -144,6 +146,34 @@ describe('settings', () => {
     const p = toProjectSettings({ ...mixed, skipped: [...mixed.skipped] });
     expect(p.freeform.size).toEqual({ within_mm: [175, 135] });
     expect(fromProjectSettings(p)).toEqual(mixed);
+  });
+
+  it('keeps both support sizes and the finishing when the active support changes', () => {
+    const settings: Settings = {
+      ...defaults,
+      supportKind: 'raised',
+      bridgeWidthMm: 1.6,
+      connectorWidthMm: 2.3,
+      connectorClearanceMm: 5.2,
+      beamMm: 0.9,
+      warnSpanMm: 33,
+      paintOrder: ['#193559', '#ffffff'],
+      mark: 'ral',
+      chamferMm: 0.35,
+      overlapMm: 0.2,
+      matchRal: true
+    };
+    for (const supportKind of ['none', 'flat', 'raised'] as const) {
+      const selected = { ...settings, supportKind };
+      const project = toProjectSettings(selected);
+      expect(project.freeform.raised_connectors !== undefined).toBe(supportKind === 'raised');
+      expect(project.freeform.bridge_width_mm !== undefined).toBe(supportKind === 'flat');
+      expect(fromProjectSettings(project)).toEqual(selected);
+    }
+    expect(sanitise({ bridgeWidthMm: 1.8 })).toMatchObject({
+      supportKind: 'flat',
+      bridgeWidthMm: 1.8
+    });
   });
 
   it('take a picture of few pixels for pixel art', () => {

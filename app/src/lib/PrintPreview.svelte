@@ -29,10 +29,15 @@
   let { bench, plate, width, height, dark }: Props = $props();
   const instructionsId = $props.id();
   let canvas = $state<HTMLCanvasElement>();
-  let parts = $state.raw<PrintMeshes>();
+  let parts = $state.raw<{ plate: PlateReport; meshes: PrintMeshes }>();
   let rig = $state.raw<ReturnType<typeof viewer>>();
   let failed = $state(false);
   let position = $state<'seated' | 'exploded'>('seated');
+  const geometryCurrent = $derived(
+    bench.current && bench.valid && !bench.opening && parts?.plate === plate
+  );
+  const loading = $derived(!geometryCurrent && (!bench.current || bench.opening || bench.valid));
+  const showFrame = $derived(geometryCurrent && !!parts?.meshes.frame);
   const poses = (['seated', 'exploded'] as const).map((value) => ({
     value,
     label: text.registration.poses[value]
@@ -52,11 +57,12 @@
   });
 
   $effect(() => {
-    if (!bench.ready || failed) return;
+    if (!bench.ready || geometryCurrent || failed) return;
+    const requested = plate;
     let waiting = true;
-    void bench.printMeshes(plate).then(
+    void bench.printMeshes(requested).then(
       (next) => {
-        if (waiting && next) parts = next;
+        if (waiting && next) parts = { plate: requested, meshes: next };
       },
       () => {
         if (waiting) failed = true;
@@ -70,7 +76,7 @@
   $effect(() => {
     if (parts && rig) {
       try {
-        return rig.mount(parts);
+        return rig.mount(parts.meshes);
       } catch {
         failed = true;
       }
@@ -236,7 +242,7 @@
     <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions (The 3D viewport is an application with arrow-key rotation.) -->
     <div
       class="space"
-      class:faded={!bench.current || !bench.valid || bench.opening}
+      aria-busy={loading}
       style:height="{height}px"
       role="application"
       tabindex="0"
@@ -246,11 +252,13 @@
         rig?.key(event);
       }}
     >
-      <canvas bind:this={canvas}></canvas>
-      {#if !parts}<p class="loading note">{text.printPreview.loading}</p>{/if}
+      <canvas class:faded={!geometryCurrent} bind:this={canvas}></canvas>
+      {#if loading}<p class="loading note" role="status">
+          {text.printPreview.loading}
+        </p>{/if}
     </div>
     <div class="controls">
-      {#if parts?.frame}
+      {#if showFrame}
         <Segmented
           label={text.registration.assembly}
           options={poses}
@@ -263,7 +271,7 @@
       <button
         class="button"
         type="button"
-        disabled={!parts}
+        disabled={!geometryCurrent}
         onclick={() => {
           rig?.reset();
         }}
@@ -272,7 +280,7 @@
       </button>
     </div>
     <p id={instructionsId} class="note">{text.printPreview.interaction}</p>
-    {#if parts?.frame}<p class="note">{text.registration.lift}</p>{/if}
+    {#if showFrame}<p class="note">{text.registration.lift}</p>{/if}
   {/if}
 </figure>
 

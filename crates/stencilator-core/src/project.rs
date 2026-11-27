@@ -7,8 +7,9 @@
 //! at its own size; a picture to tile mode, and to 200 mm wide in free-form mode. Use the
 //! extension `.stencilator` to open the file in the web app.
 //! Flat bridges need format 2 and a registration frame needs format 3. Raised
-//! connectors, support edits, paint order and finishing need format 4. Projects
-//! save in the earliest format that describes their settings.
+//! connectors, support edits, custom dimensions for disabled supports, paint order
+//! and finishing need format 4. Projects save in the earliest format that
+//! describes their settings, including settings for the inactive mode.
 //!
 //! ```json
 //! {
@@ -323,6 +324,12 @@ pub struct Freeform {
     /// Trial raised connectors, when requested.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub raised_connectors: Option<RaisedSettings>,
+    /// A custom flat bridge width to use the next time flat bridges are enabled.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub inactive_bridge_width_mm: Option<f64>,
+    /// Custom raised connector dimensions to use the next time they are enabled.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub inactive_raised_connectors: Option<RaisedSettings>,
     /// Manual changes to the supports suggested for a paint.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub support_edits: Vec<SupportEdit>,
@@ -347,6 +354,8 @@ impl Default for Freeform {
             bridge_width_mm: plates.bridge_width_mm,
             registration_clearance_mm: plates.registration_clearance_mm,
             raised_connectors: plates.raised_connectors,
+            inactive_bridge_width_mm: None,
+            inactive_raised_connectors: None,
             support_edits: plates.support_edits,
             paint_order: Vec::new(),
             finish: plates.finish,
@@ -687,11 +696,13 @@ impl Project {
     fn required_format(&self) -> (u32, &'static str) {
         let freeform = &self.freeform;
         if freeform.raised_connectors.is_some()
+            || freeform.inactive_bridge_width_mm.is_some()
+            || freeform.inactive_raised_connectors.is_some()
             || !freeform.support_edits.is_empty()
             || !freeform.paint_order.is_empty()
             || !freeform.finish.is_plain()
         {
-            (SHAPING_FORMAT, "raised connectors, support edits, paint order or finishing")
+            (SHAPING_FORMAT, "raised connectors, saved support settings, paint order or finishing")
         } else if freeform.registration_clearance_mm.is_some() {
             (REGISTRATION_FORMAT, "a registration frame")
         } else if self.freeform.bridge_width_mm.is_some() {

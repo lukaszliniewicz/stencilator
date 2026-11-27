@@ -21,7 +21,6 @@
     <p class="note">{bench.fileName || words.typed} · {words.allPlates(plates.length)}</p>
     {#if frame}
       <p class="note">{words.includedFrame(frame.width_mm, frame.height_mm)}</p>
-      {#if !frame.fits_bed}<p class="notice">{words.frameBedWarning}</p>{/if}
     {/if}
     {#if bench.progress}
       <p class="note" role="status">
@@ -74,7 +73,7 @@
             <strong>{text.registration.heading}</strong>
             <p class="note">
               {words.partSize(frame.width_mm, frame.height_mm, thickness)} ·
-              {frame.fits_bed ? text.registration.fits : words.bedWarning}
+              {frame.fits_bed ? text.registration.fits : text.registration.bedWarning}
             </p>
           </div>
           <button type="button" class="button" disabled={!bench.ready} onclick={bench.saveFrame}>

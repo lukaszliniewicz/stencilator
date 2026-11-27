@@ -7,7 +7,7 @@ export type ChartFormat = 'png' | 'jpeg' | 'pdf';
 export type ProjectMode = 'tiles' | 'freeform';
 export type SupportKind = 'flat' | 'raised';
 export type Mark = 'none' | 'number' | 'ral';
-export type SupportIssue = 'landings' | 'span' | 'conflict';
+export type SupportIssue = 'landings' | 'span' | 'conflict' | 'suggestion';
 export type Point = [number, number];
 /** Whole micrometres from the plate's bottom-left. */
 export type Ends = [Point, Point];
@@ -17,6 +17,13 @@ export interface SupportEdit {
   kind: SupportKind;
   original?: Ends;
   ends?: Ends;
+}
+
+interface RaisedSettings {
+  width_mm: number;
+  clearance_mm: number;
+  beam_mm: number;
+  warn_mm: number;
 }
 
 export type ArtworkSize =
@@ -42,12 +49,9 @@ export interface ProjectSettings {
     min_web_mm: number;
     min_opening_mm: number;
     bridge_width_mm?: number;
-    raised_connectors?: {
-      width_mm: number;
-      clearance_mm: number;
-      beam_mm: number;
-      warn_mm: number;
-    };
+    raised_connectors?: RaisedSettings;
+    inactive_bridge_width_mm?: number;
+    inactive_raised_connectors?: RaisedSettings;
     registration_clearance_mm?: number;
     support_edits?: SupportEdit[];
     paint_order?: string[];
@@ -163,6 +167,7 @@ export interface PlateReport {
   raised_connectors?: { count: number; single_support_islands: Spot[]; long_spans: number };
   height_with_supports_mm?: number;
   unplaced_supports?: number;
+  unmatched_suggestions?: number;
   mark?: { text: string; applied: boolean };
   ral?: { code: number; colour: string };
   chamfer_limited?: boolean;

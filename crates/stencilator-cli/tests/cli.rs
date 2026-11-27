@@ -241,6 +241,39 @@ fn flat_bridges_survive_project_save_and_can_be_turned_off() {
 }
 
 #[test]
+fn custom_support_dimensions_survive_switching_off_and_back_on() {
+    let dir = workspace("support-dimensions");
+    let saved = |name| serde_json::from_slice::<serde_json::Value>(&fs::read(dir.join(name)).unwrap()).unwrap();
+    report(
+        &dir,
+        &[
+            "freeform",
+            "--text",
+            "O",
+            "--raised-connectors=1.4",
+            "--beam-thickness",
+            "0.9",
+            "--save",
+            "raised.stencilator",
+        ],
+    );
+    report(&dir, &["freeform", "raised.stencilator", "--flat-bridges=1.6", "--save", "flat.stencilator"]);
+    assert_eq!(saved("flat.stencilator")["freeform"]["bridge_width_mm"], 1.6);
+    assert_eq!(saved("flat.stencilator")["freeform"]["inactive_raised_connectors"]["beam_mm"], 0.9);
+    let plain = report(&dir, &["freeform", "flat.stencilator", "--flat-bridges=0", "--save", "plain.stencilator"]);
+    assert!(plain["plates"][0].get("flat_bridges").is_none());
+    assert!(plain["plates"][0].get("raised_connectors").is_none());
+    report(&dir, &["freeform", "plain.stencilator", "--flat-bridges", "--save", "flat-again.stencilator"]);
+    assert_eq!(saved("flat-again.stencilator")["freeform"], saved("flat.stencilator")["freeform"]);
+    report(&dir, &["freeform", "flat-again.stencilator", "--raised-connectors", "--save", "raised-again.stencilator"]);
+    assert_eq!(
+        saved("raised-again.stencilator")["freeform"]["raised_connectors"],
+        saved("raised.stencilator")["freeform"]["raised_connectors"]
+    );
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
 fn keyed_plates_and_their_frame_export_and_reopen_together() {
     let dir = workspace("registration");
     let badge = fixture("svg/badge.svg");

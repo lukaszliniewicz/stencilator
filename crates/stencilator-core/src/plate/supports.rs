@@ -1,6 +1,6 @@
 //! Flat and raised supports, with manual edits replayed against the current plate.
 
-use std::collections::VecDeque;
+use std::collections::{BTreeSet, VecDeque};
 
 use serde::{Deserialize, Serialize};
 
@@ -116,6 +116,8 @@ pub enum SupportIssue {
     Span,
     /// The support would meet another manual support.
     Conflict,
+    /// The saved removal no longer matches an automatic suggestion.
+    Suggestion,
 }
 
 impl SupportIssue {
@@ -125,6 +127,7 @@ impl SupportIssue {
             Self::Landings => "landings",
             Self::Span => "span",
             Self::Conflict => "conflict",
+            Self::Suggestion => "suggestion",
         }
     }
 }
@@ -299,9 +302,10 @@ impl Supports {
         let setback = if spec.raised.is_some() { 100 + chamfer } else { 0 };
         let (suggested, single) = suggestions(surface.base, surface.size, spec.width, landing + setback);
         let manual: Vec<_> = supports.placed.iter().map(|p| padded(p.shape.clone())).collect();
+        let mut unmatched: BTreeSet<_> = relevant.iter().filter_map(|(_, edit)| edit.original).collect();
         for bridge in suggested {
             let ends = [bridge.end(0), bridge.end(1)].map(|p| [p.x, p.y]);
-            if relevant.iter().any(|(_, edit)| edit.original == Some(ends)) {
+            if unmatched.remove(&ends) {
                 continue;
             }
             let shape = bridge.shape();
@@ -316,6 +320,11 @@ impl Supports {
             }
             let gap = if kind == SupportKind::Raised { beam.span(landing) } else { bridge.gap };
             supports.placed.push(Placed { beam, shape, pieces: bridge.pieces, gap, edit: None });
+        }
+        for (edit, saved) in &relevant {
+            if let Some(ends) = saved.original.filter(|ends| unmatched.contains(ends)) {
+                supports.unplaced.push(Unplaced { ends, edit: *edit, issue: SupportIssue::Suggestion });
+            }
         }
         // Preserve the original flat-bridge report for existing projects.
         if kind == SupportKind::Flat && relevant.is_empty() {
@@ -401,7 +410,11 @@ impl Supports {
     }
 
     pub(super) fn unplaced(&self) -> usize {
-        self.unplaced.len()
+        self.unplaced.len() - self.unmatched_suggestions()
+    }
+
+    pub(super) fn unmatched_suggestions(&self) -> usize {
+        self.unplaced.iter().filter(|item| item.issue == SupportIssue::Suggestion).count()
     }
 
     pub(super) fn long_spans(&self, warn: i32) -> usize {
@@ -457,7 +470,9 @@ impl Supports {
                 if (top..top + beam).contains(&z0) {
                     shapes.push(p.shape.clone());
                 } else if z0 < top {
-                    let extension = if z0 < clearance { 0 } else { z0 - clearance + STEP };
+                    // Another connector's beam may end partway through this
+                    // one's step. Its feet still grow on the 0.2 mm grid.
+                    let extension = if z0 < clearance { 0 } else { (z0 - clearance) / STEP * STEP + STEP };
                     shapes.extend(p.beam.feet(spec.width + extension));
                 }
             }
@@ -473,4 +488,31 @@ fn reach(gap: i32) -> i32 {
 
 fn free_span(gap: i32) -> i32 {
     gap - 2 * reach(gap)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_end_of_one_beam_does_not_add_a_step_to_another() {
+        let raised = RaisedSettings { beam_mm: 0.9, ..RaisedSettings::default() };
+        let width = um(raised.width_mm);
+        let placed = |y, gap| {
+            let beam = Beam::new([[0, y], [2 * width + gap, y]], width);
+            Placed { beam, shape: beam.outline(), pieces: [0, 1], gap, edit: None }
+        };
+        let supports = Supports {
+            spec: Some(Spec { width, raised: Some(raised) }),
+            placed: vec![placed(0, 30_400), placed(4_000, 34_800)],
+            ..Supports::default()
+        };
+        let mut slabs = Vec::new();
+        supports.extend_slabs(&mut slabs, 1_200).unwrap();
+        let at = |z| &slabs.iter().find(|slab| slab.z0 == z).unwrap().shapes;
+        let long = supports.placed[1].beam;
+        assert!(at(5_000).ends_with(&long.feet(2_400)));
+        assert_eq!(at(5_100), &long.feet(2_400));
+        assert_eq!(at(5_200), &long.feet(2_600));
+    }
 }

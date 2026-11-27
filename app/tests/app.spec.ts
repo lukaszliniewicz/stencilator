@@ -407,6 +407,16 @@ test('raised support edits validate both ends, persist and undo', async ({ page 
   await supports.getByRole('button', { name: 'Restore suggestions' }).click();
   await expect(supports.getByRole('button', { name: 'Restore suggestions' })).toHaveCount(0);
   await expect(two).toBeVisible();
+
+  await first.click();
+  await supports.getByRole('button', { name: 'Remove support' }).click();
+  await expect(page.getByText('1 raised connector', { exact: true })).toBeVisible();
+  await page.getByLabel('Margin (mm)', { exact: true }).fill('9');
+  await expect(page.getByText('1 saved removal no longer matches the suggestions')).toBeVisible();
+  await supports.getByRole('button', { name: /Old removal/ }).click();
+  await supports.getByRole('button', { name: 'Discard old removal' }).click();
+  await expect(supports.getByRole('button', { name: /Old removal/ })).toHaveCount(0);
+  await expect(two).toBeVisible();
   expect(problems).toEqual([]);
 });
 
@@ -464,7 +474,73 @@ test('the keyed 3D preview and print files follow the chosen paint order', async
       parts.getByRole('button', { name: 'Save plate 2, #C6532D' }).click()
     )
   ).toBe('two-paints-plate-02-c6532d.stl');
+
+  const saved = page.waitForEvent('download');
+  await page.getByRole('button', { name: 'Save project', exact: true }).click();
+  const design = await saved;
+  await page.reload();
+  await page.getByLabel('Stencilator project file', { exact: true }).setInputFiles({
+    name: design.suggestedFilename(),
+    mimeType: 'application/json',
+    buffer: await readFile(await design.path())
+  });
+  await expect(page.getByRole('checkbox', { name: 'Use a keyed frame' })).toBeChecked();
+  await expect(page.getByLabel('Chamfer (mm)')).toHaveValue('0.4');
+  await expect(page.getByLabel('Overlap (mm)')).toHaveValue('0.2');
+  await expect(page.getByRole('button', { name: 'RAL code', exact: true })).toHaveAttribute(
+    'aria-pressed',
+    'true'
+  );
+  await page.getByRole('button', { name: 'Painted result', exact: true }).click();
+  await expect(coats.first()).toHaveAttribute('data-paint', '1');
   expect(problems).toEqual([]);
+});
+
+test('the 3D preview marks the old frame as stale while the new mesh loads', async ({ page }) => {
+  await page.addInitScript(() => {
+    let release: (() => void) | undefined;
+    document.addEventListener('release-print-geometry', () => {
+      document.documentElement.removeAttribute('data-hold-plate-file');
+      release?.();
+      release = undefined;
+    });
+    window.Worker = class extends Worker {
+      override postMessage(
+        message: { request?: { kind?: string } },
+        options: StructuredSerializeOptions | Transferable[] = []
+      ): void {
+        const forward = (): void => {
+          if (Array.isArray(options)) super.postMessage(message, options);
+          else super.postMessage(message, options);
+        };
+        const root = document.documentElement;
+        if (message.request?.kind === 'plateFile' && root.hasAttribute('data-hold-plate-file')) {
+          release = forward;
+          root.setAttribute('data-hold-plate-file', 'held');
+        } else forward();
+      }
+    };
+  });
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Type text', exact: true }).click();
+  await page.getByRole('textbox', { name: 'Text', exact: true }).fill('O');
+  const frame = page.getByRole('checkbox', { name: 'Use a keyed frame' });
+  await frame.check();
+  await page.getByRole('button', { name: 'Plate', exact: true }).click();
+  await page.getByRole('button', { name: '3D', exact: true }).click();
+  const exploded = page.getByRole('button', { name: 'Exploded', exact: true });
+  await expect(exploded).toBeVisible();
+  await page.evaluate(() => {
+    document.documentElement.setAttribute('data-hold-plate-file', 'yes');
+  });
+  await frame.uncheck();
+  await expect(page.locator('html')).toHaveAttribute('data-hold-plate-file', 'held');
+  const model = page.getByRole('application', { name: '3D preview of the print geometry' });
+  await expect(exploded).toHaveCount(0);
+  await expect(model).toHaveAttribute('aria-busy', 'true');
+  await expect(model.locator('canvas')).toHaveCSS('opacity', '0.4');
+  await page.evaluate(() => document.dispatchEvent(new Event('release-print-geometry')));
+  await expect(model).toHaveAttribute('aria-busy', 'false');
 });
 
 test('the painted result shows all remaining coats when a step disappears', async ({ page }) => {

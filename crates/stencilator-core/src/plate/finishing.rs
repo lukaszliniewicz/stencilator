@@ -8,7 +8,7 @@ use crate::Error;
 use crate::geometry::{
     Corners, Point, Shapes, clean, difference, intersection, offset, rectangle, translate, um, union,
 };
-use crate::mesh::Slab;
+use crate::mesh::{Slab, first_pinched_section};
 use crate::ral;
 use crate::stencil::RECOMMENDED_MIN_WEB_MM;
 
@@ -179,20 +179,8 @@ impl Plate {
         }
         let depth = um(options.chamfer_mm);
         let gap = um(settings.min_web_mm.max(RECOMMENDED_MIN_WEB_MM));
-        let (width, height) = body;
-        let allowed = if width.min(height) > 2 * gap {
-            vec![vec![rectangle(gap, gap, width - gap, height - gap)]]
-        } else {
-            Vec::new()
-        };
-        let mut levels = Vec::new();
-        for reach in (0..depth).step_by(STEP_UM as usize) {
-            let grown = offset(unbridged, (reach + STEP_UM).min(depth), Corners::Bevel)?;
-            let clipped = intersection(&grown, &allowed);
-            self.finish.chamfer_limited |= !difference(&difference(&grown, &allowed), unbridged).is_empty();
-            let openings = difference(&union(unbridged, &clipped), bridges);
-            levels.push((depth - reach, openings));
-        }
+        let mut levels =
+            if depth > 0 { self.chamfer_levels(body, outline, depth, gap, unbridged, bridges)? } else { Vec::new() };
         self.finish.top_openings = levels.last().map(|(_, top)| top.clone());
         let top = self.finish.top_openings.as_ref().unwrap_or(&self.openings);
         let mark = match options.mark {
@@ -204,7 +192,7 @@ impl Plate {
             let thickness = um(settings.thickness_mm);
             let margin = um(settings.margin_mm);
             if thickness >= MARK_DEPTH_UM + STEP_UM {
-                self.finish.engraving = engraving(&text, width, margin, gap, top);
+                self.finish.engraving = engraving(&text, body.0, margin, gap, top);
             }
             let applied = !self.finish.engraving.is_empty();
             self.finish.mark = Some(MarkReport { text, applied });
@@ -228,6 +216,48 @@ impl Plate {
             })
             .collect();
         Ok(())
+    }
+
+    fn chamfer_levels(
+        &mut self,
+        (width, height): (i32, i32),
+        outline: &Shapes,
+        depth: i32,
+        gap: i32,
+        unbridged: &Shapes,
+        bridges: &Shapes,
+    ) -> Result<Vec<(i32, Shapes)>, Error> {
+        let allowed = if width.min(height) > 2 * gap {
+            vec![vec![rectangle(gap, gap, width - gap, height - gap)]]
+        } else {
+            Vec::new()
+        };
+        // Keep the surrounding material at the bridge ends through the full
+        // thickness. This masks only the chamfer, never the work-face openings.
+        let bridge_landings = offset(bridges, depth, Corners::Bevel)?;
+        let mut levels = Vec::new();
+        let mut sections = vec![self.solid.clone()];
+        for start in (0..depth).step_by(STEP_UM as usize) {
+            let grown = offset(unbridged, (start + STEP_UM).min(depth), Corners::Bevel)?;
+            let extra = difference(&grown, unbridged);
+            let clipped = difference(&intersection(&extra, &allowed), &bridge_landings);
+            self.finish.chamfer_limited |= !difference(&extra, &clipped).is_empty();
+            let openings = union(&self.openings, &clipped);
+            sections.push(plate_solid(outline, &openings));
+            levels.push((depth - start, openings));
+        }
+
+        // Stop widening at the last intact step. Alignment uses vertices from
+        // the whole stack, so repeat after dropping the unsafe sections.
+        while !levels.is_empty() {
+            let Some(section) = first_pinched_section(&sections) else { break };
+            self.finish.chamfer_limited = true;
+            // A higher section can also snap the work face into a pinch.
+            // Remove the widest step first if the contact is in the work face.
+            levels.truncate(section.checked_sub(1).unwrap_or(levels.len() - 1));
+            sections.truncate(levels.len() + 1);
+        }
+        Ok(levels)
     }
 }
 

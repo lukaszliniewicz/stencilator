@@ -190,9 +190,7 @@ export class Workbench {
   readonly coatPaths = $derived(
     this.#paintedPaths?.forBuild === this.freeform ? this.#paintedPaths?.coats : undefined
   );
-  readonly supportKind = $derived<SupportKind | 'none'>(
-    this.settings.raised ? 'raised' : this.settings.bridgeWidthMm !== null ? 'flat' : 'none'
-  );
+  readonly supportKind = $derived(this.settings.supportKind);
   readonly selectedSupport = $derived(
     this.#support && this.drawing?.supports?.includes(this.#support) ? this.#support : undefined
   );
@@ -353,8 +351,7 @@ export class Workbench {
   setSupportKind = (kind: 'none' | SupportKind): void => {
     if (this.supportKind === kind) return;
     this.#changing();
-    this.settings.raised = kind === 'raised';
-    this.settings.bridgeWidthMm = kind === 'flat' ? 1.2 : null;
+    this.settings.supportKind = kind;
     if (kind === 'raised' && Number.isFinite(this.settings.thicknessMm)) {
       this.settings.connectorClearanceMm = Math.max(
         this.settings.connectorClearanceMm,
@@ -504,7 +501,11 @@ export class Workbench {
   restoreSupports = (): void => {
     const paint = this.selectedPlate?.colour;
     if (!this.ready || !paint) return;
-    this.#commitSupportEdits(this.settings.supportEdits.filter((edit) => edit.paint !== paint));
+    this.#commitSupportEdits(
+      this.settings.supportEdits.filter(
+        (edit) => edit.paint !== paint || edit.kind !== this.supportKind
+      )
+    );
   };
 
   #storeSupport(support: SupportDrawing | undefined, ends?: Ends): void {
@@ -513,6 +514,12 @@ export class Workbench {
     if (!paint || kind === 'none') return;
     const edits = $state.snapshot(this.settings.supportEdits);
     const i = support?.edit;
+    if (support?.issue === 'suggestion' && i !== undefined) {
+      const keptEnds = edits[i]?.ends;
+      edits.splice(i, 1, ...(keptEnds ? [{ paint, kind, ends: keptEnds }] : []));
+      this.#commitSupportEdits(edits);
+      return;
+    }
     const original = i === undefined ? support?.ends : edits[i]?.original;
     const next: SupportEdit = {
       paint,

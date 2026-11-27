@@ -9,8 +9,8 @@ use stencilator_core::artwork::{LabelMap, label_drawing, label_picture};
 use stencilator_core::colour::Rgb;
 use stencilator_core::drawing::{parse_svg, text_drawing};
 use stencilator_core::plate::{
-    Mark, Plate, PlateReport, Spot, build_plates, check_plate, plate_files, plates_3mf, registration_frame,
-    reports_json,
+    Mark, Plate, PlateReport, RaisedSettings, Spot, SupportKind, build_plates, check_plate, plate_files, plates_3mf,
+    registration_frame, reports_json,
 };
 use stencilator_core::project::{ArtworkSize, Colour, Freeform, Mode, Project, Source};
 use stencilator_core::registration::FrameReport;
@@ -78,25 +78,25 @@ pub(crate) struct FreeformArgs {
     /// Report openings narrower than this, in millimetres [default: 0.5]
     #[arg(long, value_name = "MM", help_heading = "Plates")]
     min_opening: Option<f64>,
-    /// Hold islands with flat bridges (1.2 mm by default). Pass =MM to set their width,
-    /// or =0 to turn them off in a saved project.
+    /// Hold islands with flat bridges (saved width, or 1.2 mm). Pass =MM to change
+    /// the width, or =0 to turn them off.
+    #[allow(clippy::option_option, reason = "Clap distinguishes an absent flag, a bare flag and an explicit width")]
     #[arg(
         long,
         value_name = "MM",
         num_args = 0..=1,
         require_equals = true,
-        default_missing_value = "1.2",
         conflicts_with = "raised_connectors",
         help_heading = "Plates"
     )]
-    flat_bridges: Option<f64>,
-    /// Trial: hold islands above the openings (1.2 mm wide). Pass =MM for a different
-    /// width, or =0 to turn them off.
+    flat_bridges: Option<Option<f64>>,
+    /// Trial: hold islands above the openings (saved width, or 1.2 mm). Pass =MM
+    /// to change the width, or =0 to turn them off.
+    #[allow(clippy::option_option, reason = "Clap distinguishes an absent flag, a bare flag and an explicit width")]
     #[arg(
-        long, value_name = "MM", num_args = 0..=1, require_equals = true,
-        default_missing_value = "1.2", help_heading = "Plates"
+        long, value_name = "MM", num_args = 0..=1, require_equals = true, help_heading = "Plates"
     )]
-    raised_connectors: Option<f64>,
+    raised_connectors: Option<Option<f64>>,
     /// Minimum height beneath a raised beam, from the work face [default: 4]
     #[arg(long, value_name = "MM", help_heading = "Plates")]
     connector_clearance: Option<f64>,
@@ -232,12 +232,8 @@ impl FreeformArgs {
                 *field = value;
             }
         }
-        for (value, field) in
-            [(self.flat_bridges, &mut f.bridge_width_mm), (self.registration, &mut f.registration_clearance_mm)]
-        {
-            if let Some(value) = value {
-                *field = (value != 0.0).then_some(value);
-            }
+        if let Some(value) = self.registration {
+            f.registration_clearance_mm = (value != 0.0).then_some(value);
         }
         self.apply_connectors(f)?;
         self.finishing.apply(f);
@@ -247,15 +243,33 @@ impl FreeformArgs {
     }
 
     fn apply_connectors(&self, f: &mut Freeform) -> Result<(), String> {
-        if self.flat_bridges.is_some_and(|width| width != 0.0) {
-            f.raised_connectors = None;
+        const FLAT_WIDTH: f64 = 1.2;
+        if let Some(width) = self.flat_bridges {
+            if width == Some(0.0) {
+                if let Some(old) = f.bridge_width_mm.take() {
+                    f.inactive_bridge_width_mm = (old != FLAT_WIDTH).then_some(old);
+                }
+            } else {
+                if let Some(old) = f.raised_connectors.take() {
+                    f.inactive_raised_connectors = (old != RaisedSettings::default()).then_some(old);
+                }
+                let saved = f.inactive_bridge_width_mm.take();
+                f.bridge_width_mm = width.or(f.bridge_width_mm).or(saved).or(Some(FLAT_WIDTH));
+            }
         }
         if let Some(width) = self.raised_connectors {
-            if width == 0.0 {
-                f.raised_connectors = None;
+            if width == Some(0.0) {
+                if let Some(old) = f.raised_connectors.take() {
+                    f.inactive_raised_connectors = (old != RaisedSettings::default()).then_some(old);
+                }
             } else {
-                f.bridge_width_mm = None;
-                f.raised_connectors.get_or_insert_default().width_mm = width;
+                if let Some(old) = f.bridge_width_mm.take() {
+                    f.inactive_bridge_width_mm = (old != FLAT_WIDTH).then_some(old);
+                }
+                let saved = f.inactive_raised_connectors.take();
+                let mut raised = f.raised_connectors.or(saved).unwrap_or_default();
+                raised.width_mm = width.unwrap_or(raised.width_mm);
+                f.raised_connectors = Some(raised);
             }
         }
         let dimensions = [self.connector_clearance, self.beam_thickness, self.warn_span];
@@ -475,6 +489,20 @@ impl Report<'_> {
                 ));
             }
         }
+        let kind = if settings.raised_connectors.is_some() {
+            Some(SupportKind::Raised)
+        } else {
+            settings.bridge_width_mm.map(|_| SupportKind::Flat)
+        };
+        let missing_paints = settings
+            .support_edits
+            .iter()
+            .filter(|edit| Some(edit.kind) == kind && !self.plates.iter().any(|plate| plate.colour == edit.paint.0))
+            .count();
+        if missing_paints > 0 {
+            let edits = count(missing_paints, "saved support edit", "saved support edits");
+            warnings.push(format!("{edits} for unticked or missing paints."));
+        }
         let [bed_w, bed_h] = self.project.stencils.bed_mm;
         if let Some(report) = self.reports.first().filter(|r| !r.fits_bed) {
             warnings.push(format!(
@@ -517,13 +545,21 @@ impl Report<'_> {
             );
             warnings.push(format!("{name}: {supports}"));
         }
+        if report.unmatched_suggestions > 0 {
+            let removals = count(
+                report.unmatched_suggestions,
+                "saved removal no longer matches a suggestion",
+                "saved removals no longer match any suggestions",
+            );
+            warnings.push(format!("{name}: {removals}. Review the suggested supports before printing."));
+        }
         if let Some(mark) = &report.mark
             && !mark.applied
         {
             warnings.push(format!("{name}: there is not enough solid margin or thickness to deboss {}.", mark.text));
         }
         if report.chamfer_limited {
-            warnings.push(format!("{name}: the chamfer is limited to keep the rim around the openings."));
+            warnings.push(format!("{name}: the chamfer is limited to keep the stencil intact."));
         }
         if report.overlap_limited {
             warnings.push(format!("{name}: paint overlap is limited to keep the stencil intact."));

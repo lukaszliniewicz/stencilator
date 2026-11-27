@@ -283,13 +283,16 @@ pub struct PlateReport {
     /// Saved supports whose ends no longer fit.
     #[serde(skip_serializing_if = "is_zero")]
     pub unplaced_supports: usize,
+    /// Saved removals that no longer match a suggested support.
+    #[serde(skip_serializing_if = "is_zero")]
+    pub unmatched_suggestions: usize,
     /// The nearest RAL Classic code when requested, with its unofficial screen colour.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ral: Option<ral::Match>,
     /// Whether the requested digits could be cut into the margin.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub mark: Option<MarkReport>,
-    /// Whether the spray-side chamfer was stopped short to keep the rim.
+    /// Whether the spray-side chamfer was stopped short to keep the plate intact.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub chamfer_limited: bool,
     /// Whether paint overlap was reduced or omitted to keep the plate intact.
@@ -452,7 +455,8 @@ impl Plate {
 
     fn surface(&self) -> Surface<'_> {
         let base = self.flat_base.as_ref().unwrap_or(&self.solid);
-        let top = self.flat_base.as_ref().unwrap_or_else(|| self.finish.top_solid(&self.solid));
+        // A new flat bridge protects its own landings from the chamfer on rebuild.
+        let top = if self.flat_bridges.is_some() { base } else { self.finish.top_solid(&self.solid) };
         Surface { base, top, size: self.size_um }
     }
 
@@ -655,6 +659,7 @@ pub fn inspect_plate(plate: &Plate, settings: &PlateSettings) -> Result<(PlateRe
         }),
         height_with_supports_mm: plate.supports.height().map(mm),
         unplaced_supports: plate.supports.unplaced(),
+        unmatched_suggestions: plate.supports.unmatched_suggestions(),
         ral: plate.finish.ral,
         mark: plate.finish.mark.clone(),
         chamfer_limited: plate.finish.chamfer_limited,
@@ -882,6 +887,17 @@ mod tests {
         assert!(mesh.is_closed() && mesh.pieces == 1, "{mesh:?}");
         let area = report.width_mm * report.height_mm - report.opening_mm2;
         assert!((mesh.volume_mm3 - area * settings.thickness_mm).abs() < 1e-6, "{mesh:?}");
+
+        let finished =
+            PlateSettings { finish: FinishSettings { chamfer_mm: 1.0, ..FinishSettings::default() }, ..settings };
+        let chamfered = &build_plates(&nested, &finished, &[PAPER]).unwrap()[0];
+        assert_eq!(chamfered.openings, plate.openings);
+        assert!(area_mm2(chamfered.finish.top_openings.as_ref().unwrap()) > area_mm2(&plate.openings));
+        let spray_face = chamfered.finish.top_solid(&chamfered.solid);
+        assert_eq!(spray_face.len(), 1, "all bridge ends still join the plate at the spray face");
+        assert!(difference(&plate.supports.footprints(), spray_face).is_empty(), "landings stay full thickness");
+        let mesh = inspect(&chamfered.mesh(finished.thickness_mm).unwrap());
+        assert!(mesh.is_closed() && mesh.pieces == 1, "{mesh:?}");
     }
 
     #[test]
@@ -955,10 +971,14 @@ mod tests {
         let resized = &build_plates(&art, &settings, &[PAPER]).unwrap()[0];
         let (report, problems) = inspect_plate(resized, &settings).unwrap();
         assert_eq!(report.unplaced_supports, 1);
+        assert_eq!(report.unmatched_suggestions, 2);
         let drawing = plate_drawing(resized, &problems);
-        let unplaced = drawing.supports.last().unwrap();
+        let unplaced = drawing.supports.iter().find(|item| item.issue == Some(SupportIssue::Landings)).unwrap();
         assert_eq!((unplaced.edit, unplaced.ends, unplaced.issue), (Some(0), ends, Some(SupportIssue::Landings)));
         assert_eq!(unplaced.path, "");
+        let old_removal = drawing.supports.iter().find(|item| item.edit == Some(1)).unwrap();
+        assert_eq!(old_removal.ends, settings.support_edits[1].original.unwrap());
+        assert_eq!(old_removal.issue, Some(SupportIssue::Suggestion));
     }
 
     #[test]
@@ -1019,6 +1039,28 @@ mod tests {
         assert!(!check_plate(small, &settings).unwrap().mark.unwrap().applied);
         assert_eq!(small.finish.engraving, Shapes::new());
         assert!(inspect(&small.mesh(settings.thickness_mm).unwrap()).is_closed());
+    }
+
+    #[test]
+    fn a_chamfer_does_not_pinch_the_web_between_letters() {
+        use crate::artwork::{ArtworkSettings, Size, label_drawing};
+        use crate::drawing::text_drawing;
+
+        let fonts = [include_bytes!("../../../fonts/NotoSans-Bold.ttf").as_slice()];
+        let drawing = text_drawing("Stencilator", &fonts, 10.0, [0; 3]).unwrap();
+        let art =
+            label_drawing(&drawing, &ArtworkSettings { size: Size::Natural, ..ArtworkSettings::default() }).unwrap();
+        let original = &build_plates(&art, &PlateSettings::default(), &[[255; 3]]).unwrap()[0];
+        let settings = PlateSettings {
+            finish: FinishSettings { chamfer_mm: 0.7, ..FinishSettings::default() },
+            ..PlateSettings::default()
+        };
+        let plate = &build_plates(&art, &settings, &[[255; 3]]).unwrap()[0];
+        assert_eq!(plate.openings, original.openings);
+        assert!(check_plate(plate, &settings).unwrap().chamfer_limited);
+        assert!(area_mm2(plate.finish.top_openings.as_ref().unwrap()) > area_mm2(&plate.openings));
+        let mesh = inspect(&plate.mesh(settings.thickness_mm).unwrap());
+        assert!(mesh.is_closed() && mesh.pieces == original.solid.len(), "{mesh:?}");
     }
 
     #[test]

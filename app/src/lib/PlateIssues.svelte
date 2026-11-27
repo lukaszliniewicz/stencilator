@@ -14,6 +14,7 @@
     ...(singleConnector ? [text.supports.single(singleConnector)] : []),
     ...(raised?.long_spans ? [text.supports.long(raised.long_spans)] : []),
     ...(plate.unplaced_supports ? [text.supports.unplaced(plate.unplaced_supports)] : []),
+    ...(plate.unmatched_suggestions ? [text.supports.unmatched(plate.unmatched_suggestions)] : []),
     ...(plate.thin_webs.length ? [words.thinWebs(plate.thin_webs.length)] : []),
     ...(plate.narrow_openings.length ? [words.narrowOpenings(plate.narrow_openings.length)] : []),
     ...(plate.mark && !plate.mark.applied ? [text.finishing.markSkipped(plate.mark.text)] : []),

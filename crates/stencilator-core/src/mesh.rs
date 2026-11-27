@@ -133,6 +133,15 @@ fn align(slabs: &[Shapes]) -> Vec<Shapes> {
         .collect()
 }
 
+/// The first cross-section whose boundaries meet at a point after alignment.
+/// Extruding that section would make an edge shared by more than two walls.
+pub(crate) fn first_pinched_section(sections: &[Shapes]) -> Option<usize> {
+    align(sections).iter().position(|shapes| {
+        let mut seen = BTreeSet::new();
+        shapes.iter().flatten().flatten().any(|&point| !seen.insert(point))
+    })
+}
+
 /// Corners whose x lies within `x0..=x1`, from corners sorted by x.
 fn corners_between(corners: &[Point], x0: i32, x1: i32) -> &[Point] {
     let start = corners.partition_point(|p| p.x < x0);
@@ -293,6 +302,9 @@ fn repair_t_junctions(mesh: &mut Mesh) -> Result<(), Error> {
         let unmatched: Vec<(u32, u32)> =
             edges.keys().filter(|&&(a, b)| !edges.contains_key(&(b, a))).copied().collect();
         if unmatched.is_empty() {
+            if edges.values().any(|&uses| uses > 1) {
+                return Err(fault("an edge is shared by more than two faces"));
+            }
             return Ok(());
         }
         let candidates: BTreeSet<u32> = unmatched.iter().flat_map(|&(a, b)| [a, b]).collect();
@@ -469,6 +481,13 @@ mod tests {
         let report = inspect(&mesh_slabs(&[Slab { z0: 0, z1: 1200, shapes: plate }]).unwrap());
         assert!(report.is_closed(), "{report:?}");
         assert_eq!(report.pieces, 2);
+    }
+
+    #[test]
+    fn material_that_meets_only_along_one_edge_is_rejected() {
+        let touching = vec![vec![rectangle(0, 0, 3000, 3000)], vec![rectangle(3000, 3000, 6000, 6000)]];
+        let error = mesh_slabs(&[Slab { z0: 0, z1: 1200, shapes: touching }]).unwrap_err();
+        assert!(error.to_string().contains("an edge is shared by more than two faces"), "{error}");
     }
 
     /// A 60 by 40 mm plate whose ring-shaped opening holds a disc, carried by three raised

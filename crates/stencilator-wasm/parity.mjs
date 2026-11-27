@@ -156,6 +156,16 @@ const freeform = [
     args: ["--text", "O", "--raised-connectors", "--connector-clearance", "4.2", "--registration", "--chamfer", "0.4", "--mark", "ral", "--match-ral"],
   },
   {
+    name: "text with limited chamfer",
+    project: () => {
+      const project = engine.Project.text("");
+      project.setText("Stencilator", 10, 0);
+      return project;
+    },
+    settings: { freeform: { finish: { chamfer_mm: 0.7 } } },
+    args: ["--text", "Stencilator", "--font-size", "10", "--chamfer", "0.7"],
+  },
+  {
     name: "saved manual support edit",
     project: () => engine.Project.text("O"),
     settings: {
