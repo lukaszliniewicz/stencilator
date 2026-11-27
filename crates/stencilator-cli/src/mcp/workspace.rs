@@ -7,9 +7,9 @@ use std::path::{Component, Path, PathBuf};
 
 use cap_fs_ext::MetadataExt;
 use cap_std::ambient_authority;
-#[cfg(unix)]
-use cap_std::fs::OpenOptionsExt;
 use cap_std::fs::{Dir, OpenOptions};
+#[cfg(unix)]
+use cap_std::fs::{OpenOptionsExt, Permissions, PermissionsExt};
 
 pub(super) const MAX_INPUT_BYTES: u64 = 128 * 1024 * 1024;
 
@@ -84,11 +84,11 @@ impl Workspace {
 
     pub(super) fn destination<'a>(&self, path: &'a Path) -> Result<Destination<'a>, String> {
         let name = file_name(path)?;
-        let parent = self.resolve(path.parent().unwrap_or_else(|| Path::new("")))?;
-        let directory = self
-            .root
-            .open_dir(&parent)
-            .map_err(|error| format!("Choose an existing folder for {}: {error}", path.display()))?;
+        let parent_path = path.parent().unwrap_or_else(|| Path::new(""));
+        let folder_error =
+            |error| format!("Choose an existing folder in the workspace for {}: {error}", path.display());
+        let parent = self.resolve(parent_path).map_err(folder_error)?;
+        let directory = self.root.open_dir(&parent).map_err(|error| folder_error(error.to_string()))?;
         match directory.symlink_metadata(name) {
             Err(error) if error.kind() == ErrorKind::NotFound => Ok(Destination { path, parent, name, directory }),
             Err(error) => Err(format!("{}: {error}", path.display())),
@@ -118,9 +118,12 @@ impl Workspace {
         #[cfg(unix)]
         {
             let staged = cap_tempfile::TempDir::new_in(&destination.directory).map_err(failed)?;
-            let mut file = staged
-                .open_with("export", OpenOptions::new().write(true).create_new(true).mode(0o600))
-                .map_err(failed)?;
+            // Keep incomplete data private without losing group inheritance in
+            // shared folders. The completed file can follow the umask.
+            let group_inheritance = staged.dir_metadata().map_err(failed)?.permissions().mode() & 0o2000;
+            staged.set_permissions(".", Permissions::from_mode(0o700 | group_inheritance)).map_err(failed)?;
+            let mut file =
+                staged.open_with("export", OpenOptions::new().write(true).create_new(true)).map_err(failed)?;
             file.write_all(bytes).and_then(|()| file.sync_all()).map_err(failed)?;
             publish()?;
             install_new(&staged, &destination.directory, destination.name).map_err(failed)?;
@@ -160,6 +163,8 @@ fn install_new(staged: &Dir, destination: &Dir, name: &OsStr) -> io::Result<()> 
         match renameat_with(staged, "export", destination, name, RenameFlags::NOREPLACE) {
             Ok(()) => return Ok(()),
             Err(Errno::NOSYS | Errno::INVAL | Errno::OPNOTSUPP) => {}
+            #[cfg(target_vendor = "apple")]
+            Err(Errno::NOTSUP) => {}
             Err(error) => return Err(error.into()),
         }
     }

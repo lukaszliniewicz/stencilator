@@ -67,7 +67,7 @@ struct ExportRequest {
     design: Design,
     /// New file, relative to the workspace, in an existing folder. Use .stencilator for
     /// an editable project, .json for the full report, .zip for STLs, .3mf for free-form,
-    /// or .pdf, .png or .jpg for a tile chart.
+    /// or .pdf, .png, .jpg or .jpeg for a tile chart.
     path: PathBuf,
 }
 
@@ -208,7 +208,7 @@ impl ExportFormat {
             Some("pdf" | "png" | "jpg" | "jpeg") => {
                 ChartFormat::from_file_name(&path.to_string_lossy()).map(Self::Chart).map_err(|error| error.to_string())
             }
-            _ => Err("Use .stencilator, .json, .zip, .3mf or a tile chart (.pdf, .png or .jpg).".to_owned()),
+            _ => Err("Use .stencilator, .json, .zip, .3mf or a tile chart (.pdf, .png, .jpg or .jpeg).".to_owned()),
         }
     }
 }

@@ -2,7 +2,8 @@
 
 use std::path::{Path, PathBuf};
 
-use schemars::JsonSchema;
+use schemars::transform::transform_subschemas;
+use schemars::{JsonSchema, Schema, SchemaGenerator};
 use serde::Deserialize;
 use serde_json::{Map, Value};
 use stencilator_core::project::{
@@ -19,8 +20,28 @@ pub(super) struct Design {
     /// Change only the given settings, with the same names and units as a project file.
     /// An array replaces the old array. Use null to clear an optional setting, such as
     /// `registration_clearance_mm`; use `"size": "natural"` for an SVG or text at its own size.
-    #[schemars(with = "Option<Settings>")]
+    #[serde(default)]
+    #[schemars(schema_with = "settings_patch_schema", transform = describe_patch)]
     settings: Option<Map<String, Value>>,
+}
+
+fn settings_patch_schema(generator: &mut SchemaGenerator) -> Schema {
+    // Leave full project schemas alone. Here omissions inherit values from the
+    // source, and unknown settings are errors even though project files accept them.
+    generator
+        .settings()
+        .clone()
+        .with(|settings| settings.inline_subschemas = true)
+        .into_generator()
+        .subschema_for::<Option<Settings>>()
+}
+
+fn describe_patch(schema: &mut Schema) {
+    schema.remove("default");
+    if schema.get("properties").is_some() && schema.get("additionalProperties").is_none() {
+        schema.insert("additionalProperties".to_owned(), Value::Bool(false));
+    }
+    transform_subschemas(&mut describe_patch, schema);
 }
 
 #[derive(Deserialize, JsonSchema)]

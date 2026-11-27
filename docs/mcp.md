@@ -10,9 +10,11 @@ Stencilator to create.
 
 ## Set up
 
-Build the command with `cargo build --release --locked -p stencilator-cli`, or
-extract the matching standalone ZIP. Use absolute paths for the executable and
-workspace when configuring the client. Quote paths that contain spaces.
+Build the command with `cargo build --release --locked -p stencilator-cli`.
+There are no published downloads yet. You can also extract a matching
+standalone ZIP from a successful packaging run or [build one locally](#build-a-bundle).
+Use absolute paths for the executable and workspace when configuring the
+client. Quote paths that contain spaces.
 
 ### Claude Code
 
@@ -104,9 +106,12 @@ web plugin.
 dimensions, palette and printability report as the CLI's `--json`. The report
 can flag loose islands, fragile webs, narrow openings and a plate or frame that
 doesn't fit the chosen bed. A particularly long report is shortened in the
-tool result and marked `report_truncated`. If your client cancels an export,
-Stencilator checks for cancellation before installing the file. A file already
-installed at the time of cancellation is kept.
+tool result and marked `report_truncated`. Use your client's cancel action
+to stop an export. Stencilator checks for cancellation between build stages
+and before installing the file. The current stage can take time to finish,
+and a file whose installation is already underway may still appear. Closing
+the server's input lets it finish pending requests for up to five seconds
+before cancelling the remaining work.
 
 For example, these are the arguments to `check_stencil` for a 30 mm-wide ring
 of text with flat bridges and a keyed frame:
@@ -161,10 +166,11 @@ for later when doing this, set `inactive_bridge_width_mm` to that width.
 ## Build a bundle
 
 The [package workflow](https://github.com/lukaszliniewicz/stencilator/blob/main/.github/workflows/package.yml)
-is set up to build and test on Linux x86-64, macOS Apple Silicon and Windows
-x86-64. It produces a standalone ZIP, a Claude Desktop `.mcpb` bundle and
-SHA-256 checksums as build artifacts. Both archives include the bundled font
-licences and a third-party licence report.
+builds and tests on Linux x86-64, macOS Apple Silicon and Windows x86-64. It
+runs on pull requests that affect the packages and can also be run manually.
+It runs both extracted executables before uploading the standalone ZIP,
+Claude Desktop `.mcpb` bundle and SHA-256 checksums as build artefacts.
+Both archives include the bundled font licences and a third-party licence report.
 
 To package a locally built Linux binary, run this from the repository root
 with Python 3.11 or later and `cargo-about` 0.9.3:

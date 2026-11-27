@@ -2,6 +2,8 @@
 
 Notes for anyone changing this repository, people and coding agents alike.
 
+- Work on a branch and open a pull request for review. Check CodeRabbit's findings
+  before merging; merging, releasing and deploying need separate authorisation.
 - Run `make check` before every commit. CI runs it, together with `make parity` and the
   app's checks, and all of them must pass.
 - `internal/` is ignored by git and holds the maintainer's working notes, including the

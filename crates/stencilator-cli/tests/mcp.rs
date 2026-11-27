@@ -6,16 +6,17 @@ use std::fs;
 use std::io::{BufRead, BufReader, Write};
 use std::path::Path;
 use std::process::{Child, ChildStdin, Command, Stdio};
-use std::sync::mpsc::{self, Receiver};
+use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::time::Duration;
 
 use serde_json::{Value, json};
 
 struct Session {
     child: Child,
-    input: ChildStdin,
+    input: Option<ChildStdin>,
     replies: Receiver<Value>,
     next_id: u32,
+    metadata: Option<Value>,
 }
 
 impl Session {
@@ -38,7 +39,7 @@ impl Session {
                 }
             }
         });
-        Self { child, input, replies, next_id: 1 }
+        Self { child, input: Some(input), replies, next_id: 1, metadata: None }
     }
 
     fn start(workspace: &Path) -> Self {
@@ -52,18 +53,45 @@ impl Session {
             }),
         );
         assert_eq!(handshake["serverInfo"]["name"], "stencilator");
-        writeln!(session.input, r#"{{"jsonrpc":"2.0","method":"notifications/initialized"}}"#).unwrap();
+        session.write(json!({"jsonrpc": "2.0", "method": "notifications/initialized"}));
         session
     }
 
-    fn request(&mut self, method: &str, params: &Value) -> Value {
+    fn discover(workspace: &Path) -> (Self, Value) {
+        let mut session = Self::launch(workspace);
+        session.metadata = Some(json!({
+            "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+            "io.modelcontextprotocol/clientInfo": {"name": "stencilator-test", "version": "1"},
+            "io.modelcontextprotocol/clientCapabilities": {}
+        }));
+        let discovered = session.request("server/discover", &json!({}));
+        (session, discovered)
+    }
+
+    fn write(&mut self, mut message: Value) {
+        if let Some(metadata) = &self.metadata {
+            message["params"]["_meta"] = metadata.clone();
+        }
+        writeln!(self.input.as_mut().unwrap(), "{message}").unwrap();
+    }
+
+    fn send(&mut self, method: &str, params: &Value) -> u32 {
         let id = self.next_id;
         self.next_id += 1;
-        writeln!(self.input, "{}", json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params})).unwrap();
+        self.write(json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params}));
+        id
+    }
+
+    fn reply(&self, id: u32) -> Value {
         let reply = self.replies.recv_timeout(Duration::from_secs(20)).unwrap();
         assert_eq!(reply["id"], id, "{reply}");
         assert!(reply.get("error").is_none(), "{reply}");
         reply["result"].clone()
+    }
+
+    fn request(&mut self, method: &str, params: &Value) -> Value {
+        let id = self.send(method, params);
+        self.reply(id)
     }
 
     fn call(&mut self, name: &str, arguments: &Value) -> Value {
@@ -84,6 +112,12 @@ impl Session {
         let result = self.export(design, path);
         assert_eq!(result["isError"], false, "{result}");
         assert_eq!(result["structuredContent"]["written"], json!([path]));
+    }
+
+    fn finish(mut self) {
+        drop(self.input.take());
+        assert_eq!(self.replies.recv_timeout(Duration::from_secs(20)), Err(RecvTimeoutError::Disconnected));
+        assert!(self.child.wait().unwrap().success());
     }
 }
 
@@ -106,27 +140,26 @@ fn cli(workspace: &Path, args: &[&str]) -> Value {
 }
 
 fn same_file(workspace: &Path, mcp: &str, cli: &str) {
-    assert!(
-        fs::read(workspace.join(mcp)).unwrap() == fs::read(workspace.join(cli)).unwrap(),
-        "{mcp} differs from {cli}"
-    );
+    let mcp_path = workspace.join(mcp);
+    let cli_path = workspace.join(cli);
+    assert!(fs::read(&mcp_path).unwrap() == fs::read(&cli_path).unwrap(), "{mcp} differs from {cli}");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = |path| fs::metadata(path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&mcp_path), mode(&cli_path), "{mcp} and {cli} should both follow the umask");
+    }
 }
 
 #[test]
 fn discovers_and_calls_a_tool_without_a_legacy_handshake() {
     let temp = tempfile::tempdir().unwrap();
-    let mut session = Session::launch(temp.path());
-    let metadata = json!({
-        "io.modelcontextprotocol/protocolVersion": "2026-07-28",
-        "io.modelcontextprotocol/clientInfo": {"name": "stencilator-test", "version": "1"},
-        "io.modelcontextprotocol/clientCapabilities": {}
-    });
-    let discover = session.request("server/discover", &json!({"_meta": metadata}));
+    let (mut session, discover) = Session::discover(temp.path());
     assert_eq!(discover["resultType"], "complete");
     assert!(discover["supportedVersions"].as_array().unwrap().contains(&json!("2026-07-28")));
     assert_eq!(discover["_meta"]["io.modelcontextprotocol/serverInfo"]["name"], "stencilator");
 
-    let list = session.request("tools/list", &json!({"_meta": metadata}));
+    let list = session.request("tools/list", &json!({}));
     assert_eq!(list["resultType"], "complete");
     assert!(list["ttlMs"].is_number());
     assert_eq!(list["cacheScope"], "public");
@@ -134,14 +167,113 @@ fn discovers_and_calls_a_tool_without_a_legacy_handshake() {
     assert_eq!(names, ["check_stencil", "export_stencil"]);
 
     let design = json!({"source": {"kind": "text", "text": "O"}});
-    let check = session
-        .request("tools/call", &json!({"_meta": metadata, "name": "check_stencil", "arguments": {"design": design}}));
+    let check = session.call("check_stencil", &json!({"design": design}));
     assert_eq!(check["resultType"], "complete");
     assert_eq!(check["isError"], false);
     let report = &check["structuredContent"];
     assert_eq!(report["mode"], "freeform");
     assert_eq!(serde_json::from_str::<Value>(check["content"][0]["text"].as_str().unwrap()).unwrap(), *report);
     assert_eq!(fs::read_dir(temp.path()).unwrap().count(), 0);
+}
+
+#[test]
+fn lists_tools_during_a_build_and_does_not_publish_a_cancelled_export() {
+    let protocols: [fn(&Path) -> Session; 2] = [Session::start, |workspace| Session::discover(workspace).0];
+    for start in protocols {
+        let temp = tempfile::tempdir().unwrap();
+        let mut session = start(temp.path());
+        let badge = json!({
+            "source": {"kind": "svg", "svg": include_str!("../../../fixtures/svg/badge.svg")},
+            "settings": {"freeform": {"size": {"width_mm": 120}, "cell_mm": 0.14}}
+        });
+        let pending = session.send(
+            "tools/call",
+            &json!({"name": "export_stencil", "arguments": {"design": badge, "path": "cancelled.3mf"}}),
+        );
+        // Give the badge build a head start. Assert reply order, not a speed threshold.
+        std::thread::sleep(Duration::from_millis(75));
+        assert_eq!(session.request("tools/list", &json!({}))["tools"].as_array().unwrap().len(), 2);
+        session.write(json!({
+            "jsonrpc": "2.0", "method": "notifications/cancelled", "params": {"requestId": pending}
+        }));
+        let ring = json!({
+            "source": {"kind": "text", "text": "O"},
+            "settings": {"freeform": {"size": {"width_mm": 20}}}
+        });
+        assert_eq!(session.check(&ring)["mode"], "freeform");
+        session.finish();
+        assert_eq!(fs::read_dir(temp.path()).unwrap().count(), 0);
+    }
+}
+
+#[test]
+fn closing_input_drains_a_pending_reply_and_exits_cleanly() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut session = Session::start(temp.path());
+    let id = session.send(
+        "tools/call",
+        &json!({
+            "name": "export_stencil",
+            "arguments": {
+                "path": "ring.stencilator",
+                "design": {
+                    "source": {"kind": "text", "text": "O"},
+                    "settings": {"freeform": {"size": {"width_mm": 20}}}
+                }
+            }
+        }),
+    );
+    drop(session.input.take());
+    let result = session.reply(id);
+    assert_eq!(result["isError"], false, "{result}");
+    assert_eq!(result["structuredContent"]["written"], json!(["ring.stencilator"]));
+    session.finish();
+    assert!(temp.path().join("ring.stencilator").is_file());
+}
+
+#[test]
+fn settings_are_discovered_as_a_sparse_patch_and_preserve_saved_edits() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut session = Session::start(temp.path());
+    let listed = session.request("tools/list", &json!({}));
+    let tool = listed["tools"].as_array().unwrap().iter().find(|tool| tool["name"] == "export_stencil").unwrap();
+    let design_schema = &tool["inputSchema"]["$defs"]["Design"];
+    assert_eq!(design_schema["required"], json!(["source"]));
+    let patch = &design_schema["properties"]["settings"];
+    assert!(!patch.to_string().contains(r#""default":"#));
+    assert_eq!(patch["additionalProperties"], false);
+    let stencils = &patch["properties"]["stencils"];
+    assert_eq!(stencils["additionalProperties"], false);
+    assert_eq!(stencils["properties"]["thickness_mm"]["type"], "number");
+    assert!(tool["inputSchema"]["properties"]["path"]["description"].as_str().unwrap().contains(".jpeg"));
+
+    let edits = json!([{"paint": "#1d2f5c", "kind": "raised", "original": [[1000, 2000], [3000, 4000]]}]);
+    let order = json!(["#ef7d2d", "#1d2f5c"]);
+    let design = json!({
+        "source": {"kind": "svg", "svg": include_str!("../../../fixtures/svg/badge.svg")},
+        "settings": {
+            "freeform": {
+                "size": {"width_mm": 50}, "cell_mm": 0.2, "raised_connectors": {},
+                "support_edits": edits, "paint_order": order, "finish": {"mark": "number"}
+            },
+            "stencils": {"thickness_mm": 1.6}
+        }
+    });
+    session.save(&design, "badge.stencilator");
+    let revised = json!({
+        "source": {"kind": "project", "path": "badge.stencilator"},
+        "settings": {"stencils": {"bed_mm": [210, 210]}}
+    });
+    session.save(&revised, "with-smaller-bed.stencilator");
+    let bytes = fs::read(temp.path().join("with-smaller-bed.stencilator")).unwrap();
+    let project: Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(project["stencilator"], 4);
+    assert_eq!(project["freeform"]["size"], json!({"width_mm": 50.0}));
+    assert_eq!(project["freeform"]["support_edits"], edits);
+    assert_eq!(project["freeform"]["paint_order"], order);
+    assert_eq!(project["freeform"]["finish"]["mark"], "number");
+    assert_eq!(project["stencils"]["thickness_mm"], 1.6);
+    assert_eq!(project["stencils"]["bed_mm"], json!([210.0, 210.0]));
 }
 
 #[test]
@@ -287,6 +419,9 @@ fn refuses_unknown_settings_and_never_writes_over_a_file() {
     assert!(!absolute.exists());
     assert_eq!(session.export(&design, "../outside.3mf")["isError"], true);
     assert_eq!(session.export(&design, "not-a-file.3mf/")["isError"], true);
+    let missing = session.export(&design, "missing/plates.3mf");
+    assert_eq!(missing["isError"], true, "{missing}");
+    assert!(missing["content"][0]["text"].as_str().unwrap().starts_with("Choose an existing folder in the workspace"));
     assert_eq!(fs::read_dir(dir).unwrap().count(), 1);
     assert_eq!(session.check(&design)["mode"], "freeform");
 }
