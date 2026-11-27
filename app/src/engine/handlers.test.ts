@@ -132,6 +132,22 @@ describe('the engine in WebAssembly', () => {
     expect(entries(await ask({ kind: 'stencilsZip', thicknessMm: 1.2, skip: [0xffffff] }))).toBe(2);
   });
 
+  it('checks tile stencils against the saved bed without changing the mesh', async () => {
+    await picture('pixel-art/fox.png');
+    const fox = toProjectSettings({ ...sanitise(undefined), sizing: 'pixels', tileMm: 20 });
+    const build = (bed: [number, number]) =>
+      ask({ kind: 'chart', settings: { ...fox, stencils: { ...fox.stencils, bed_mm: bed } } });
+    const stencil = () => ask({ kind: 'stencil', index: 0, thicknessMm: 1.2 });
+
+    const largeBed = await build([500, 500]);
+    expect(largeBed.widthMm).toBeGreaterThan(256);
+    expect(largeBed.bedFit).toBe('as-drawn');
+    const mesh = await stencil();
+    expect((await build([50, 50])).bedFit).toBe('too-large');
+    expect(await stencil()).toEqual(mesh);
+    expect((await build([-1, 500])).bedFit).toBeUndefined();
+  });
+
   it('passes on the engine messages, and forgets the old chart', async () => {
     await expect(
       ask({
@@ -172,5 +188,39 @@ describe('the engine in WebAssembly', () => {
     expect(saved).toContain(`"seed": ${seed}`);
     expect(saved).toContain('"mode": "tiles"');
     expect(saved).toContain('"width_mm": 190');
+  });
+
+  it('saves a snapshot without disturbing the active preview or its exports', async () => {
+    await picture('pixel-art/fox.png');
+    const small = toProjectSettings({ ...sanitise(undefined), sizing: 'pixels', tileMm: 10 });
+    const large = toProjectSettings({ ...sanitise(undefined), sizing: 'pixels', tileMm: 20 });
+
+    await ask({ kind: 'chart', settings: small });
+    const before = await ask({ kind: 'stencil', index: 0, thicknessMm: 1.2 });
+
+    const file = await ask({
+      kind: 'projectFile',
+      settings: large,
+      edits: { fonts: { revision: 0, files: [] } },
+      strict: true
+    });
+    expect(new TextDecoder().decode(file)).toContain('"tile_mm": 20');
+    // The live chart and its exports still come from the small settings.
+    expect(await ask({ kind: 'stencil', index: 0, thicknessMm: 1.2 })).toEqual(before);
+  });
+
+  it('validates a project file without opening it', async () => {
+    expect(await ask({ kind: 'validateProject', bytes: bytesOf('projects/fox.stencilator') })).toBe(
+      'freeform'
+    );
+    await expect(
+      ask({ kind: 'validateProject', bytes: new TextEncoder().encode('{}').buffer })
+    ).rejects.toThrow('This is not a Stencilator project');
+    const undecodable = new TextEncoder().encode(
+      '{"stencilator": 1, "source": {"kind": "picture", "data": "AAAA"}}'
+    ).buffer;
+    await expect(ask({ kind: 'validateProject', bytes: undecodable })).rejects.toThrow(
+      'The image could not be read'
+    );
   });
 });

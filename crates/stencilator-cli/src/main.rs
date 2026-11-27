@@ -164,12 +164,6 @@ pub(crate) fn stencil_destinations(target: &Path, names: &[(String, Rgb)]) -> Ve
     }
 }
 
-/// Whether a stencil `size_mm` fits the bed, turned if need be.
-pub(crate) fn fits_bed(size_mm: (f64, f64), bed_mm: [f64; 2]) -> bool {
-    let (w, h) = size_mm;
-    (w <= bed_mm[0] && h <= bed_mm[1]) || (w <= bed_mm[1] && h <= bed_mm[0])
-}
-
 fn main() -> ExitCode {
     let cli = Cli::parse();
     let result = match &cli.command {
@@ -200,7 +194,6 @@ mod tests {
         assert!(parse_merge("9c3d17").is_err());
         assert!(parse_colour("ff88").is_err());
         assert_eq!(parse_mode("black-white").unwrap(), ColourMode::BlackWhite);
-        assert!(fits_bed((250.0, 120.0), [200.0, 256.0]) && !fits_bed((257.0, 10.0), [256.0, 256.0]));
     }
 
     #[test]

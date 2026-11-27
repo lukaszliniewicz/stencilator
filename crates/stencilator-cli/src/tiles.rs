@@ -8,12 +8,13 @@ use serde_json::json;
 use stencilator_core::chart::{Sizing, TileChart, build_chart, merge_paints};
 use stencilator_core::colour::Rgb;
 use stencilator_core::export::{ChartFormat, encode_chart};
+use stencilator_core::geometry::{BedFit, bed_fit};
 use stencilator_core::project::{Colour, Mode, Project, Source};
 use stencilator_core::stencil::{RECOMMENDED_MIN_WEB_MM, stencil_filename, stencil_files};
 use stencilator_core::{source, zip};
 
 use crate::sources::Input;
-use crate::{ColourArgs, StencilArgs, files, fits_bed, hex, is_zip, parse_colour, parse_size, stencil_destinations};
+use crate::{ColourArgs, StencilArgs, files, hex, is_zip, parse_colour, parse_size, stencil_destinations};
 
 #[derive(Args)]
 pub(crate) struct TilesArgs {
@@ -180,7 +181,7 @@ pub(crate) struct Summary<'a> {
     skip: &'a [Rgb],
     written: &'a [&'a Path],
     warnings: Vec<String>,
-    fits_bed: bool,
+    bed_fit: BedFit,
 }
 
 impl<'a> Summary<'a> {
@@ -188,7 +189,7 @@ impl<'a> Summary<'a> {
         let g = &chart.layout;
         let size_mm = (g.width_mm(), g.height_mm());
         let [bed_w, bed_h] = project.stencils.bed_mm;
-        let fits_bed = fits_bed(size_mm, [bed_w, bed_h]);
+        let fit = bed_fit(size_mm, (bed_w, bed_h));
         let mut warnings = Vec::new();
         if g.line_px > 0 && g.line_mm() < RECOMMENDED_MIN_WEB_MM {
             warnings.push(format!(
@@ -196,13 +197,18 @@ impl<'a> Summary<'a> {
                 g.line_mm()
             ));
         }
-        if !fits_bed {
-            warnings.push(format!(
+        match fit {
+            BedFit::QuarterTurn => warnings.push(format!(
+                "the stencils, {:.1} x {:.1} mm, fit a {bed_w} x {bed_h} mm bed after a quarter-turn",
+                size_mm.0, size_mm.1
+            )),
+            BedFit::TooLarge => warnings.push(format!(
                 "the stencils, {:.1} x {:.1} mm, do not fit a {bed_w} x {bed_h} mm bed",
                 size_mm.0, size_mm.1
-            ));
+            )),
+            BedFit::AsDrawn => {}
         }
-        Self { chart, skip, written, warnings, fits_bed }
+        Self { chart, skip, written, warnings, bed_fit: fit }
     }
 
     pub(crate) fn json(&self) -> serde_json::Value {
@@ -223,7 +229,8 @@ impl<'a> Summary<'a> {
             "tile_mm": g.tile_mm(),
             "line_mm": g.line_mm(),
             "dpi": g.dpi,
-            "fits_bed": self.fits_bed,
+            "fits_bed": self.bed_fit.fits(),
+            "bed_fit": self.bed_fit,
             "palette": palette,
             "written": self.written.iter().map(|p| p.display().to_string()).collect::<Vec<_>>(),
             "warnings": self.warnings,

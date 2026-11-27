@@ -13,6 +13,7 @@ import type {
   Kind,
   OpenedProject,
   PlateDrawing,
+  ProjectMode,
   ProjectSettings,
   Replies,
   Reply,
@@ -26,6 +27,7 @@ export type {
   ArtworkEdits,
   ArtworkSize,
   ArtworkSource,
+  BedFit,
   ChartFormat,
   ChartSummary,
   Coat,
@@ -173,7 +175,13 @@ export class Engine {
     return this.#call({ kind: 'threeMf' });
   }
 
-  projectFile(settings: ProjectSettings, edits: ArtworkEdits): Promise<Uint8Array> {
-    return this.#call({ kind: 'projectFile', settings, edits });
+  projectFile(settings: ProjectSettings, edits: ArtworkEdits, strict = false): Promise<Uint8Array> {
+    return this.#call({ kind: 'projectFile', settings, edits, strict });
+  }
+
+  /** Validates a project file's bytes without opening or changing the workspace. */
+  async validateProject(file: Blob): Promise<ProjectMode> {
+    const bytes = await file.arrayBuffer();
+    return this.#call({ kind: 'validateProject', bytes }, [bytes]);
   }
 }

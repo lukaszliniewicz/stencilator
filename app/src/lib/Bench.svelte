@@ -1,23 +1,20 @@
 <script lang="ts">
-  // The middle of the workspace: the canvas waiting for a picture, then the picture, the
-  // chart or one stencil, fitted to the room there is.
+  // The picture, chart or stencil, fitted to the room there is.
   import { CAPTION_SPACE, RULER_SPACE } from './bench-space';
   import Sheet from './Sheet.svelte';
   import TileCanvas from './TileCanvas.svelte';
-  import { num, text } from './text';
+  import { text } from './text';
+  import Viewport from './Viewport.svelte';
   import type { Workbench } from './workbench.svelte';
 
   interface Props {
     bench: Workbench;
     dark: boolean;
-    choose: () => void;
   }
 
-  let { bench, dark, choose }: Props = $props();
+  let { bench, dark }: Props = $props();
 
   const SIDE_BY_SIDE_GAP = 32;
-  /** Below this, the invitation to drop a picture goes under the canvas, not on it. */
-  const ROOM_FOR_INVITATION = 230;
 
   // The room inside the bench's padding, which is narrower on small screens.
   let room: DOMRectReadOnly | undefined = $state();
@@ -42,29 +39,7 @@
   const faded = $derived(!bench.current || !bench.valid);
   const view = $derived(bench.view === 'stencil' && !bench.stencilsPossible ? 'chart' : bench.view);
   const pictureAspect = $derived(bench.source ? bench.source.width / bench.source.height : 1);
-  const emptyWidth = $derived(sheetWidth(s.canvasWidthMm, s.canvasHeightMm));
-  const emptyHeight = $derived(
-    s.canvasWidthMm > 0 ? (emptyWidth * s.canvasHeightMm) / s.canvasWidthMm : 0
-  );
 </script>
-
-{#snippet invitation()}
-  <div class="invitation">
-    <h1>{text.bench.drop}</h1>
-    <p>{text.bench.dropBody}</p>
-    <div class="actions">
-      <button type="button" class="button primary" disabled={!bench.canOpen} onclick={choose}>
-        {text.bench.choose}
-      </button>
-      <button type="button" class="button" disabled={!bench.canOpen} onclick={bench.openExample}>
-        {text.bench.example}
-      </button>
-      <button type="button" class="button" disabled={!bench.canOpen} onclick={bench.typeText}>
-        {text.freeform.type}
-      </button>
-    </div>
-  </div>
-{/snippet}
 
 {#snippet picture(width: number)}
   <figure class="figure">
@@ -85,27 +60,8 @@
 {/snippet}
 
 <div class="bench">
-  <div class="area" bind:contentRect={room}>
-    {#if !bench.source}
-      <div class="stack">
-        <Sheet
-          widthMm={s.canvasWidthMm}
-          heightMm={s.canvasHeightMm}
-          width={emptyWidth}
-          start={s.sizing === 'pixels'
-            ? text.bench.perPixel
-            : text.bench.canvas(s.canvasWidthMm, s.canvasHeightMm)}
-          end={text.bench.tiles(s.tileMm)}
-        >
-          {#snippet children({ height }: { height: number })}
-            <div class="blank">
-              {#if height >= ROOM_FOR_INVITATION}{@render invitation()}{/if}
-            </div>
-          {/snippet}
-        </Sheet>
-        {#if emptyHeight < ROOM_FOR_INVITATION}{@render invitation()}{/if}
-      </div>
-    {:else if view === 'picture' || !chart}
+  <Viewport bind:room frameKey={[bench.artworkVersion, view].join('-')}>
+    {#if view === 'picture' || !chart}
       {@render picture(figureWidth(pictureAspect, roomWidth, roomHeight))}
     {:else if view === 'both'}
       {@const half = (roomWidth - SIDE_BY_SIDE_GAP) / 2}
@@ -170,7 +126,7 @@
         {/snippet}
       </Sheet>
     {/if}
-  </div>
+  </Viewport>
 
   {#if chart}
     <p class="status">
@@ -184,12 +140,6 @@
     </p>
   {:else if bench.source}
     <p class="status">{text.picture.pixels(bench.source.width, bench.source.height)}</p>
-  {:else}
-    <p class="status">
-      {s.sizing === 'pixels'
-        ? text.bench.perPixel
-        : text.bench.canvas(s.canvasWidthMm, s.canvasHeightMm)} · {num(s.dpi)} DPI
-    </p>
   {/if}
 </div>
 
@@ -204,71 +154,6 @@
       linear-gradient(var(--grid) 1px, transparent 1px),
       linear-gradient(90deg, var(--grid) 1px, transparent 1px);
     background-size: 20px 20px;
-  }
-
-  .area {
-    flex: 1;
-    min-height: 0;
-    padding: 32px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    overflow: hidden;
-  }
-
-  @media (max-width: 720px) {
-    .area {
-      padding: 16px;
-    }
-  }
-
-  .stack {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 20px;
-  }
-
-  .blank {
-    flex: 1;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    background: var(--panel);
-    border: 1px dashed var(--line-strong);
-  }
-
-  .invitation {
-    max-width: 440px;
-    padding: 24px;
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 14px;
-    text-align: center;
-  }
-
-  .invitation h1 {
-    font-family: var(--serif);
-    font-size: 34px;
-    font-weight: 400;
-    letter-spacing: -0.02em;
-    line-height: 1.1;
-  }
-
-  .invitation p {
-    color: var(--text-2);
-  }
-
-  .actions {
-    display: flex;
-    flex-wrap: wrap;
-    justify-content: center;
-    gap: 10px;
-  }
-
-  .actions .button {
-    min-height: 44px;
   }
 
   .pair {

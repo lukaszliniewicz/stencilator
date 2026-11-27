@@ -6,15 +6,16 @@
   import Segmented from './Segmented.svelte';
   import Sheet from './Sheet.svelte';
   import { text } from './text';
+  import Viewport from './Viewport.svelte';
   import type { Workbench } from './workbench.svelte';
 
   interface Props {
     bench: Workbench;
-    choose: () => void;
+    download: () => Promise<void>;
     dark: boolean;
   }
 
-  let { bench, choose, dark }: Props = $props();
+  let { bench, download, dark }: Props = $props();
   const words = text.freeform;
   const PAIR_GAP = 24;
   let room: DOMRectReadOnly | undefined = $state();
@@ -104,7 +105,28 @@
           height={Math.max(120, Math.floor((room?.height ?? 0) - 124))}
         />
       {:catch}
-        <p class="notice">{text.printPreview.unavailable}</p>
+        <div class="notice">
+          <p>{text.workspace.oldViewHelp}</p>
+          <div class="button-row">
+            <button
+              type="button"
+              class="quiet"
+              disabled={!bench.canSaveProject}
+              onclick={() => void download()}
+            >
+              {text.project.save}
+            </button>
+            <button
+              type="button"
+              class="button"
+              onclick={() => {
+                window.location.reload();
+              }}
+            >
+              {text.workspace.reload}
+            </button>
+          </div>
+        </div>
       {/await}
     {/key}
   {:else if drawing && plate}
@@ -142,30 +164,18 @@
       </label>
     </div>
   {/if}
-  <div class="area" bind:contentRect={room}>
-    {#if !bench.artwork}
-      <div class="empty">
-        <span class="label">{text.project.modes.freeform}</span>
-        <h1>{words.drop}</h1>
-        <p>{words.dropBody}</p>
-        <div class="actions">
-          <button type="button" class="button primary" disabled={!bench.canOpen} onclick={choose}>
-            {words.choose}
-          </button>
-          <button type="button" class="button" disabled={!bench.canOpen} onclick={bench.typeText}>
-            {words.type}
-          </button>
-          <button
-            type="button"
-            class="button"
-            disabled={!bench.canOpen}
-            onclick={bench.openExample}
-          >
-            {words.example}
-          </button>
-        </div>
-      </div>
-    {:else if bench.view === 'stencil' && summary}
+  <Viewport
+    bind:room
+    enabled={bench.view !== 'stencil' || bench.plateView !== '3d'}
+    frameKey={[
+      bench.artworkVersion,
+      bench.view,
+      bench.plateView,
+      bench.selected,
+      bench.comparePaint
+    ].join('-')}
+  >
+    {#if bench.view === 'stencil' && summary}
       {#if bench.comparePaint}
         {@const half = Math.max(0, (width - PAIR_GAP) / 2)}
         <div class="pair">
@@ -192,7 +202,7 @@
     {:else}
       {@render paints(width)}
     {/if}
-  </div>
+  </Viewport>
 
   {#if bench.view === 'stencil' && bench.plateView === 'top' && drawing}
     <div class="overlays" role="group" aria-label={words.highlights}>
@@ -241,15 +251,6 @@
     background-size: 20px 20px;
   }
 
-  .area {
-    flex: 1;
-    min-height: 0;
-    padding: 28px;
-    display: grid;
-    place-items: center;
-    overflow: hidden;
-  }
-
   .view-options {
     display: flex;
     flex-wrap: wrap;
@@ -266,37 +267,9 @@
     align-items: center;
   }
 
-  .empty {
-    max-width: 470px;
-    padding: 28px;
-    border: 1px dashed var(--line-strong);
-    background: var(--panel);
-    text-align: center;
-  }
-
-  .empty h1 {
-    margin: 5px 0 8px;
-    font: 400 34px/1.1 var(--serif);
-    letter-spacing: -0.02em;
-  }
-
-  .empty p {
-    color: var(--text-2);
-  }
-
-  .actions,
   .pair {
     display: flex;
     justify-content: center;
-  }
-
-  .actions {
-    flex-wrap: wrap;
-    gap: 8px;
-    margin-top: 18px;
-  }
-
-  .pair {
     gap: 24px;
     align-items: flex-start;
   }
@@ -365,11 +338,5 @@
     color: var(--text-2);
     font-size: 12px;
     font-variant-numeric: tabular-nums;
-  }
-
-  @media (max-width: 720px) {
-    .area {
-      padding: 16px;
-    }
   }
 </style>

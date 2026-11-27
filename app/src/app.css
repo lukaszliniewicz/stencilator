@@ -26,6 +26,9 @@
   --error-text: light-dark(#b91c1c, #fca5a5);
   --ruler: light-dark(#ffffff, #0a0a0a);
   --tick: light-dark(#a3a3a3, #525252);
+  --canvas-grid:
+    linear-gradient(var(--grid) 1px, transparent 1px),
+    linear-gradient(90deg, var(--grid) 1px, transparent 1px);
 
   --sans: 'Inter Variable', system-ui, sans-serif;
   --serif: 'Playfair Display Variable', Georgia, serif;
@@ -167,6 +170,63 @@ p {
 .icon-button:disabled {
   color: var(--text-3);
   opacity: 0.5;
+}
+
+.button-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+}
+
+.quiet {
+  display: inline-flex;
+  align-items: center;
+  min-height: 32px;
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--tint-text);
+  text-align: left;
+  text-underline-offset: 3px;
+  text-decoration: underline;
+  font-size: 13px;
+}
+
+.quiet:disabled {
+  opacity: 0.5;
+}
+
+.field-input {
+  min-width: 0;
+  width: 100%;
+  min-height: 40px;
+  padding: 4px 8px;
+  border: 1px solid var(--line-strong);
+  border-radius: 0;
+  background: var(--field);
+}
+
+.dialog-form,
+.dialog-field {
+  display: grid;
+  gap: 10px;
+}
+
+.dialog-field {
+  gap: 4px;
+  min-width: 0;
+}
+
+.quiet-scroll {
+  scrollbar-width: thin;
+  scrollbar-gutter: stable;
+}
+
+@media (hover: hover) and (pointer: fine) and (forced-colors: none) {
+  .quiet-scroll:not(:hover, :focus-within) {
+    scrollbar-color: transparent transparent;
+  }
 }
 
 .visually-hidden {

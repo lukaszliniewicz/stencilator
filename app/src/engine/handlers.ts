@@ -24,7 +24,7 @@ import type * as Wasm from './wasm/stencilator_wasm.js';
 
 type Engine = Pick<
   typeof Wasm,
-  'Artwork' | 'Fonts' | 'Project' | 'Source' | 'version' | 'recommendedMinWebMm'
+  'Artwork' | 'Fonts' | 'Project' | 'Source' | 'version' | 'recommendedMinWebMm' | 'bedFit'
 >;
 
 export interface Answer {
@@ -62,10 +62,16 @@ function takePreview(preview: Wasm.RasterPreview): RasterPreview {
 function applySettings(
   project: Wasm.Project,
   settings: ProjectSettings,
-  use: 'preview' | 'save'
+  use: 'preview' | 'save',
+  strict = false
 ): void {
   // Keep the exact Rust seed on every write.
   if (use === 'save') {
+    if (strict) {
+      // Autosave validates both modes and fails rather than falling back.
+      project.setSettings(JSON.stringify(settings), true);
+      return;
+    }
     try {
       project.setSettings(JSON.stringify(settings), true);
       return;
@@ -86,27 +92,32 @@ function applySettings(
             // Thickness affects STL files, but an unfinished value should not block the chart.
             thickness_mm:
               use === 'preview' ? previous.stencils.thickness_mm : settings.stencils.thickness_mm,
-            bed_mm: previous.stencils.bed_mm
+            bed_mm: use === 'preview' ? previous.stencils.bed_mm : settings.stencils.bed_mm
           }
         }
       : { ...settings, tiles: previous.tiles };
   project.setSettings(JSON.stringify(active), true);
 }
 
-async function applyArtwork(workspace: Workspace, { typed, fonts }: ArtworkEdits): Promise<void> {
-  const { project } = workspace;
+async function applyEdits(
+  project: Wasm.Project,
+  state: { fontRevision: number },
+  { typed, fonts }: ArtworkEdits,
+  onChanged?: () => void
+): Promise<boolean> {
   const colour = typed ? hexToNumber(typed.colour) : 0;
+  let changed = false;
   if (
     typed &&
     (project.typedText !== typed.value ||
       project.fontMm !== typed.fontMm ||
       project.textColour !== colour)
   ) {
-    releaseArtwork(workspace);
     project.setText(typed.value, typed.fontMm, colour);
+    changed = true;
+    onChanged?.();
   }
-  if (fonts.revision !== workspace.fontRevision) {
-    releaseArtwork(workspace);
+  if (fonts.revision !== state.fontRevision) {
     const files = await Promise.all(
       fonts.files.map(async ({ name, data }) => ({
         name,
@@ -114,12 +125,21 @@ async function applyArtwork(workspace: Workspace, { typed, fonts }: ArtworkEdits
       }))
     );
     project.clearFonts();
+    onChanged?.();
     for (const font of files) {
       if (font.bytes) project.addFont(font.name, font.bytes);
       else project.addBuiltInFont(font.name);
     }
-    workspace.fontRevision = fonts.revision;
+    state.fontRevision = fonts.revision;
+    changed = true;
   }
+  return changed;
+}
+
+async function applyArtwork(workspace: Workspace, edits: ArtworkEdits): Promise<void> {
+  await applyEdits(workspace.project, workspace, edits, () => {
+    releaseArtwork(workspace);
+  });
 }
 
 export function createHandlers(
@@ -156,6 +176,11 @@ export function createHandlers(
       : new engine.Artwork(w.project, await drawingFonts()));
   }
 
+  /** Decodes the project's artwork once, for validation without keeping it. */
+  async function artworkFor(project: Wasm.Project): Promise<Wasm.Artwork> {
+    return new engine.Artwork(project, await drawingFonts());
+  }
+
   async function install(project: Wasm.Project, rawPicture?: Uint8Array): Promise<Answer> {
     const next: Workspace = {
       project,
@@ -187,7 +212,7 @@ export function createHandlers(
           transfer.push(bytes.buffer);
         }
       } else {
-        await artworkOf(next);
+        next.artwork = await artworkFor(project);
         source =
           project.kind === 'svg'
             ? { kind: 'svg', name: project.name }
@@ -306,6 +331,7 @@ export function createHandlers(
           lineMm: chart.lineMm,
           widthMm: chart.widthMm,
           heightMm: chart.heightMm,
+          bedFit: engine.bedFit(chart.widthMm, chart.heightMm, ...request.settings.stencils.bed_mm),
           widthPx: chart.widthPx,
           heightPx: chart.heightPx,
           palette: chart.palette(),
@@ -351,10 +377,34 @@ export function createHandlers(
         return file(builtPlates().threeMf(opened().project));
       case 'projectFile': {
         const w = opened();
-        applySettings(w.project, request.settings, 'save');
-        await applyArtwork(w, request.edits);
-        if (!w.picture) await artworkOf(w);
-        return file(w.project.file());
+        // Save a snapshot copy, so a queued autosave never disturbs the live preview.
+        const snapshot = w.project.clone();
+        try {
+          applySettings(snapshot, request.settings, 'save', request.strict === true);
+          const changed = await applyEdits(
+            snapshot,
+            { fontRevision: w.fontRevision },
+            request.edits
+          );
+          // Validate changed text or fonts on the copy; an unchanged drawing was already
+          // validated when it opened, and its live artwork is still current.
+          if (snapshot.kind !== 'picture' && (changed || !w.artwork)) {
+            (await artworkFor(snapshot)).free();
+          }
+          return file(snapshot.file());
+        } finally {
+          snapshot.free();
+        }
+      }
+      case 'validateProject': {
+        const project = engine.Project.open(new Uint8Array(request.bytes));
+        try {
+          if (project.kind === 'picture') new engine.Source(project.sourceData()).free();
+          else (await artworkFor(project)).free();
+          return { value: settingsOf(project).mode, transfer: [] };
+        } finally {
+          project.free();
+        }
       }
     }
     throw new Error(text.errors.unknownRequest);

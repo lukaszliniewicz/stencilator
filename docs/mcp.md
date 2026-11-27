@@ -105,7 +105,9 @@ web plugin.
 `check_stencil` builds the design without writing files. It returns the same
 dimensions, palette and printability report as the CLI's `--json`. The report
 can flag loose islands, fragile webs, narrow openings and a plate or frame that
-doesn't fit the chosen bed. A particularly long report is shortened in the
+doesn't fit the chosen bed. The Tiles report and each Free-form plate and frame
+carry `bed_fit` (`"as-drawn"`, `"quarter-turn"` or `"too-large"`) alongside the
+`fits_bed` boolean. A particularly long report is shortened in the
 tool result and marked `report_truncated`. Use your client's cancel action
 to stop an export. Stencilator checks for cancellation between build stages
 and before installing the file. The current stage can take time to finish,

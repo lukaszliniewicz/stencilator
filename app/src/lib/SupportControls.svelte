@@ -5,7 +5,7 @@
   import { text } from './text';
   import type { Workbench } from './workbench.svelte';
 
-  let { bench }: { bench: Workbench } = $props();
+  let { bench, placeSupport }: { bench: Workbench; placeSupport: () => void } = $props();
   const words = text.supports;
   const ends = [0, 1] as const;
   const choices = (['none', 'flat', 'raised'] as const).map((value) => ({
@@ -168,6 +168,7 @@
                 disabled={!bench.ready}
                 onclick={() => {
                   bench.editSupport(selected);
+                  placeSupport();
                 }}
               >
                 {words.move}
@@ -193,6 +194,7 @@
             disabled={!bench.ready}
             onclick={() => {
               bench.editSupport();
+              placeSupport();
             }}
           >
             {words.add}

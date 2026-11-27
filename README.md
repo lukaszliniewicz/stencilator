@@ -10,26 +10,30 @@ There’s nothing to install to use the web app, and it never uploads your artwo
 
 ## Make your first stencil
 
-1. **Pick a mode.** Use **Tiles** if you want a grid of squares, especially
-   for pixel art. Click **Try the example** or open a PNG, JPEG or WebP.
-   Choose **Free-form** if you want the holes to follow the artwork. Click
-   **Try the badge**, open an SVG or picture, or choose **Type text**.
+1. **Start a project.** Pick **Pixel art** for one tile per pixel or
+   **Tile grid** to fit a grid of squares within a canvas. Try the fox or
+   open a PNG, JPEG or WebP. Pick **Free-form** for openings that follow the
+   artwork, then try the badge, open an SVG or picture, or choose **Type text**.
 2. **Set the size and pick your paints.** In Tiles, choose a tile size and
    fit the grid to your canvas, or make one tile per pixel. In Free-form,
-   set the artwork size and enter your print bed dimensions. Untick any
-   paint that needs no stencil, such as the colour of the surface itself.
+   set the artwork size. Untick paints that need no stencil, such as the
+   colour of the surface itself.
 3. **Look at the stencil before exporting.** Grid lines in Tiles hold the
    stencil together. In Free-form, select **Plate**, then **Top**, to see
    loose pieces, thin strips that might break and small holes that might
-   close up. Switch to **3D** to see the parts as they will print.
+   close up. In **Print bed**, use **Change bed…** to pick a printer profile
+   or enter the usable width and depth from your slicer. Check which parts
+   fit flat and which need a quarter-turn.
 4. **Open Files.** Tiles gives you a chart and an STL for each paint. Print
    the PDF chart at actual size (100%). Free-form gives you a 3MF with the
    whole set or separate STLs. Check each plate at actual size in your
    slicer and lay it flat on the bed.
 
-Use **Save project** to keep the artwork, fonts, paint choices and settings
-in a `.stencilator` file. Open it again in the app, on the command line or
-through MCP to carry on where you left off.
+Projects save in your current browser. Use **Download project** in
+**Project actions** or **Files** for a `.stencilator` file you can open in the
+app, on the command line or through MCP. To keep all your projects, printer
+profiles and preferences together, choose **Back up or restore…** in the
+project switcher.
 
 ### Keep the middle of an O in place
 
@@ -42,14 +46,15 @@ the built-in **Allerta Stencil** font, which has bridges drawn into the letters.
 
 ### Line up the colours
 
-Enable **Use a keyed frame** to make a frame that each plate fits into the
-same way round. Keep the frame still on the work and seat each plate against
-the same corner. The frame comes with the plates in the 3MF or STL ZIP.
+Under **Plate & registration**, enable **Use a keyed frame** to make a frame
+that each plate fits into the same way round. Keep the frame still on the work
+and seat each plate against the same corner. The frame comes with the plates in
+the 3MF or STL ZIP.
 
 Set the coat order in the paint list and check **Painted result** for the
 shapes the coats will cover, including gaps from flat bridges. This preview
 uses the openings against the work; it doesn't simulate spray angle or bleed.
-Under **Plate finishing**, you can widen the spray side of the openings,
+Under **Detail & finishing**, you can widen the spray side of the openings,
 overlap neighbouring coats, or mark a plate with its number or an approximate
 RAL paint code.
 

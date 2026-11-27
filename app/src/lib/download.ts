@@ -1,6 +1,8 @@
 /** Hands bytes to the browser as a download. */
-export function save(bytes: Uint8Array, name: string, type: string): void {
-  const url = URL.createObjectURL(new Blob([bytes.slice()], { type }));
+export function save(bytes: Uint8Array | Blob, name: string, type: string): void {
+  const url = URL.createObjectURL(
+    bytes instanceof Blob ? bytes : new Blob([bytes.slice()], { type })
+  );
   const link = document.createElement('a');
   link.href = url;
   link.download = name;

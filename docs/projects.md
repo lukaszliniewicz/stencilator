@@ -2,8 +2,13 @@
 
 A `.stencilator` file is UTF-8 JSON. It carries the artwork, settings of both
 modes and paint choices, so it can be reopened in the browser, command line
-or MCP. Save a project with the app or `--save` to see the complete settings
-used for your design.
+or MCP. Choose **Download project** in the app or use `--save` to see the
+complete settings used for your design.
+
+`stencils.bed_mm` holds the usable bed width and depth applied to the project.
+The browser's printer profiles, project list and app preferences are kept
+separately. Use **Back up or restore…** for a copy of the whole browser
+workspace.
 
 A minimal project that makes plain plates from typed text:
 

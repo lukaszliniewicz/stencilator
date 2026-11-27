@@ -22,6 +22,9 @@ const plural = (n: number, one: string, other: string): string =>
 const size = (w: string, h: string, unit: string): string => `${w} × ${h} ${unit}`;
 const hex = (colour: string): string => colour.toUpperCase();
 const list = new Intl.ListFormat(LOCALE, { type: 'conjunction' });
+const date = new Intl.DateTimeFormat(LOCALE, { dateStyle: 'medium', timeStyle: 'short' });
+const bedSize = (w: number, h: number): string => size(num(w, 4), num(h, 4), 'mm');
+const delta = (mm: number): string => (mm > 0 && mm < 0.001 ? '<0.001' : num(mm, 3));
 
 export const text = {
   wordmark: 'Stencilator',
@@ -32,30 +35,10 @@ export const text = {
 
   picture: {
     heading: 'Picture',
-    none: 'No picture yet',
-    open: 'Open picture',
     replace: 'Replace',
     alt: 'The picture you opened',
     pixels: (w: number, h: number) => size(num(w), num(h), 'px'),
     fileLabel: 'Picture file'
-  },
-
-  how: {
-    heading: 'How it works',
-    steps: [
-      {
-        title: 'Picture.',
-        body: 'PNG, JPEG or WebP. Pixel art works best, a tile per pixel; photos are reduced to a few paints.'
-      },
-      {
-        title: 'Chart.',
-        body: 'Every tile gets one paint. The chart prints at real size, to paint from.'
-      },
-      {
-        title: 'Stencils.',
-        body: 'One per paint, with a hole over each of its tiles. Lay it on the canvas and paint through.'
-      }
-    ]
   },
 
   paints: {
@@ -96,11 +79,6 @@ export const text = {
     canvas: (w: number, h: number) => `Your canvas · ${size(num(w, 1), num(h, 1), 'mm')}`,
     perPixel: 'A tile per pixel',
     tiles: (mm: number) => `Tiles of ${num(mm, 2)} mm`,
-    drop: 'Drop a picture.',
-    dropBody:
-      'PNG, JPEG or WebP. Pixel art gets a tile per pixel; a larger picture is fitted into your canvas. You can also paste one.',
-    choose: 'Choose a picture',
-    example: 'Try the example',
     chart: (w: number, h: number) => `Chart · ${size(num(w, 1), num(h, 1), 'mm')}`,
     onCanvas: (w: number, h: number) => `On a ${size(num(w, 1), num(h, 1), 'mm')} canvas`,
     fromPixels: (x: number, y: number) => `${size(num(x), num(y), 'pixels')}, a tile each`,
@@ -118,16 +96,13 @@ export const text = {
 
   settings: {
     label: 'Settings',
-    canvas: 'Canvas',
     sizing: 'Tiles',
     sizings: { pixels: 'Per pixel', canvas: 'Fit to canvas' },
     width: 'Width (mm)',
     height: 'Height (mm)',
-    canvasNote: 'The grid keeps the picture’s proportions and stays inside the canvas.',
     pixelNote: (x: number, y: number) =>
       `The picture reads as ${size(num(x), num(y), 'pixels')}; each becomes one tile, so the tile size sets the canvas.`,
     pixelNoteEmpty: 'Each pixel of the picture becomes one tile, so the tile size sets the canvas.',
-    grid: 'Grid',
     tile: 'Tile (mm)',
     line: 'Line (mm)',
     lineColour: 'Line colour',
@@ -144,7 +119,6 @@ export const text = {
     background: 'Canvas colour',
     stencils: 'Stencils',
     thickness: 'Thickness (mm)',
-    chartFile: 'Chart file',
     dpi: 'Resolution (DPI)'
   },
 
@@ -180,9 +154,7 @@ export const text = {
     beforeYouPrint: 'Before you print',
     actualSize: 'Print the chart PDF at actual size (100%), not “fit to page”.',
     flat: (lineMm: number) =>
-      `Print the stencils flat. The web between the holes is ${num(lineMm, 3)} mm wide; check in your slicer’s preview that it is filled.`,
-    tooLarge: (w: number, h: number) =>
-      `Each stencil is ${size(num(w), num(h), 'mm')}, larger than most printer beds. Until stencils can be split into parts, choose a canvas that fits your printer.`
+      `Print the stencils flat. The web between the holes is ${num(lineMm, 3)} mm wide; check in your slicer’s preview that it is filled.`
   },
 
   project: {
@@ -191,14 +163,239 @@ export const text = {
     tilesNote: 'A square grid, best for pixel art.',
     freeformNote: 'Openings that follow the artwork.',
     tilesNeedPicture: 'Tiles are available for PNG, JPEG and WebP pictures.',
-    open: 'Open project',
+    open: 'Import a project…',
     fileLabel: 'Stencilator project file',
     heading: 'Stencilator project',
-    save: 'Save project',
+    save: 'Download project',
     body: 'Keep the artwork, fonts, settings and paint choices together. Reopen this file here or use it on the command line.',
     opening: 'Opening…',
-    openBusy: 'Wait for the current file to finish opening or saving, then try again.',
-    replaceUnsaved: 'This project has unsaved changes. Replace it without saving?'
+    openBusy: 'Wait for the current file to finish opening or saving, then try again.'
+  },
+
+  workspace: {
+    newProject: 'New project',
+    recent: 'Recent projects',
+    projects: 'Projects in this browser',
+    projectActions: 'Project actions',
+    search: 'Find a project by name',
+    noProjects: 'No saved projects here yet.',
+    noMatches: 'No projects match that name.',
+    chooserTitle: 'What are you making?',
+    chooserBody:
+      'Choose how the stencil should follow your artwork. You can change its size and paints once you start.',
+    presetLabel: 'Starting preset',
+    presets: {
+      pixel: {
+        title: 'Pixel art',
+        body: 'One tile per artwork pixel. Bigger tiles make a bigger stencil.'
+      },
+      tile: {
+        title: 'Tile grid',
+        body: 'Set a maximum size. The picture is sampled onto the grid that fits.'
+      },
+      freeform: { title: 'Free-form', body: 'Cut along the shapes in a drawing, picture or text.' }
+    },
+    samples: { pixel: 'Fox', tile: 'Fox tile chart', freeform: 'Paint Club badge' },
+    tryFox: 'Try the fox',
+    choose: 'Choose artwork…',
+    imageTypes: 'PNG, JPEG or WebP. You can also drop or paste a picture.',
+    drawTypes: 'SVG, PNG, JPEG or WebP. You can also drop or paste artwork.',
+    textTitle: 'Text stencil',
+    guide: 'First-stencil guide',
+    back: 'Back to project',
+    panels: { canvas: 'Canvas', artwork: 'Artwork & paints', settings: 'Settings' },
+    panelLabel: 'Workspace panels',
+    nameLabel: 'Project name',
+    rename: 'Rename…',
+    renameTitle: 'Rename project',
+    duplicate: 'Duplicate',
+    remove: 'Remove from this browser…',
+    removeTitle: 'Remove project',
+    removeConfirm: (name: string) =>
+      `Remove “${name}” from this browser? Downloaded files are unchanged.`,
+    removeButton: 'Remove project',
+    cancel: 'Cancel',
+    close: 'Close',
+    saveName: 'Save name',
+    copySuffix: (n: number) => (n === 1 ? ' (copy)' : ` (copy ${num(n)})`),
+    edited: (mode: string, when: number) => `${mode} · ${date.format(when)}`,
+    startup: 'Opening your workspace…',
+    sample: 'Sample',
+    keep: 'Keep project',
+    saving: 'Saving…',
+    saved: 'Saved in this browser',
+    failed: 'Could not save in this browser',
+    failedHelp: 'Your draft is still open. Retry the save or download a project file to keep it.',
+    conflict: 'This project changed in another tab',
+    conflictHelp: 'Your edits are still here. Keep them as a copy or load the newer save.',
+    removed: 'This project was removed in another tab',
+    removedHelp: 'You can keep this draft as a separate project or download it.',
+    loadNewer: 'Load the newer version',
+    keepCopy: 'Keep mine as a copy',
+    retry: 'Retry save',
+    upgrade: 'This tab needs to reload',
+    upgradeHelp:
+      'Download your draft if it has unsaved changes, then reload to use the current workspace.',
+    oldViewHelp: 'The 3D view could not load. Download your draft if needed, then reload the app.',
+    reload: 'Reload app',
+    local:
+      'Saved projects stay in this browser and can be cleared with its site data. Download a project or a workspace backup to keep it elsewhere.',
+    leaveUnsaved: (name: string) =>
+      `“${name}” could not be saved here. Leave it without saving these changes?`,
+    broughtIn: (name: string) => `Open “${name}”`,
+    incomingHelp: (name: string) =>
+      `Start a separate project, or replace the artwork in “${name}”.`,
+    separate: 'Start new project',
+    replaceNow: 'Replace artwork',
+    replaceText: (name: string) => `Replace the artwork in “${name}” with text?`,
+    errors: {
+      conflict: 'This item changed in another tab. Reopen it to see the current version.',
+      upgrade: 'The workspace was opened by a newer version. Reload this tab to use it.',
+      invalid: 'The backup is damaged or has missing information. No changes were made.',
+      unsupported: 'This backup uses a format this version cannot read. No changes were made.',
+      'too-large':
+        'This workspace is too large for a single backup. Keep the individual project files.',
+      full: 'The browser ran out of storage space.',
+      unavailable: 'Browser storage is unavailable.'
+    }
+  },
+
+  backup: {
+    open: 'Back up or restore…',
+    title: 'Back up or restore',
+    exportTitle: 'Back up this browser',
+    exportBody: 'One file with your saved projects, printer profiles and app preferences.',
+    export: 'Download backup',
+    exportSaved: 'Download saved projects only',
+    excluded: (name: string) => `Unsaved changes in “${name}” will be left out of the backup.`,
+    importTitle: 'Import a backup',
+    importBody: 'Review the contents before adding them. Your existing work stays here.',
+    choose: 'Choose backup…',
+    input: 'Workspace backup file',
+    preview: 'Preview import',
+    import: 'Import backup',
+    back: 'Back to backup options',
+    preferences: 'Also restore app preferences',
+    preferencesHint: 'Includes theme, defaults and the default printer profile.',
+    previewProjects: 'Projects',
+    previewProfiles: 'Printer profiles',
+    count: (projects: number, profiles: number) =>
+      `${plural(projects, 'project', 'projects')} · ${plural(profiles, 'printer profile', 'printer profiles')}`,
+    actions: { add: 'Add', skip: 'Skip: already here', copy: 'Import as a copy' },
+    updated:
+      'This workspace changed while you were reviewing. Check the updated preview before importing.',
+    checking: 'Checking backup…',
+    blank: 'This backup has no projects or printer profiles.',
+    ready: 'Backup downloaded.',
+    imported: 'Workspace imported.'
+  },
+
+  printer: {
+    title: 'Printer setup',
+    profiles: 'Printer profiles',
+    manage: 'Manage printer profiles…',
+    profile: 'Printer profile',
+    custom: 'Custom bed',
+    customHelp: 'Enter the printable width and depth from your slicer.',
+    projectSize: 'Bed in this project',
+    change: 'Change bed…',
+    width: 'Bed width (mm)',
+    depth: 'Bed depth (mm)',
+    apply: 'Apply to project',
+    applyUpdate: 'Apply update',
+    updated: (name: string, oldW: number, oldD: number, newW: number, newD: number) =>
+      `This project uses ${bedSize(oldW, oldD)}. ${name} now uses ${bedSize(newW, newD)}.`,
+    newProfile: 'New profile',
+    savedProfiles: 'Saved profiles',
+    name: 'Profile name',
+    optional: 'Optional slicer settings',
+    line: 'Extrusion line width (mm)',
+    layer: 'Layer height (mm)',
+    nozzle: 'Nozzle diameter (mm)',
+    reference:
+      'Extrusion line width is the width of a line of plastic. The stencil web is the material between openings. These settings are for reference.',
+    invalid:
+      'Give the profile a name, a bed between 50 and 2,000 mm on each side, and positive values for any slicer settings.',
+    save: 'Save profile',
+    remove: 'Remove profile…',
+    removeConfirm: (name: string) =>
+      `Remove “${name}”? Its projects will keep their current bed dimensions.`,
+    defaultProfile: 'Default for new projects',
+    makeDefault: 'Use as default',
+    clearDefault: 'Clear default',
+    savedBedNote:
+      'Saving a profile leaves the bed in your projects as it was. Apply the profile to use its new size.',
+    back: 'Back to printer setup'
+  },
+
+  bed: {
+    title: 'Print bed',
+    part: 'Part',
+    partSelect: 'Part on the bed',
+    size: bedSize,
+    height: (z: number) => `${num(z, 3)} mm tall`,
+    fit: {
+      'as-drawn': 'Fits as drawn',
+      'quarter-turn': 'Fits after a quarter-turn',
+      'too-large': 'Too large for this bed'
+    },
+    fitNote:
+      'Fit is checked one part at a time, laid flat as drawn or turned 90°. Check height and room for a brim in your slicer.',
+    rotated: 'The preview turns the part 90°. The export keeps its original orientation.',
+    overhang: 'Amber marks the part outside the bed.',
+    clearance: (x: number, y: number) => `Room left: ${delta(x)} mm across, ${delta(y)} mm deep.`,
+    overflow: (x: number, y: number) =>
+      list.format(
+        [x > 0 ? `${delta(x)} mm wider` : '', y > 0 ? `${delta(y)} mm deeper` : ''].filter(Boolean)
+      ),
+    asDrawnOver: (overflow: string) => `As drawn: ${overflow}.`,
+    turnedOver: (overflow: string) => `Turned: ${overflow}.`,
+    resize: 'Change size…',
+    allFit: 'All parts fit as drawn.',
+    checking: 'Checking the latest parts against this bed…',
+    none: 'There are no parts to fit yet.',
+    unavailable:
+      'A print-bed preview needs a finished part. Dimensions and downloads are in Files.',
+    footprint: 'Footprint only · 10 mm grid',
+    orientation: 'View angle',
+    angles: { angled: 'Angled', top: 'Top' },
+    frame: 'Zoom to',
+    fitBed: 'Fit bed',
+    fitPart: 'Fit part',
+    drawing: (part: string, width: number, depth: number, fit: string) =>
+      `${part} on a ${bedSize(width, depth)} bed. ${fit}.`,
+    placement3mf: 'The 3MF opens with the parts side by side. Arrange them in your slicer.',
+    findings: 'Print-bed fit',
+    tilePart: (index: number, colour: string) => `Stencil ${num(index + 1)} · ${hex(colour)}`
+  },
+
+  viewport: {
+    label: 'Canvas view',
+    zoomIn: 'Zoom in',
+    zoomOut: 'Zoom out',
+    reset: 'Reset view',
+    help: 'Drag to pan, scroll or pinch to zoom. When focused, use the arrow keys, plus, minus or 0 to reset.'
+  },
+
+  help: {
+    artwork:
+      'Tiles make a grid of square openings. Free-form follows the shapes; the plate also includes a margin and, with a frame, a key.',
+    sizing: 'Tile sizing',
+    pixels:
+      'One tile per artwork pixel. Tile side and line width set the physical size without changing the grid.',
+    canvas:
+      'The tile side and line width determine how many tiles fit. The grid may combine several pixels into one tile and lose detail.',
+    supports:
+      'Loose pieces, like the centre of an O, need something to hold them. Flat bridges touch the work; raised beams leave room for spray.',
+    frame:
+      'The off-centre key seats every plate facing the same way. Keep the frame in place as you change plates.',
+    web: 'The line between tile openings is the material holding the stencil together. Check it is wide enough to print.',
+    tileDetails: 'Tile openings & lines',
+    plateDetails: 'Plate & registration',
+    finishDetails: 'Detail & finishing',
+    chartDetails: 'Chart resolution',
+    resulting: (w: number, h: number) => `Resulting size: ${bedSize(w, h)}`,
+    about: (label: string) => `About ${label.toLocaleLowerCase()}`
   },
 
   freeform: {
@@ -206,9 +403,6 @@ export const text = {
     artworkAlt: 'The artwork at its original colours',
     none: 'No artwork yet',
     open: 'Open artwork',
-    choose: 'Choose artwork',
-    drop: 'Drop artwork.',
-    dropBody: 'Open a picture or SVG, or type the words you want to stencil.',
     dropping: 'Drop artwork or a project to open it',
     example: 'Try the badge',
     type: 'Type text',
@@ -284,7 +478,6 @@ export const text = {
     thinWebs: (n: number) => plural(n, 'thin web', 'thin webs'),
     narrowOpenings: (n: number) => plural(n, 'narrow opening', 'narrow openings'),
     openings: (n: number) => plural(n, 'opening', 'openings'),
-    bedWarning: 'Larger than your print bed.',
     includedFrame: (w: number, h: number) =>
       `Both print files include the registration frame (${size(num(w, 2), num(h, 2), 'mm')}).`,
     partSize: (w: number, h: number, z: number) => `${num(w, 2)} × ${num(h, 2)} × ${num(z, 2)} mm`,
@@ -302,8 +495,7 @@ export const text = {
     inspectThinWebs:
       'Check that thin webs are filled in the slice. They can break when you lift the plate.',
     inspectNarrowOpenings:
-      'Narrow openings may close up in the slice or let too little paint through.',
-    resize: 'Reduce the artwork size or margin to fit your bed.'
+      'Narrow openings may close up in the slice or let too little paint through.'
   },
 
   supports: {
@@ -389,8 +581,6 @@ export const text = {
     clearance: 'Clearance per edge (mm)',
     fitNote: 'The off-centre key keeps the plates facing the same way.',
     clearanceNote: (mm: number) => `${num(mm, 2)} mm nominal clearance per edge`,
-    fits: 'Fits the bed',
-    bedWarning: 'The registration frame is larger than your print bed.',
     save: 'Save frame STL',
     lift: 'Lift at the key. Leave the frame in place for the next plate.',
     assembly: 'Position of the plate in the frame',
@@ -405,7 +595,8 @@ export const text = {
     loading: 'Loading print geometry…',
     unavailable:
       'The 3D preview could not be drawn. You can still use the Top view and save print files.',
-    interaction: 'Drag to turn, scroll to zoom. Arrow keys turn the model when it’s focused.',
+    interaction:
+      'Drag to turn, right-drag to pan, or scroll to zoom. On touch, use two fingers to pan or zoom. When focused, use arrows to turn, Shift and arrows to pan, plus or minus to zoom, and 0 to reset.',
     reset: 'Reset view'
   },
 

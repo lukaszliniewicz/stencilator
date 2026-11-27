@@ -13,6 +13,8 @@ use std::rc::Rc;
 use stencilator_core::chart::{ChartSettings, Sizing as CoreSizing, TileChart, build_chart, merge_paints};
 use stencilator_core::colour::Rgb;
 use stencilator_core::export::{ChartFormat, encode_chart};
+use stencilator_core::geometry::{BedFit as CoreBedFit, bed_fit as fit};
+use stencilator_core::plate::BED_MM;
 use stencilator_core::quantise::ColourMode;
 use stencilator_core::source::{Image, decode, pixel_grid};
 use stencilator_core::stencil::{RECOMMENDED_MIN_WEB_MM, stencil_file, stencil_filename, stencil_files};
@@ -31,6 +33,32 @@ pub fn version() -> String {
 #[must_use]
 pub fn recommended_min_web_mm() -> f64 {
     RECOMMENDED_MIN_WEB_MM
+}
+
+/// The orientation needed for one part on the bed.
+#[wasm_bindgen]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BedFit {
+    /// Fits in its exported orientation.
+    AsDrawn = "as-drawn",
+    /// Fits after turning 90 degrees.
+    QuarterTurn = "quarter-turn",
+    /// Neither orientation fits.
+    TooLarge = "too-large",
+}
+
+/// How the part fits when laid flat. An unfinished bed size has no fit result.
+#[wasm_bindgen(js_name = bedFit)]
+#[must_use]
+pub fn bed_fit(width_mm: f64, depth_mm: f64, bed_width_mm: f64, bed_depth_mm: f64) -> Option<BedFit> {
+    if !BED_MM.contains(&bed_width_mm) || !BED_MM.contains(&bed_depth_mm) {
+        return None;
+    }
+    Some(match fit((width_mm, depth_mm), (bed_width_mm, bed_depth_mm)) {
+        CoreBedFit::AsDrawn => BedFit::AsDrawn,
+        CoreBedFit::QuarterTurn => BedFit::QuarterTurn,
+        CoreBedFit::TooLarge => BedFit::TooLarge,
+    })
 }
 
 pub(crate) fn error(e: &stencilator_core::Error) -> JsError {

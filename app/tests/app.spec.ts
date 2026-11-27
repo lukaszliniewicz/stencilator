@@ -17,9 +17,74 @@ function watchForProblems(page: Page): string[] {
 }
 
 async function openPicture(page: Page): Promise<void> {
+  await page.getByRole('button', { name: 'Pixel art', exact: true }).click();
   const chooser = page.waitForEvent('filechooser');
-  await page.getByRole('button', { name: 'Open picture' }).click();
+  await page.getByRole('button', { name: 'Choose artwork…' }).click();
   await (await chooser).setFiles(IMAGE);
+}
+
+async function openText(page: Page): Promise<void> {
+  await page.getByRole('button', { name: 'Free-form', exact: true }).click();
+  await page.getByRole('button', { name: 'Type text', exact: true }).click();
+}
+
+async function openProjectActions(page: Page): Promise<void> {
+  await page.getByRole('button', { name: 'Project actions' }).click();
+}
+
+async function downloadProject(page: Page) {
+  const file = page.waitForEvent('download');
+  await openProjectActions(page);
+  await page.getByRole('button', { name: 'Download project', exact: true }).click();
+  return file;
+}
+
+async function changeBed(page: Page, width: string, depth: string): Promise<void> {
+  await page.getByRole('button', { name: 'Change bed…', exact: true }).first().click();
+  const setup = page.getByRole('dialog', { name: 'Printer setup' });
+  await setup
+    .getByRole('combobox', { name: 'Printer profile' })
+    .selectOption({ label: 'Custom bed' });
+  await setup.getByLabel('Bed width (mm)').fill(width);
+  await setup.getByLabel('Bed depth (mm)').fill(depth);
+  await setup.getByRole('button', { name: 'Apply to project' }).click();
+}
+
+const workspaceReady = (page: Page) =>
+  expect(page.getByRole('button', { name: 'Recent projects' })).toBeEnabled();
+const saved = (page: Page) =>
+  expect(page.getByText('Saved in this browser', { exact: true })).toBeVisible();
+const settings = (page: Page) => page.getByRole('complementary', { name: 'Settings' });
+const bench = (page: Page) => page.getByRole('main');
+
+async function projects(page: Page, current = 'Recent projects') {
+  await page.getByRole('button', { name: current, exact: true }).click();
+  return page.getByRole('dialog', { name: 'Projects in this browser' });
+}
+
+async function renameProject(page: Page, title: string): Promise<void> {
+  await openProjectActions(page);
+  await page.getByRole('button', { name: 'Rename…' }).click();
+  await page.getByRole('textbox', { name: 'Project name' }).fill(title);
+  await page.getByRole('button', { name: 'Save name' }).click();
+  await saved(page);
+}
+
+async function backups(page: Page, current?: string) {
+  await (
+    await projects(page, current)
+  )
+    .getByRole('button', { name: 'Back up or restore…' })
+    .click();
+  return page.getByRole('dialog', { name: 'Back up or restore' });
+}
+
+async function importBackup(page: Page, buffer: Buffer): Promise<void> {
+  await page.getByLabel('Workspace backup file').setInputFiles({
+    name: 'workspace.json',
+    mimeType: 'application/json',
+    buffer
+  });
 }
 
 async function savedName(page: Page, click: () => Promise<void>): Promise<string> {
@@ -39,7 +104,7 @@ async function zipEntries(page: Page, click: () => Promise<void>): Promise<numbe
 test('a picture becomes a chart and files', async ({ page }) => {
   const problems = watchForProblems(page);
   await page.goto('/');
-  await expect(page.getByRole('heading', { name: 'Drop a picture.' })).toBeVisible();
+  await expect(page.getByRole('heading', { name: 'What are you making?' })).toBeVisible();
   await expect(page.getByText(/^Engine \d/)).toBeVisible();
 
   await openPicture(page);
@@ -52,7 +117,7 @@ test('a picture becomes a chart and files', async ({ page }) => {
   await expect(page.getByText('8 × 6 tiles · 48 in all · 5 paints')).toBeVisible();
   await expect(page.getByRole('img', { name: 'The chart, 8 by 6 tiles' })).toBeVisible();
 
-  await page.getByRole('button', { name: 'Files' }).click();
+  await page.getByRole('button', { name: 'Files', exact: true }).click();
   expect(await savedName(page, () => page.getByRole('button', { name: 'Save PDF' }).click())).toBe(
     'chart-0-chart.pdf'
   );
@@ -86,7 +151,7 @@ test('a mistake is explained and can be undone', async ({ page }) => {
   await expect(page.getByRole('alert')).toHaveText(
     'The canvas width must be between 1 and 10000 mm.'
   );
-  await expect(page.getByRole('button', { name: 'Files' })).toBeEnabled();
+  await expect(page.getByRole('button', { name: 'Files', exact: true })).toBeEnabled();
 
   await undo.click();
   await expect(width).toHaveValue('47');
@@ -98,10 +163,16 @@ test('a mistake is explained and can be undone', async ({ page }) => {
   await page.keyboard.press('Control+z');
   await expect(width).toHaveValue('47');
 
-  // Settings outlast a reload, the picture does not.
+  // The picture, its edits and view survive a reload.
+  await page.getByRole('button', { name: 'Stencil', exact: true }).click();
+  await saved(page);
   await page.reload();
   await expect(page.getByLabel('Width (mm)', { exact: true })).toHaveValue('47');
-  await expect(page.getByRole('heading', { name: 'Drop a picture.' })).toBeVisible();
+  await expect(page.getByText('chart-0.png', { exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Stencil', exact: true })).toHaveAttribute(
+    'aria-pressed',
+    'true'
+  );
 
   expect(problems).toEqual([]);
 });
@@ -113,6 +184,7 @@ test('a selected paint keeps its place when a photo is reduced to new colours', 
   const photo = fileURLToPath(
     new URL('../../fixtures/reference/plates-photo.png', import.meta.url)
   );
+  await workspaceReady(page);
   await page.getByLabel('Picture file', { exact: true }).setInputFiles(photo);
   await expect(page.getByRole('img', { name: 'The chart, 34 by 23 tiles' })).toBeVisible();
   const paint = page.getByRole('button', { name: /^Paint 4,/ });
@@ -129,7 +201,8 @@ test('the example, a dropped picture and the theme', async ({ page }) => {
   const problems = watchForProblems(page);
   await page.goto('/');
 
-  await page.getByRole('button', { name: 'Try the example' }).click();
+  await page.getByRole('button', { name: 'Pixel art', exact: true }).click();
+  await page.getByRole('button', { name: 'Try the fox' }).click();
   await expect(page.getByText('fox.png', { exact: true })).toBeVisible();
   await expect(page.getByRole('img', { name: 'The chart, 22 by 22 tiles' })).toBeVisible();
 
@@ -140,6 +213,8 @@ test('the example, a dropped picture and the theme', async ({ page }) => {
     transfer.items.add(new File([data], 'dropped.png', { type: 'image/png' }));
     window.dispatchEvent(new DragEvent('drop', { dataTransfer: transfer, cancelable: true }));
   }, bytes);
+  await expect(page.getByRole('dialog', { name: 'Open “dropped”' })).toBeVisible();
+  await page.getByRole('button', { name: 'Start new project', exact: true }).click();
   await expect(page.getByText('dropped.png', { exact: true })).toBeVisible();
 
   await page.getByRole('button', { name: 'Stencil' }).click();
@@ -148,11 +223,12 @@ test('the example, a dropped picture and the theme', async ({ page }) => {
   ).toBeVisible();
 
   const root = page.locator('html');
-  await page.getByRole('button', { name: 'Dark' }).click();
+  await page.getByRole('combobox', { name: 'Theme' }).selectOption('dark');
   await expect(root).toHaveAttribute('data-theme', 'dark');
+  await saved(page);
   await page.reload();
   await expect(root).toHaveAttribute('data-theme', 'dark');
-  await page.getByRole('button', { name: 'Auto' }).click();
+  await page.getByRole('combobox', { name: 'Theme' }).selectOption('auto');
   await expect(root).toHaveAttribute('data-theme', 'auto');
 
   expect(problems).toEqual([]);
@@ -163,7 +239,8 @@ test('pixel art, with paints merged and the canvas colour left without a stencil
 }) => {
   const problems = watchForProblems(page);
   await page.goto('/');
-  await page.getByRole('button', { name: 'Try the example' }).click();
+  await page.getByRole('button', { name: 'Pixel art', exact: true }).click();
+  await page.getByRole('button', { name: 'Try the fox' }).click();
   await expect(page.getByText('22 × 22 tiles · 484 in all · 4 paints')).toBeVisible();
 
   // White is the canvas colour, so it starts without a stencil.
@@ -180,7 +257,7 @@ test('pixel art, with paints merged and the canvas colour left without a stencil
     'true'
   );
 
-  await page.getByRole('button', { name: 'Files' }).click();
+  await page.getByRole('button', { name: 'Files', exact: true }).click();
   await expect(page.getByText('All 2 stencils')).toBeVisible();
   await expect(page.getByRole('button', { name: /^Save stencil 3,/ })).toHaveCount(0);
   expect(
@@ -189,7 +266,7 @@ test('pixel art, with paints merged and the canvas colour left without a stencil
   await page.getByRole('button', { name: 'Back to the chart' }).click();
 
   await white.check();
-  await page.getByRole('button', { name: 'Files' }).click();
+  await page.getByRole('button', { name: 'Files', exact: true }).click();
   await expect(page.getByText('All 3 stencils')).toBeVisible();
   await page.getByRole('button', { name: 'Back to the chart' }).click();
 
@@ -205,7 +282,7 @@ test('an SVG becomes checked plates and reopens with its project settings', asyn
   await page.getByRole('button', { name: 'Free-form', exact: true }).click();
   await page.getByRole('button', { name: 'Try the badge' }).click();
 
-  const status = page.getByRole('status');
+  const status = bench(page).getByRole('status');
   await expect(status).toHaveText('70 × 70 mm · 3 paints · 2 plates · 0.1 mm cells');
   await expect(page.getByRole('button', { name: 'Tiles', exact: true })).toBeDisabled();
   await page.getByRole('button', { name: 'Plate', exact: true }).click();
@@ -213,8 +290,8 @@ test('an SVG becomes checked plates and reopens with its project settings', asyn
   const islands = page.getByRole('checkbox', { name: 'Islands', exact: true });
   await islands.uncheck();
   await expect(islands).not.toBeChecked();
-  await page.getByLabel('Bed width (mm)').fill('80');
-  await expect(page.getByText('Larger than your print bed.', { exact: true })).toBeVisible();
+  await changeBed(page, '80', '256');
+  await expect(page.getByText('Too large for this bed', { exact: true })).toBeVisible();
 
   await page.getByRole('button', { name: 'Files', exact: true }).click();
   const printProject = page.getByRole('button', { name: 'Save 3MF' });
@@ -226,19 +303,19 @@ test('an SVG becomes checked plates and reopens with its project settings', asyn
     await savedName(page, () => page.getByRole('button', { name: 'Save plate 2, #EF7D2D' }).click())
   ).toBe('badge-plate-02-ef7d2d.stl');
 
-  const saved = page.waitForEvent('download');
-  await page.getByRole('button', { name: 'Save project', exact: true }).click();
-  const design = await saved;
-  expect(design.suggestedFilename()).toBe('badge.stencilator');
+  const file = page.waitForEvent('download');
+  await page.getByRole('button', { name: 'Download project', exact: true }).click();
+  const design = await file;
+  expect(design.suggestedFilename()).toBe('Paint Club badge.stencilator');
   const buffer = await readFile(await design.path());
-  await page.reload();
+  await page.getByRole('button', { name: 'New project', exact: true }).click();
   const chooser = page.waitForEvent('filechooser');
-  await page.getByRole('button', { name: 'Open project' }).click();
+  await page.getByRole('button', { name: 'Import a project…' }).click();
   await (
     await chooser
   ).setFiles({ name: design.suggestedFilename(), mimeType: 'application/json', buffer });
   await expect(status).toHaveText('70 × 70 mm · 3 paints · 2 plates · 0.1 mm cells');
-  await expect(page.getByLabel('Bed width (mm)')).toHaveValue('80');
+  await expect(settings(page).getByText('80 × 256 mm', { exact: true })).toBeVisible();
   expect(problems).toEqual([]);
 });
 
@@ -247,8 +324,7 @@ test('typed text uses the selected font and can be saved with every paint untick
 }) => {
   const problems = watchForProblems(page);
   await page.goto('/');
-  await page.getByRole('button', { name: 'Free-form', exact: true }).click();
-  await page.getByRole('button', { name: 'Type text', exact: true }).click();
+  await openText(page);
   await page.getByRole('textbox', { name: 'Text', exact: true }).fill('AO8');
   await expect(page.getByText('4 loose islands', { exact: true })).toBeVisible();
 
@@ -265,22 +341,22 @@ test('typed text uses the selected font and can be saved with every paint untick
   ).toBeVisible();
 
   await page.getByRole('checkbox', { name: 'Stencil for paint 1, #000000' }).uncheck();
-  await expect(page.getByRole('status')).toHaveText(/2 paints · 0 plates/);
+  await expect(bench(page).getByRole('status')).toHaveText(/2 paints · 0 plates/);
   await expect(page.getByRole('alert')).toHaveCount(0);
   await page.getByRole('button', { name: 'Files', exact: true }).click();
   await expect(page.getByRole('button', { name: 'Save 3MF' })).toHaveCount(0);
   expect(
     await savedName(page, () =>
-      page.getByRole('button', { name: 'Save project', exact: true }).click()
+      page.getByRole('button', { name: 'Download project', exact: true }).click()
     )
-  ).toBe('stencilator.stencilator');
+  ).toBe('Text stencil.stencilator');
   expect(problems).toEqual([]);
 });
 
 test('flat bridges hold a text island and stay with the saved project', async ({ page }) => {
   const problems = watchForProblems(page);
   await page.goto('/');
-  await page.getByRole('button', { name: 'Type text', exact: true }).click();
+  await openText(page);
   await page.getByRole('textbox', { name: 'Text', exact: true }).fill('O');
   const loose = page.getByText('1 loose island', { exact: true });
   await expect(loose).toBeVisible();
@@ -294,12 +370,9 @@ test('flat bridges hold a text island and stay with the saved project', async ({
   await expect(loose).toHaveCount(0);
   await width.fill('1.4');
 
-  const saved = page.waitForEvent('download');
-  await page.getByRole('button', { name: 'Save project', exact: true }).click();
-  const design = await saved;
+  const design = await downloadProject(page);
   const buffer = await readFile(await design.path());
   expect(buffer.toString('utf8')).toContain('"bridge_width_mm": 1.4');
-  await page.reload();
   await page.getByLabel('Stencilator project file', { exact: true }).setInputFiles({
     name: design.suggestedFilename(),
     mimeType: 'application/json',
@@ -325,6 +398,7 @@ test('an imported keyed project keeps its frame in the print files and when save
     stencils: { bed_mm: [95, 96] }
   };
   await page.goto('/');
+  await workspaceReady(page);
   await page.getByLabel('Stencilator project file', { exact: true }).setInputFiles({
     name: 'keyed.stencilator',
     mimeType: 'application/json',
@@ -333,19 +407,23 @@ test('an imported keyed project keeps its frame in the print files and when save
   const files = page.getByRole('button', { name: 'Files', exact: true });
   await files.click();
   await expect(
-    page.getByText('The registration frame is larger than your print bed.')
+    page.getByRole('region', { name: 'Print-bed fit' }).getByText(/Registration frame.*Too large/)
   ).toBeVisible();
   const included = page.getByText(/Both print files include the registration frame/);
   await expect(included).toBeVisible();
   const zip = page.getByRole('button', { name: 'Save STL zip' });
   expect(await zipEntries(page, () => zip.click())).toBe(3);
 
-  const saved = page.waitForEvent('download');
-  await page.getByRole('button', { name: 'Save project', exact: true }).click();
-  const buffer = await readFile(await (await saved).path());
-  expect(buffer.toString('utf8')).toContain('"registration_clearance_mm": 0.35');
+  const file = page.waitForEvent('download');
+  await page.getByRole('button', { name: 'Download project', exact: true }).click();
+  const buffer = await readFile(await (await file).path());
+  expect(JSON.parse(buffer.toString('utf8'))).toMatchObject({
+    freeform: { registration_clearance_mm: 0.35 },
+    stencils: { bed_mm: [95, 96] }
+  });
 
   await page.getByLabel('Picture file', { exact: true }).setInputFiles(fileURLToPath(badge));
+  await page.getByRole('button', { name: 'Start new project', exact: true }).click();
   await files.click();
   await expect(included).toHaveCount(0);
   expect(await zipEntries(page, () => zip.click())).toBe(2);
@@ -355,7 +433,7 @@ test('an imported keyed project keeps its frame in the print files and when save
 test('raised support edits validate both ends, persist and undo', async ({ page }) => {
   const problems = watchForProblems(page);
   await page.goto('/');
-  await page.getByRole('button', { name: 'Type text', exact: true }).click();
+  await openText(page);
   await page.getByRole('textbox', { name: 'Text', exact: true }).fill('O');
   const supports = page.getByRole('region', { name: 'Island supports' });
   await supports.getByRole('button', { name: 'Raised', exact: true }).click();
@@ -381,13 +459,10 @@ test('raised support edits validate both ends, persist and undo', async ({ page 
   await expect(apply).toHaveCount(0);
   await expect(first).toBeEnabled();
 
-  const saved = page.waitForEvent('download');
-  await page.getByRole('button', { name: 'Save project', exact: true }).click();
-  const design = await saved;
+  const design = await downloadProject(page);
   const buffer = await readFile(await design.path());
   expect(buffer.toString('utf8')).toContain('"stencilator": 4');
   expect(buffer.toString('utf8')).toContain('"support_edits": [');
-  await page.reload();
   await page.getByLabel('Stencilator project file', { exact: true }).setInputFiles({
     name: design.suggestedFilename(),
     mimeType: 'application/json',
@@ -411,6 +486,7 @@ test('raised support edits validate both ends, persist and undo', async ({ page 
   await first.click();
   await supports.getByRole('button', { name: 'Remove support' }).click();
   await expect(page.getByText('1 raised connector', { exact: true })).toBeVisible();
+  await settings(page).getByText('Plate & registration', { exact: true }).click();
   await page.getByLabel('Margin (mm)', { exact: true }).fill('9');
   await expect(page.getByText('1 saved removal no longer matches the suggestions')).toBeVisible();
   await supports.getByRole('button', { name: /Old removal/ }).click();
@@ -423,6 +499,7 @@ test('raised support edits validate both ends, persist and undo', async ({ page 
 test('the keyed 3D preview and print files follow the chosen paint order', async ({ page }) => {
   const problems = watchForProblems(page);
   await page.goto('/');
+  await workspaceReady(page);
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="60mm" height="40mm" viewBox="0 0 60 40">
     <path fill="#1d2f5c" d="M0 0H30V40H0Z"/><path fill="#c6532d" d="M30 0H60V40H30Z"/></svg>`;
   await page.getByLabel('Picture file', { exact: true }).setInputFiles({
@@ -430,8 +507,12 @@ test('the keyed 3D preview and print files follow the chosen paint order', async
     mimeType: 'image/svg+xml',
     buffer: Buffer.from(svg)
   });
+  const registration = settings(page).getByText('Plate & registration', { exact: true });
+  const finishing = settings(page).getByText('Detail & finishing', { exact: true });
+  await registration.click();
   await page.getByRole('checkbox', { name: 'Use a keyed frame' }).check();
   await page.getByRole('button', { name: 'RAL Classic', exact: true }).click();
+  await finishing.click();
   await page.getByRole('button', { name: 'RAL code', exact: true }).click();
   await page.getByLabel('Chamfer (mm)').fill('0.4');
   await page.getByLabel('Overlap (mm)').fill('0.2');
@@ -459,6 +540,32 @@ test('the keyed 3D preview and print files follow the chosen paint order', async
   const model = page.getByRole('application', { name: '3D preview of the print geometry' });
   const canvas = model.locator('canvas');
   const seated = await canvas.screenshot();
+  // Measure the silhouette on the flat canvas background to check zoom direction.
+  const modelArea = (png: Buffer) =>
+    page.evaluate(async (base64) => {
+      const image = new Image();
+      image.src = `data:image/png;base64,${base64}`;
+      await image.decode();
+      const bitmap = new OffscreenCanvas(image.naturalWidth, image.naturalHeight);
+      const context = bitmap.getContext('2d');
+      if (!context) throw new Error('Could not read the model screenshot');
+      context.drawImage(image, 0, 0);
+      const { data } = context.getImageData(0, 0, bitmap.width, bitmap.height);
+      const background = (4 * bitmap.width + Math.floor(bitmap.width / 2)) * 4;
+      const [red, green, blue] = data.subarray(background, background + 3);
+      let pixels = 0;
+      for (let i = 0; i < data.length; i += 4) {
+        if (data[i] !== red || data[i + 1] !== green || data[i + 2] !== blue) pixels++;
+      }
+      return pixels;
+    }, png.toString('base64'));
+  const originalArea = await modelArea(seated);
+  await model.press('+');
+  expect(await modelArea(await canvas.screenshot())).toBeGreaterThan(originalArea);
+  await model.press('0');
+  await model.press('-');
+  expect(await modelArea(await canvas.screenshot())).toBeLessThan(originalArea);
+  await model.press('0');
   await exploded.click();
   expect(await canvas.screenshot()).not.toEqual(seated);
   await expect(result).toBeVisible();
@@ -475,15 +582,17 @@ test('the keyed 3D preview and print files follow the chosen paint order', async
     )
   ).toBe('two-paints-plate-02-c6532d.stl');
 
-  const saved = page.waitForEvent('download');
-  await page.getByRole('button', { name: 'Save project', exact: true }).click();
-  const design = await saved;
-  await page.reload();
+  const file = page.waitForEvent('download');
+  await page.getByRole('button', { name: 'Download project', exact: true }).click();
+  const design = await file;
+  await page.getByRole('button', { name: 'New project', exact: true }).click();
   await page.getByLabel('Stencilator project file', { exact: true }).setInputFiles({
     name: design.suggestedFilename(),
     mimeType: 'application/json',
     buffer: await readFile(await design.path())
   });
+  await registration.click();
+  await finishing.click();
   await expect(page.getByRole('checkbox', { name: 'Use a keyed frame' })).toBeChecked();
   await expect(page.getByLabel('Chamfer (mm)')).toHaveValue('0.4');
   await expect(page.getByLabel('Overlap (mm)')).toHaveValue('0.2');
@@ -522,8 +631,9 @@ test('the 3D preview marks the old frame as stale while the new mesh loads', asy
     };
   });
   await page.goto('/');
-  await page.getByRole('button', { name: 'Type text', exact: true }).click();
+  await openText(page);
   await page.getByRole('textbox', { name: 'Text', exact: true }).fill('O');
+  await settings(page).getByText('Plate & registration', { exact: true }).click();
   const frame = page.getByRole('checkbox', { name: 'Use a keyed frame' });
   await frame.check();
   await page.getByRole('button', { name: 'Plate', exact: true }).click();
@@ -545,6 +655,7 @@ test('the 3D preview marks the old frame as stale while the new mesh loads', asy
 
 test('the painted result shows all remaining coats when a step disappears', async ({ page }) => {
   await page.goto('/');
+  await workspaceReady(page);
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="60mm" height="40mm" viewBox="0 0 60 40">
     <path fill="#1d2f5c" d="M0 0H20V40H0Z"/>
     <path fill="#c6532d" d="M20 0H40V40H20Z"/>
@@ -571,6 +682,7 @@ test('replacing a picture starts fresh undo history for the fitted artwork', asy
   await page.goto('/');
   await openPicture(page);
   await page.getByRole('button', { name: 'Free-form', exact: true }).click();
+  await settings(page).getByText('Plate & registration', { exact: true }).click();
   const frame = page.getByRole('checkbox', { name: 'Use a keyed frame' });
   await frame.check();
   const undo = page.getByRole('button', { name: 'Undo (Ctrl+Z)' });
@@ -578,10 +690,13 @@ test('replacing a picture starts fresh undo history for the fitted artwork', asy
   await page.getByRole('button', { name: /^Paint 2,/ }).click();
   await page.getByRole('button', { name: 'Move coat earlier' }).click();
 
-  page.once('dialog', (dialog) => dialog.accept());
   await page
     .getByLabel('Picture file', { exact: true })
     .setInputFiles(fileURLToPath(new URL('../../fixtures/pixel-art/fox.png', import.meta.url)));
+  await page
+    .getByRole('dialog', { name: 'Open “fox”' })
+    .getByRole('button', { name: 'Replace artwork', exact: true })
+    .click();
   await expect(page.getByText('fox.png', { exact: true })).toBeVisible();
   await expect(frame).not.toBeChecked();
   await expect(undo).toBeDisabled();
@@ -599,12 +714,12 @@ test('a picture can switch modes and be saved with an unfinished setting in the 
 
   const modes = page.getByRole('group', { name: 'Stencil mode' });
   await modes.getByRole('button', { name: 'Free-form' }).click();
-  await expect(page.getByRole('status')).toHaveText(/200 × 150 mm · 5 paints · 4 plates/);
+  await expect(bench(page).getByRole('status')).toHaveText(/200 × 150 mm · 5 paints · 4 plates/);
   await expect(page.getByRole('img', { name: 'Artwork reduced to its paints' })).toBeVisible();
 
   const width = page.getByLabel('Width (mm)', { exact: true });
   await width.fill('160');
-  await expect(page.getByRole('status')).toContainText('160 × 120 mm');
+  await expect(bench(page).getByRole('status')).toContainText('160 × 120 mm');
   await width.fill('');
   await expect(page.getByRole('alert')).toHaveText('The width must be between 1 and 10000 mm.');
   await modes.getByRole('button', { name: 'Tiles', exact: true }).click();
@@ -615,16 +730,19 @@ test('a picture can switch modes and be saved with an unfinished setting in the 
     'true'
   );
 
-  const saved = page.waitForEvent('download');
-  await page.getByRole('button', { name: 'Save project', exact: true }).click();
-  const design = await saved;
+  const design = await downloadProject(page);
   const buffer = await readFile(await design.path());
-  await page.reload();
+  const confirm = page.waitForEvent('dialog').then(async (prompt) => {
+    await prompt.accept();
+    return prompt.message();
+  });
   await page.getByLabel('Stencilator project file', { exact: true }).setInputFiles({
-    name: design.suggestedFilename(),
+    name: 'Recovered chart.stencilator',
     mimeType: 'application/json',
     buffer
   });
+  expect(await confirm).toContain('Leave it without saving');
+  await expect(page.getByRole('button', { name: 'Recovered chart', exact: true })).toBeEnabled();
   await expect(chart).toBeVisible();
   await modes.getByRole('button', { name: 'Free-form' }).click();
   await expect(width).toHaveValue('160');
@@ -632,40 +750,535 @@ test('a picture can switch modes and be saved with an unfinished setting in the 
   expect(problems).toEqual([]);
 });
 
-test('pasting into text keeps the artwork and replacing unsaved edits asks first', async ({
+test('pasting into a text field keeps the artwork and a separate project leaves the text intact', async ({
   page
 }) => {
   const problems = watchForProblems(page);
   await page.goto('/');
-  await page.getByRole('button', { name: 'Type text', exact: true }).click();
+  await openText(page);
   const typed = page.getByRole('textbox', { name: 'Text', exact: true });
   await typed.fill('PAINT');
 
-  let prompt: string | undefined;
-  page.on('dialog', (dialog) => {
-    prompt = dialog.message();
-    void dialog.dismiss();
-  });
   await typed.evaluate((element, base64) => {
     const bytes = Uint8Array.from(atob(base64), (character) => character.charCodeAt(0));
     const clipboardData = new DataTransfer();
     clipboardData.items.add(new File([bytes], 'pasted.png', { type: 'image/png' }));
     element.dispatchEvent(new ClipboardEvent('paste', { clipboardData, bubbles: true }));
   }, readFileSync(IMAGE).toString('base64'));
-  expect(prompt).toBeUndefined();
+  await expect(page.getByRole('dialog')).toHaveCount(0);
   await expect(typed).toHaveValue('PAINT');
 
   const picker = page.getByLabel('Picture file', { exact: true });
   await picker.setInputFiles(IMAGE);
-  expect(prompt).toBe('This project has unsaved changes. Replace it without saving?');
+  const dialog = page.getByRole('dialog', { name: 'Open “chart-0”' });
+  await expect(dialog).toBeVisible();
+  await page.keyboard.press('Escape');
   await expect(typed).toHaveValue('PAINT');
 
-  await savedName(page, () =>
-    page.getByRole('button', { name: 'Save project', exact: true }).click()
-  );
-  prompt = undefined;
   await picker.setInputFiles(IMAGE);
+  await dialog.getByRole('button', { name: 'Start new project', exact: true }).click();
   await expect(page.getByText('chart-0.png', { exact: true })).toBeVisible();
-  expect(prompt).toBeUndefined();
+  await page.getByRole('button', { name: 'chart-0', exact: true }).click();
+  await page
+    .getByRole('dialog')
+    .getByRole('button', { name: /^Text stencil/ })
+    .click();
+  await expect(typed).toHaveValue('PAINT');
   expect(problems).toEqual([]);
+});
+
+test('a sample is temporary until kept, and projects with the same artwork have separate histories', async ({
+  page
+}) => {
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Tile grid', exact: true }).click();
+  await page.getByRole('button', { name: 'Try the fox' }).click();
+  await expect(page.getByRole('button', { name: 'Keep project' })).toBeVisible();
+  const recent = await projects(page, 'Fox tile chart');
+  await expect(recent.getByText('No saved projects here yet.')).toBeVisible();
+  await page.keyboard.press('Escape');
+  await page.getByRole('button', { name: 'Keep project' }).click();
+  await saved(page);
+
+  await page.getByRole('button', { name: 'New project', exact: true }).click();
+  await openPicture(page);
+  await renameProject(page, 'Garden sign');
+  const tile = page.getByLabel('Tile (mm)', { exact: true });
+  await tile.fill('6');
+  await page.getByRole('button', { name: 'Stencil', exact: true }).click();
+  await saved(page);
+  await page.getByRole('button', { name: 'New project', exact: true }).click();
+  await openPicture(page);
+  await renameProject(page, 'Workshop sign');
+  await expect(tile).toHaveValue('5');
+  await expect(page.getByRole('button', { name: 'Undo (Ctrl+Z)' })).toBeDisabled();
+
+  // Switch straight after an edit, while the other project is rebuilding.
+  await tile.fill('8');
+  const picker = await projects(page, 'Workshop sign');
+  await picker.getByRole('searchbox').fill('garden');
+  await expect(picker.getByRole('button', { name: /^Workshop sign/ })).toHaveCount(0);
+  await picker.getByRole('button', { name: /^Garden sign/ }).click();
+  await expect(tile).toHaveValue('6');
+  await expect(page.getByRole('button', { name: 'Stencil', exact: true })).toHaveAttribute(
+    'aria-pressed',
+    'true'
+  );
+  await page.getByRole('button', { name: 'Undo (Ctrl+Z)' }).click();
+  await expect(tile).toHaveValue('5');
+  await saved(page);
+  await (
+    await projects(page, 'Garden sign')
+  )
+    .getByRole('button', { name: /^Workshop sign/ })
+    .click();
+  await expect(tile).toHaveValue('8');
+  await (
+    await projects(page, 'Workshop sign')
+  )
+    .getByRole('button', { name: /^Garden sign/ })
+    .click();
+  await expect(page.getByRole('button', { name: 'Garden sign', exact: true })).toBeEnabled();
+  await page.reload();
+  await expect(page.getByRole('button', { name: 'Garden sign', exact: true })).toBeVisible();
+});
+
+test('a second tab cannot overwrite a newer save and can keep its draft as a copy', async ({
+  page,
+  context
+}) => {
+  await page.goto('/');
+  await openPicture(page);
+  await saved(page);
+  const other = await context.newPage();
+  await other.addInitScript(() => {
+    let held: (() => void) | undefined;
+    let intercept = true;
+    document.addEventListener('release-save', () => {
+      held?.();
+      held = undefined;
+    });
+    window.Worker = class extends Worker {
+      override postMessage(
+        message: { request?: { kind?: string } },
+        options: StructuredSerializeOptions | Transferable[] = []
+      ): void {
+        if (message.request?.kind === 'projectFile' && intercept) {
+          intercept = false;
+          held = () => {
+            if (Array.isArray(options)) super.postMessage(message, options);
+            else super.postMessage(message, options);
+          };
+          document.documentElement.dataset.heldSave = 'yes';
+        } else if (Array.isArray(options)) super.postMessage(message, options);
+        else super.postMessage(message, options);
+      }
+    };
+  });
+  await other.goto('/');
+  const size = 'Tile (mm)';
+  await other.getByLabel(size, { exact: true }).fill('7');
+  await expect(other.locator('html')).toHaveAttribute('data-held-save', 'yes');
+  await page.getByLabel(size, { exact: true }).fill('6');
+  await saved(page);
+  await other.evaluate(() => document.dispatchEvent(new Event('release-save')));
+  await expect(other.getByRole('button', { name: 'Load the newer version' })).toBeVisible();
+  await expect(other.getByLabel(size, { exact: true })).toHaveValue('7');
+  await other.getByRole('button', { name: 'Keep mine as a copy' }).click();
+  await expect(other.getByRole('button', { name: 'chart-0 (copy)', exact: true })).toBeVisible();
+  await expect(other.getByLabel(size, { exact: true })).toHaveValue('7');
+  await expect(page.getByLabel(size, { exact: true })).toHaveValue('6');
+});
+
+test('a stale draft cannot bring a removed project back under its old name', async ({
+  page,
+  context
+}) => {
+  await page.goto('/');
+  await openPicture(page);
+  await saved(page);
+  const other = await context.newPage();
+  // A tab can miss the notification; the revision check must still stop its write.
+  await other.addInitScript(() => {
+    window.BroadcastChannel = class extends BroadcastChannel {
+      override set onmessage(_listener: BroadcastChannel['onmessage']) {
+        // Ignore messages from other tabs.
+      }
+    };
+  });
+  await other.goto('/');
+  const tile = other.getByLabel('Tile (mm)', { exact: true });
+  await expect(tile).toHaveValue('5');
+
+  await openProjectActions(page);
+  await page.getByRole('button', { name: 'Remove from this browser…' }).click();
+  await page.getByRole('button', { name: 'Remove project', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'What are you making?' })).toBeVisible();
+
+  await tile.fill('7');
+  await expect(
+    other.getByText('This project was removed in another tab', { exact: true })
+  ).toBeVisible();
+  await other.getByRole('button', { name: 'Keep mine as a copy' }).click();
+  await saved(other);
+  const picker = await projects(other, 'chart-0 (copy)');
+  await expect(picker.getByRole('listitem')).toHaveCount(1);
+  await expect(picker.getByRole('button', { name: /^chart-0 \(copy\)/ })).toBeVisible();
+  await other.keyboard.press('Escape');
+  await expect(tile).toHaveValue('7');
+});
+
+test('settings and theme remembered by v0.1.0 carry over to a new workspace', async ({ page }) => {
+  await page.addInitScript(() => {
+    if (localStorage.getItem('stencilator.settings') === null) {
+      localStorage.setItem('stencilator.settings', JSON.stringify({ tileMm: 6, sizing: 'pixels' }));
+      localStorage.setItem('stencilator.theme', JSON.stringify('dark'));
+    }
+  });
+  await page.goto('/');
+  await expect(page.getByRole('button', { name: 'Pixel art', exact: true })).toHaveAttribute(
+    'aria-pressed',
+    'true'
+  );
+  await page.getByRole('button', { name: 'Try the fox' }).click();
+  await expect(page.getByLabel('Tile (mm)', { exact: true })).toHaveValue('6');
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
+});
+
+test('a browser without storage keeps the draft editable and asks before leaving it', async ({
+  page
+}) => {
+  await page.addInitScript(() => {
+    indexedDB.open = () => {
+      throw new DOMException('Denied', 'SecurityError');
+    };
+  });
+  await page.goto('/');
+  await openPicture(page);
+  const recovery = page.getByRole('region', { name: 'Could not save in this browser' });
+  await expect(recovery.getByText('Browser storage is unavailable.')).toBeVisible();
+  await page.getByLabel('Tile (mm)', { exact: true }).fill('6');
+  const file = page.waitForEvent('download');
+  await recovery.getByRole('button', { name: 'Download project' }).click();
+  expect((await readFile(await (await file).path())).toString()).toContain('"tile_mm": 6');
+
+  await page.getByRole('button', { name: 'New project', exact: true }).click();
+  const confirm = page.waitForEvent('dialog').then(async (prompt) => {
+    await prompt.dismiss();
+    return prompt.message();
+  });
+  await page.getByRole('button', { name: 'Try the fox' }).click();
+  expect(await confirm).toContain('Leave it without saving');
+  await page.getByRole('button', { name: 'Back to project', exact: true }).click();
+  await expect(page.getByLabel('Tile (mm)', { exact: true })).toHaveValue('6');
+});
+
+test('the keyed badge fits turned, with the unchanged frame file when the bed gets smaller', async ({
+  page
+}) => {
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Free-form', exact: true }).click();
+  await page.getByRole('button', { name: 'Try the badge' }).click();
+  await settings(page).getByText('Plate & registration', { exact: true }).click();
+  await page.getByRole('checkbox', { name: 'Use a keyed frame' }).check();
+  await page.getByLabel('Clearance per edge (mm)').fill('0.25');
+  await changeBed(page, '104', '101');
+  const view = page.getByRole('button', { name: 'Print bed', exact: true });
+  await view.click();
+  await page.getByRole('combobox', { name: 'Part on the bed' }).selectOption('frame');
+  const fit = bench(page).getByRole('region', { name: 'Print-bed fit' });
+  await expect(fit.getByText('Fits after a quarter-turn', { exact: true })).toBeVisible();
+  const drawing = bench(page).getByRole('img', {
+    name: /Registration frame on a 104 × 101 mm bed/
+  });
+  await expect(drawing).toBeVisible();
+  await bench(page).getByRole('button', { name: 'Top', exact: true }).click();
+  const outline = await drawing.locator('use.on-bed').evaluate((part) => {
+    const parent = part.parentNode;
+    if (!(parent instanceof SVGGElement)) throw new Error('The part has no position on the bed.');
+    const box = parent.getBBox();
+    return { x: box.x, y: box.y, width: box.width, height: box.height };
+  });
+  expect(outline.width).toBeCloseTo(103.5, 3);
+  expect(outline.height).toBeCloseTo(100.5, 3);
+  expect(outline.x).toBeCloseTo(0.25, 3);
+  expect(outline.y).toBeCloseTo(0.25, 3);
+  const fitted = page.getByRole('button', { name: 'Fit part', exact: true });
+  await fitted.click();
+  await expect(fitted).toHaveAttribute('aria-pressed', 'true');
+  await page.getByRole('application', { name: 'Print bed' }).press('+');
+  await expect(fitted).toHaveAttribute('aria-pressed', 'false');
+  await page.getByRole('button', { name: 'Reset view' }).click();
+  await expect(fitted).toHaveAttribute('aria-pressed', 'true');
+
+  const downloadFrame = async () => {
+    await page.getByRole('button', { name: 'Files', exact: true }).click();
+    const file = page.waitForEvent('download');
+    await page.getByRole('button', { name: 'Save frame STL' }).click();
+    return readFile(await (await file).path());
+  };
+  const original = await downloadFrame();
+  await expect(
+    bench(page).getByText('The 3MF opens with the parts side by side. Arrange them in your slicer.')
+  ).toBeVisible();
+  await page.getByRole('button', { name: 'Back to the artwork' }).click();
+  await changeBed(page, '103.49', '101');
+  await expect(fit.getByText('Too large for this bed', { exact: true })).toBeVisible();
+  await expect(fit.getByText(/Turned: 0\.01 mm wider/)).toBeVisible();
+  expect(await downloadFrame()).toEqual(original);
+});
+
+test('Tiles checks the saved bed in the preview and in Files', async ({ page }) => {
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Pixel art', exact: true }).click();
+  await page.getByRole('button', { name: 'Try the fox' }).click();
+  await page.getByLabel('Tile (mm)', { exact: true }).fill('20');
+  await changeBed(page, '500', '500');
+  await page.getByRole('button', { name: 'Print bed', exact: true }).click();
+  const fit = bench(page).getByRole('region', { name: 'Print-bed fit' });
+  await expect(fit.getByText('Fits as drawn', { exact: true })).toBeVisible();
+  await expect(bench(page).getByRole('img', { name: /on a 500 × 500 mm bed/ })).toBeVisible();
+  await page.getByRole('button', { name: 'Files', exact: true }).click();
+  await expect(fit.getByText('All parts fit as drawn.', { exact: true })).toBeVisible();
+  await changeBed(page, '50', '50');
+  await expect(fit.getByText(/Too large for this bed/).first()).toBeVisible();
+  await fit.getByRole('button', { name: 'Change size…' }).click();
+  await expect(settings(page).getByRole('heading', { name: 'Tile sizing' })).toBeFocused();
+});
+
+test('printer profiles keep an applied bed until explicitly updated, and backups round-trip', async ({
+  page,
+  browser
+}) => {
+  await page.goto('/');
+  await openPicture(page);
+  await renameProject(page, 'Garden sign');
+  await settings(page).getByRole('button', { name: 'Manage printer profiles…' }).click();
+  const profiles = page.getByRole('dialog', { name: 'Printer profiles' });
+  await profiles.getByRole('textbox', { name: 'Profile name' }).fill('MK4 · textured sheet');
+  await profiles.getByLabel('Bed width (mm)').fill('220');
+  await profiles.getByLabel('Bed depth (mm)').fill('210');
+  const slicerSizes = [
+    ['Extrusion line width (mm)', '0.42'],
+    ['Layer height (mm)', '0.2'],
+    ['Nozzle diameter (mm)', '0.4']
+  ] as const;
+  await profiles.getByText('Optional slicer settings', { exact: true }).click();
+  for (const [label, value] of slicerSizes) await profiles.getByLabel(label).fill(value);
+  await profiles.getByRole('button', { name: 'Save profile' }).click();
+  const printer = page.getByRole('dialog', { name: 'Printer setup' });
+  await printer.getByRole('button', { name: 'Apply to project' }).click();
+  await saved(page);
+  await settings(page).getByRole('button', { name: 'Manage printer profiles…' }).click();
+  await profiles.getByLabel('Bed width (mm)').fill('230');
+  await profiles.getByText('Optional slicer settings', { exact: true }).click();
+  for (const [label, value] of slicerSizes) {
+    const field = profiles.getByLabel(label);
+    await expect(field).toHaveValue(value);
+    await field.fill('');
+  }
+  await profiles.getByRole('button', { name: 'Save profile' }).click();
+  await expect(printer.getByText(/uses 220 × 210 mm.*now uses 230 × 210 mm/)).toBeVisible();
+  await printer.getByRole('button', { name: 'Apply update' }).click();
+  await expect(settings(page).getByText('230 × 210 mm', { exact: true })).toBeVisible();
+
+  const design = await downloadProject(page);
+  const expected = await readFile(await design.path());
+  await page.getByRole('combobox', { name: 'Theme' }).selectOption('dark');
+  await saved(page);
+  const backup = await backups(page, 'Garden sign');
+  const file = page.waitForEvent('download');
+  await backup.getByRole('button', { name: 'Download backup', exact: true }).click();
+  const backupBytes = await readFile(await (await file).path());
+
+  const fresh = await browser.newPage();
+  try {
+    await fresh.goto(page.url());
+    await backups(fresh);
+    await importBackup(fresh, Buffer.from('{"stencilator_workspace":1,"projects":[{}]}'));
+    await expect(fresh.getByRole('dialog').getByRole('alert')).toContainText(
+      'No changes were made.'
+    );
+    await importBackup(fresh, Buffer.from('{"stencilator_workspace":2}'));
+    await expect(fresh.getByRole('dialog').getByRole('alert')).toContainText(
+      'a format this version cannot read'
+    );
+    await importBackup(fresh, backupBytes);
+    const preview = fresh.getByRole('dialog', { name: 'Preview import' });
+    await expect(preview.getByRole('heading', { name: 'Preview import' })).toBeFocused();
+    await expect(preview.getByText('Garden sign', { exact: true })).toBeVisible();
+    await expect(preview.getByText('230 × 210 mm', { exact: true })).toBeVisible();
+    const preferences = preview.getByRole('checkbox', { name: 'Also restore app preferences' });
+    await expect(preferences).not.toBeChecked();
+    // Simulate a storage failure on the final write, after the project, profile
+    // and preferences writes have been queued. None of them should commit.
+    await fresh.evaluate(() => {
+      // eslint-disable-next-line @typescript-eslint/unbound-method -- Restored below and otherwise called with the store as `this`.
+      const put = IDBObjectStore.prototype.put;
+      IDBObjectStore.prototype.put = function (value: unknown, key?: IDBValidKey) {
+        if (
+          this.name === 'workspace' &&
+          this.transaction.objectStoreNames.contains('projects') &&
+          this.transaction.objectStoreNames.contains('profiles') &&
+          typeof value === 'object' &&
+          value !== null &&
+          'key' in value &&
+          value.key === 'revision'
+        ) {
+          IDBObjectStore.prototype.put = put;
+          throw new DOMException('The workspace is full.', 'QuotaExceededError');
+        }
+        return put.call(this, value, key);
+      };
+    });
+    const importButton = preview.getByRole('button', { name: 'Import backup' });
+    await preferences.check();
+    await importButton.click();
+    await expect(preview.getByRole('alert')).toContainText('ran out of storage space');
+    await expect(fresh.locator('html')).toHaveAttribute('data-theme', 'auto');
+    await preview.getByRole('button', { name: 'Back to backup options' }).click();
+    await importBackup(fresh, backupBytes);
+    await expect(preview.getByText('Add', { exact: true })).toHaveCount(2);
+    await expect(preferences).not.toBeChecked();
+    await importButton.click();
+    await expect(fresh.locator('html')).toHaveAttribute('data-theme', 'auto');
+    await expect(fresh.getByText('Workspace imported.')).toBeVisible();
+    await importBackup(fresh, backupBytes);
+    await expect(preview.getByText('Skip: already here', { exact: true })).toHaveCount(2);
+    await preferences.check();
+    await preview.getByRole('button', { name: 'Import backup' }).click();
+    await expect(fresh.locator('html')).toHaveAttribute('data-theme', 'dark');
+    await fresh.keyboard.press('Escape');
+    await (await projects(fresh)).getByRole('button', { name: /^Garden sign/ }).click();
+    await expect(settings(fresh).getByText('MK4 · textured sheet')).toBeVisible();
+    expect(await readFile(await (await downloadProject(fresh)).path())).toEqual(expected);
+
+    await settings(fresh).getByRole('button', { name: 'Manage printer profiles…' }).click();
+    const restoredProfiles = fresh.getByRole('dialog', { name: 'Printer profiles' });
+    await restoredProfiles.getByText('Optional slicer settings', { exact: true }).click();
+    for (const [label] of slicerSizes)
+      await expect(restoredProfiles.getByLabel(label)).toHaveValue('');
+    fresh.once('dialog', (prompt) => void prompt.accept());
+    await restoredProfiles.getByRole('button', { name: 'Remove profile…', exact: true }).click();
+    const savedProfiles = restoredProfiles.getByRole('combobox', { name: 'Saved profiles' });
+    await expect(savedProfiles.locator('option')).toHaveCount(1);
+    await restoredProfiles.getByRole('button', { name: 'Close', exact: true }).click();
+    await fresh.reload();
+    await expect(settings(fresh).getByText('Custom bed', { exact: true })).toBeVisible();
+    await expect(settings(fresh).getByText('230 × 210 mm', { exact: true })).toBeVisible();
+  } finally {
+    await fresh.close();
+  }
+});
+
+test('an older tab stops writing when another connection upgrades the database', async ({
+  page,
+  context
+}) => {
+  await page.goto('/');
+  await openPicture(page);
+  await saved(page);
+  const other = await context.newPage();
+  await other.goto('/');
+  await other.evaluate(
+    () =>
+      new Promise<void>((resolve, reject) => {
+        const upgrade = indexedDB.open('stencilator-workspace', 2);
+        upgrade.onsuccess = () => {
+          upgrade.result.close();
+          resolve();
+        };
+        upgrade.onerror = () => {
+          reject(upgrade.error ?? new Error('The database upgrade failed.'));
+        };
+      })
+  );
+  const recovery = page.getByRole('region', { name: 'This tab needs to reload' });
+  await expect(recovery).toBeVisible();
+  await page.getByLabel('Tile (mm)', { exact: true }).fill('7');
+  const file = page.waitForEvent('download');
+  await recovery.getByRole('button', { name: 'Download project' }).click();
+  expect((await readFile(await (await file).path())).toString()).toContain('"tile_mm": 7');
+  await expect(recovery.getByRole('button', { name: 'Reload app' })).toBeEnabled();
+  const reopened = await context.newPage();
+  await reopened.goto('/');
+  await expect(reopened.getByRole('region', { name: 'This tab needs to reload' })).toBeVisible();
+});
+
+test('an unavailable 3D view offers to download the project and reload', async ({ page }) => {
+  await page.goto('/');
+  await openText(page);
+  await page.getByRole('button', { name: 'Plate', exact: true }).click();
+  await page.route('**/PrintPreview-*.js', (route) => route.abort());
+  await page.getByRole('button', { name: '3D', exact: true }).click();
+  await expect(page.getByText(/The 3D view could not load/)).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Reload app' })).toBeEnabled();
+  expect(
+    await savedName(page, () => page.getByRole('button', { name: 'Download project' }).click())
+  ).toBe('Text stencil.stencilator');
+});
+
+test.describe('narrow workspace', () => {
+  test.use({ viewport: { width: 390, height: 844 }, hasTouch: true });
+
+  test('view choices and downloads are reachable, and support placement uses the panned coordinates', async ({
+    page
+  }) => {
+    await page.goto('/');
+    await openText(page);
+    const panels = page.getByRole('navigation', { name: 'Workspace panels' });
+    await panels.getByRole('button', { name: 'Artwork & paints' }).tap();
+    await page.getByRole('textbox', { name: 'Text', exact: true }).fill('O');
+    await panels.getByRole('button', { name: 'Settings' }).tap();
+    await settings(page).getByLabel('About island supports').tap();
+    await expect(settings(page).getByText(/Loose pieces, like the centre of an O/)).toBeVisible();
+    const supports = settings(page).getByRole('region', { name: 'Island supports' });
+    await supports.getByRole('button', { name: 'Raised', exact: true }).tap();
+    await supports.getByRole('button', { name: 'Add support', exact: true }).tap();
+    await expect(bench(page)).toBeVisible();
+    const canvas = page.getByRole('application', { name: 'Canvas view' });
+    const placement = canvas.locator('svg rect.target');
+    await expect(placement).toBeVisible();
+    const before = await placement.boundingBox();
+    if (!before) throw new Error('The plate placement target has no box.');
+    const x = before.x + before.width / 2;
+    const y = before.y + before.height / 2;
+    const touch = await page.context().newCDPSession(page);
+    await touch.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x, y }] });
+    await touch.send('Input.dispatchTouchEvent', {
+      type: 'touchMove',
+      touchPoints: [{ x: x + 12, y: y + 6 }]
+    });
+    await touch.send('Input.dispatchTouchEvent', {
+      type: 'touchMove',
+      touchPoints: [{ x: x + 24, y: y + 12 }]
+    });
+    await touch.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+    await touch.detach();
+    const panned = await placement.boundingBox();
+    if (!panned) throw new Error('The plate placement target disappeared after panning.');
+    expect(panned.x - before.x).toBeCloseTo(24, 0);
+    expect(panned.y - before.y).toBeCloseTo(12, 0);
+    await canvas.press('+');
+    await expect(bench(page).getByRole('status')).toContainText('Place end 1');
+    const tap = await placement.evaluate((rect: SVGRectElement) => {
+      const xy = new DOMPoint(rect.width.baseVal.value / 2, rect.height.baseVal.value / 2);
+      const screen = xy.matrixTransform(rect.getScreenCTM() ?? undefined);
+      return { x: screen.x, y: screen.y, mm: xy.x };
+    });
+    await page.touchscreen.tap(tap.x, tap.y);
+    await expect(bench(page).getByRole('status')).toContainText('Place end 2');
+    await panels.getByRole('button', { name: 'Settings' }).tap();
+    expect(Number(await supports.getByLabel('End 1 X (mm)').inputValue())).toBeCloseTo(tap.mm, 0);
+    await supports.getByRole('button', { name: 'Cancel', exact: true }).tap();
+    await panels.getByRole('button', { name: 'Canvas' }).tap();
+    await expect(
+      page.getByRole('button', { name: 'Painted result', exact: true })
+    ).toBeInViewport();
+    await page.getByRole('button', { name: 'Files', exact: true }).tap();
+    await expect(page.getByRole('button', { name: 'Save 3MF' })).toBeVisible();
+    await page.setViewportSize({ width: 1024, height: 768 });
+    await page.getByRole('button', { name: 'Back to the artwork' }).tap();
+    await expect(canvas).toBeInViewport();
+  });
 });
