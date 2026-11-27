@@ -20,8 +20,6 @@ and, later, behind an AI assistant, giving the same result everywhere.
 Early, but usable. Both modes work on the command line and in the
 [web app](https://stencilator.liniewicz.eu). The app runs entirely in your browser,
 so your artwork is never uploaded. There are no prebuilt releases of the command yet.
-The island supports, registration and finishing below are available in a local
-build. The hosted app still runs the preceding version.
 
 ## Trying it
 
@@ -176,7 +174,7 @@ Plain projects still use format 1, flat bridges alone use format 2, and a frame
 with either of those uses format 3. Raised connectors, manual support edits,
 saved custom dimensions for disabled supports, paint order or finishing require
 format 4. A project keeps these free-form settings when switched to Tiles, so it
-can still need format 4 in that mode. The local build reads all four.
+can still need format 4 in that mode. The command and web app read all four.
 
 ### In both modes
 
