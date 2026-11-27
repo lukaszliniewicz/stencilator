@@ -13,7 +13,7 @@ use stencilator_core::plate::{
     registration_frame, reports_json,
 };
 use stencilator_core::project::{ArtworkSize, Colour, Freeform, Mode, Project, Source};
-use stencilator_core::registration::FrameReport;
+use stencilator_core::registration::{Frame, FrameReport};
 use stencilator_core::{source, zip};
 
 use crate::sources::{Input, embed_fonts, font_data};
@@ -297,19 +297,11 @@ pub(crate) fn run(args: &FreeformArgs) -> Result<(), String> {
     }
     input.load(&mut project)?;
 
-    let map = label(&project)?.merged(&project.merges());
-    let skip = project.stencil_skip();
-    let plates = build_plates(&map, &plate_settings, &skip).map_err(|e| e.to_string())?;
+    let built = build(&project)?;
+    let plates = &built.plates;
     if plates.is_empty() && (args.three_mf.is_some() || args.stencils.is_some() || args.frame.is_some()) {
         return Err("Every paint is skipped, so there are no plates to make.".to_owned());
     }
-    let reports = plates
-        .iter()
-        .map(|plate| check_plate(plate, &plate_settings))
-        .collect::<Result<Vec<_>, _>>()
-        .map_err(|e| e.to_string())?;
-    let frame = registration_frame(&plates);
-    let frame_report = frame.as_ref().map(|frame| frame.report(plate_settings.bed_mm));
 
     let mut destinations: Vec<(String, PathBuf)> = Vec::new();
     for (flag, path) in [("--3mf", &args.three_mf), ("--frame", &args.frame), ("--save", &args.save)] {
@@ -320,7 +312,7 @@ pub(crate) fn run(args: &FreeformArgs) -> Result<(), String> {
     if let Some(target) = &args.stencils {
         let names: Vec<(String, Rgb)> = plates.iter().map(|p| (p.file_name(), p.colour)).collect();
         destinations.extend(stencil_destinations(target, &names));
-        if let Some(report) = frame_report.filter(|_| !is_zip(target)) {
+        if let Some(report) = built.frame_report.filter(|_| !is_zip(target)) {
             destinations.push(("the registration frame".to_owned(), target.join(report.file)));
         }
     }
@@ -328,9 +320,9 @@ pub(crate) fn run(args: &FreeformArgs) -> Result<(), String> {
     let thickness = project.stencils.thickness_mm;
     let mut outputs: Vec<(PathBuf, Vec<u8>)> = Vec::new();
     if let Some(path) = &args.three_mf {
-        outputs.push((path.clone(), plates_3mf(&plates, thickness).map_err(|e| e.to_string())?));
+        outputs.push((path.clone(), plates_3mf(plates, thickness).map_err(|e| e.to_string())?));
     }
-    if let (Some(path), Some(frame)) = (&args.frame, &frame) {
+    if let (Some(path), Some(frame)) = (&args.frame, &built.frame) {
         outputs.push((path.clone(), frame.stl(thickness).map_err(|e| e.to_string())?));
     }
     if let Some(path) = &args.save {
@@ -338,7 +330,7 @@ pub(crate) fn run(args: &FreeformArgs) -> Result<(), String> {
     }
     let mut created = Vec::new();
     if let Some(target) = &args.stencils {
-        let stls = plate_files(&plates, thickness).map_err(|e| e.to_string())?;
+        let stls = plate_files(plates, thickness).map_err(|e| e.to_string())?;
         if is_zip(target) {
             outputs.push((target.clone(), zip::zip(&stls).map_err(|e| e.to_string())?));
         } else {
@@ -354,15 +346,7 @@ pub(crate) fn run(args: &FreeformArgs) -> Result<(), String> {
     }
 
     let written: Vec<&Path> = outputs.iter().map(|(p, _)| p.as_path()).collect();
-    let report = Report {
-        project: &project,
-        map: &map,
-        skip: &skip,
-        plates: &plates,
-        reports: &reports,
-        frame: frame_report,
-        written: &written,
-    };
+    let report = built.report(&project, &written);
     let warnings = report.warnings();
     if args.json {
         println!("{}", serde_json::to_string_pretty(&report.json(&warnings)).unwrap_or_default());
@@ -373,6 +357,45 @@ pub(crate) fn run(args: &FreeformArgs) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+pub(crate) struct Built {
+    map: LabelMap,
+    skip: Vec<Rgb>,
+    pub(crate) plates: Vec<Plate>,
+    reports: Vec<PlateReport>,
+    pub(crate) frame: Option<Frame>,
+    frame_report: Option<FrameReport>,
+}
+
+/// Builds the plates and checks them without reading or writing any files.
+pub(crate) fn build(project: &Project) -> Result<Built, String> {
+    let settings = project.plate_settings();
+    let map = label(project)?.merged(&project.merges());
+    let skip = project.stencil_skip();
+    let plates = build_plates(&map, &settings, &skip).map_err(|e| e.to_string())?;
+    let reports = plates
+        .iter()
+        .map(|plate| check_plate(plate, &settings))
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| e.to_string())?;
+    let frame = registration_frame(&plates);
+    let frame_report = frame.as_ref().map(|frame| frame.report(settings.bed_mm));
+    Ok(Built { map, skip, plates, reports, frame, frame_report })
+}
+
+impl Built {
+    pub(crate) fn report<'a>(&'a self, project: &'a Project, written: &'a [&'a Path]) -> Report<'a> {
+        Report {
+            project,
+            map: &self.map,
+            skip: &self.skip,
+            plates: &self.plates,
+            reports: &self.reports,
+            frame: self.frame_report,
+            written,
+        }
+    }
 }
 
 /// The label map of the project's artwork.
@@ -391,7 +414,7 @@ fn label(project: &Project) -> Result<LabelMap, String> {
     map.map_err(|e| e.to_string())
 }
 
-struct Report<'a> {
+pub(crate) struct Report<'a> {
     project: &'a Project,
     map: &'a LabelMap,
     skip: &'a [Rgb],
@@ -433,7 +456,7 @@ impl Report<'_> {
         format!("plate {} ({})", report.paint + 1, hex(report.colour))
     }
 
-    fn warnings(&self) -> Vec<String> {
+    pub(crate) fn warnings(&self) -> Vec<String> {
         let settings = self.project.plate_settings();
         let mut warnings = Vec::new();
         for report in self.reports {
@@ -571,7 +594,7 @@ impl Report<'_> {
         self.plates.iter().find(|p| p.paint == paint).map(Plate::file_name)
     }
 
-    fn json(&self, warnings: &[String]) -> Value {
+    pub(crate) fn json(&self, warnings: &[String]) -> Value {
         let map = self.map;
         let palette: Vec<Value> = map
             .palette

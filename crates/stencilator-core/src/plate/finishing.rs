@@ -19,6 +19,7 @@ const MARK_DEPTH_UM: i32 = 400;
 
 /// The mark cut into the top of a plate's margin.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "project-schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "lowercase")]
 pub enum Mark {
     /// Leave the margin plain.
@@ -32,6 +33,7 @@ pub enum Mark {
 
 /// Optional treatment of the openings and the plate margin.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "project-schema", derive(schemars::JsonSchema))]
 #[serde(default)]
 pub struct FinishSettings {
     /// Depth and width of the stepped spray-side chamfer, in millimetres.

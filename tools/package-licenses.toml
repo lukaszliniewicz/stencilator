@@ -1,0 +1,21 @@
+# The redistribution licences allowed by deny.toml, in preference order.
+accepted = [
+    "MIT",
+    "Apache-2.0",
+    "Apache-2.0 WITH LLVM-exception",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "ISC",
+    "Zlib",
+    "Unicode-3.0",
+    "IJG",
+]
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "aarch64-apple-darwin",
+    "x86_64-pc-windows-msvc",
+    "x86_64-pc-windows-gnu",
+]
+ignore-dev-dependencies = true
+ignore-build-dependencies = true
+private = { ignore = true }

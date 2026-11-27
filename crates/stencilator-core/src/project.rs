@@ -94,6 +94,7 @@ fn format() -> u32 {
 
 /// Which kind of stencils a project makes.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "project-schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "lowercase")]
 pub enum Mode {
     /// A grid of square tiles.
@@ -155,6 +156,7 @@ pub struct Font {
 
 /// A colour, written `#rrggbb`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "project-schema", derive(schemars::JsonSchema), schemars(with = "String"))]
 pub struct Colour(pub Rgb);
 
 impl Serialize for Colour {
@@ -178,6 +180,7 @@ impl<'de> Deserialize<'de> for Colour {
 
 /// How colours become paints.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "project-schema", derive(schemars::JsonSchema))]
 #[serde(default)]
 pub struct Colours {
     /// Colour, greyscale or black and white.
@@ -204,6 +207,7 @@ impl Default for Colours {
 
 /// How colours are reduced, as the file names it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "project-schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "kebab-case")]
 pub enum Palette {
     /// Colours.
@@ -236,6 +240,7 @@ impl From<Palette> for ColourMode {
 
 /// Tile mode's settings.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "project-schema", derive(schemars::JsonSchema))]
 #[serde(default)]
 pub struct Tiles {
     /// Whether the tiles fill the canvas or follow the picture's pixels.
@@ -273,6 +278,7 @@ impl From<&ChartSettings> for Tiles {
 
 /// How the number of tiles is decided, as the file names it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "project-schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "lowercase")]
 pub enum TileSizing {
     /// As many tiles as fit the canvas.
@@ -301,6 +307,7 @@ impl From<TileSizing> for Sizing {
 
 /// Free-form mode's settings.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "project-schema", derive(schemars::JsonSchema))]
 #[serde(default)]
 pub struct Freeform {
     /// How large the artwork is made.
@@ -366,6 +373,7 @@ impl Default for Freeform {
 /// How large free-form artwork is made, as the file names it: `"natural"`,
 /// `{"width_mm": 200}`, `{"height_mm": 120}` or `{"within_mm": [200, 120]}`.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "project-schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "snake_case")]
 pub enum ArtworkSize {
     /// The artwork's own size.
@@ -402,6 +410,7 @@ impl From<ArtworkSize> for Size {
 
 /// Plates and the choices made about paints.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "project-schema", derive(schemars::JsonSchema))]
 #[serde(default)]
 pub struct Stencils {
     /// Thickness of the plates in millimetres.
@@ -432,6 +441,7 @@ impl Default for Stencils {
 /// Everything in a project but the artwork and its fonts: what a shell's controls change.
 /// As in a project file, fields left out take the engine's defaults.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "project-schema", derive(schemars::JsonSchema))]
 pub struct Settings {
     /// Which kind of stencils the project makes.
     #[serde(default)]

@@ -9,6 +9,7 @@
 
 mod files;
 mod freeform;
+mod mcp;
 mod sources;
 mod tiles;
 
@@ -43,6 +44,8 @@ enum Command {
     /// Without --stencils, --3mf or --save it only prints what it would make. Settings not
     /// given come from the project, if the input is one, or are the defaults.
     Freeform(freeform::FreeformArgs),
+    /// Let a local MCP client check designs and export stencils over stdio.
+    Mcp(mcp::McpArgs),
 }
 
 /// How colours become paints, in both modes.
@@ -172,6 +175,7 @@ fn main() -> ExitCode {
     let result = match &cli.command {
         Command::Tiles(args) => tiles::run(args),
         Command::Freeform(args) => freeform::run(args),
+        Command::Mcp(args) => mcp::run(args),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,
