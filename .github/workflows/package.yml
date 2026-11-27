@@ -1,0 +1,56 @@
+name: Package Stencilator
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-22.04
+            target: x86_64-unknown-linux-gnu
+            executable: stencilator
+          - runner: macos-15
+            target: aarch64-apple-darwin
+            executable: stencilator
+          - runner: windows-2025
+            target: x86_64-pc-windows-msvc
+            executable: stencilator.exe
+    runs-on: ${{ matrix.runner }}
+    defaults:
+      run:
+        shell: bash
+    env:
+      TARGET: ${{ matrix.target }}
+      EXECUTABLE: ${{ matrix.executable }}
+      CARGO_TARGET_X86_64_PC_WINDOWS_MSVC_RUSTFLAGS: -Ctarget-feature=+crt-static
+    steps:
+      - uses: actions/checkout@v5
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-about@0.9.3
+      - run: cargo test --locked --target "$TARGET" -p stencilator-cli
+      - run: cargo build --locked --release --target "$TARGET" -p stencilator-cli
+      - run: |
+          cargo about generate --locked --fail --manifest-path crates/stencilator-cli/Cargo.toml \
+            --config tools/package-licenses.toml -o target/third-party-licenses.txt tools/package-licenses.hbs
+      - run: |
+          python tools/package_release.py --target "$TARGET" \
+            --binary "target/$TARGET/release/$EXECUTABLE" \
+            --notices target/third-party-licenses.txt --output target/packages
+      - uses: actions/upload-artifact@v6
+        with:
+          name: stencilator-${{ matrix.target }}
+          path: target/packages/
+          if-no-files-found: error

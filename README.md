@@ -13,7 +13,7 @@ what may not print well, such as the middle of an "O", which falls out of a sten
 unless something holds it.
 
 It is written in Rust so that one engine can run on the command line, in a web browser
-and, later, behind an AI assistant, giving the same result everywhere.
+and behind an AI assistant, giving the same result everywhere.
 
 ## Status
 
@@ -95,6 +95,8 @@ does not become an opening of its own. Typed text uses the built-in Noto Sans Bo
 default. Try `--font "Allerta Stencil"` for letters with bridges already drawn in, or
 give `--font` a font file for text or SVG artwork. Adding a font to an SVG project keeps
 its existing fonts unless you supply a file with the same name.
+
+If you draw your own SVGs, see [how to mark the paints](docs/svg-paints.md).
 
 In the app, pick **Free-form** to use an image, an SVG or typed text. **Plate → Top**
 highlights islands, thin webs and narrow openings. In **3D** you can turn the actual print
@@ -192,10 +194,16 @@ can still need format 4 in that mode. The command and web app read all four.
 - The command prepares all outputs before replacing any files. A saved project can replace
   itself with `--save`; other attempts to write over the input are refused.
 
+## With an AI assistant
+
+Use `stencilator mcp --workspace /path/to/artwork` with a local MCP client. An
+assistant can check a design, make print files and save a project you can open in
+the app. See the [MCP setup and examples](docs/mcp.md) and the
+[project file guide](docs/projects.md).
+
 ## Roadmap
 
-Physical tests will inform the trial connector dimensions and frame fit. A local
-MCP server follows, so that an AI assistant can prepare stencils for you.
+Physical tests will inform the trial connector dimensions and frame fit.
 
 ## Development
 
