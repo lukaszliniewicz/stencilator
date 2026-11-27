@@ -40,16 +40,27 @@ const BED_MAX_MM = 2000;
 /** The widest a `Date` and `Intl.DateTimeFormat` can express, in milliseconds. */
 const MAX_TIMESTAMP_MS = 8.64e15;
 
+/** The exact record IDs in the whole export, repeated in each independently restorable part. */
+interface BackupIdentities {
+  projects: string[];
+  profiles: string[];
+}
+
 /** A decoded, validated backup, ready to preview and restore. */
 export interface WorkspaceBackup {
   version: 1;
   projects: SavedProject[];
   profiles: PrinterProfile[];
   preferences: Omit<WorkspacePreferences, 'lastProjectId'>;
+  exportedIds?: BackupIdentities;
+}
+
+interface BackupPart extends WorkspaceSnapshot {
+  exportedIds?: BackupIdentities;
 }
 
 export interface BackupPlan {
-  parts: WorkspaceSnapshot[];
+  parts: BackupPart[];
   excluded: Pick<SavedProject, 'id' | 'title'>[];
 }
 
@@ -57,6 +68,7 @@ type EncodedProject = Omit<SavedProject, 'file'> & { file: string };
 
 function envelope(
   { defaults, theme, defaultProfileId }: WorkspacePreferences,
+  exportedIds: BackupIdentities | undefined,
   projects: EncodedProject[] = [],
   profiles: PrinterProfile[] = []
 ) {
@@ -64,7 +76,8 @@ function envelope(
     [BACKUP_FORMAT]: BACKUP_VERSION,
     projects,
     profiles,
-    preferences: { defaults, theme, defaultProfileId }
+    preferences: { defaults, theme, defaultProfileId },
+    ...(exportedIds ? { exportedIds } : {})
   };
 }
 
@@ -84,6 +97,19 @@ const asNumber = (value: unknown): number =>
 function asArray(value: unknown): unknown[] {
   if (!Array.isArray(value)) throw new WorkspaceError('invalid');
   return value;
+}
+
+function decodeIds(raw: unknown, records: unknown[]): string[] {
+  const ids = new Set<string>();
+  for (const value of asArray(raw)) {
+    const id = asString(value);
+    if (!id || ids.has(id)) throw new WorkspaceError('invalid');
+    ids.add(id);
+  }
+  if (records.some((record) => !ids.has(asString(asObject(record)?.id) ?? ''))) {
+    throw new WorkspaceError('invalid');
+  }
+  return [...ids];
 }
 
 function bytesToBase64(bytes: Uint8Array): string {
@@ -338,18 +364,19 @@ function sameProfile(a: PrinterProfile, b: PrinterProfile): boolean {
 function planRecords<T extends { id: string; origin?: Origin }>(
   sources: T[],
   existing: T[],
+  exportedIds: string[] | undefined,
   same: (candidate: T, source: T) => boolean,
   nameOf: (record: T) => string,
   withName: (record: T, name: string) => T,
   remap: (record: T) => T
 ): RestoreEntry<T>[] {
   const taken = new Set(existing.map((record) => nameOf(record).toLocaleLowerCase()));
-  const sourceIds = new Set(sources.map(({ id }) => id));
+  const sourceIds = new Set(exportedIds ?? sources.map(({ id }) => id));
   return sources.map((source) => {
     const incoming = remap(source);
     const sourceName = comparableName(source, nameOf);
-    // Reserve exact ids for their own rows. On older restores, the original id is
-    // the only evidence of the exported id, so compare it to the incoming id directly.
+    // Reserve exact ids for their own rows, including rows in other parts. On older restores,
+    // the original id is the only evidence of the exported id.
     const candidates = existing.filter(
       (record) =>
         record.id === source.id ||
@@ -380,6 +407,17 @@ function planRecords<T extends { id: string; origin?: Origin }>(
  * carries the default profile and any profiles needed by its projects.
  */
 export function planBackups(snapshot: WorkspaceSnapshot): BackupPlan {
+  const included: SavedProject[] = [];
+  const excluded: BackupPlan['excluded'] = [];
+  for (const project of snapshot.projects) {
+    if (project.file.size > MAX_PROJECT_BYTES)
+      excluded.push({ id: project.id, title: project.title });
+    else included.push(project);
+  }
+  const exportedIds: BackupIdentities = {
+    projects: included.map(({ id }) => id),
+    profiles: snapshot.profiles.map(({ id }) => id)
+  };
   const allProfiles = new Map(
     snapshot.profiles.map((profile) => [profile.id, { profile, bytes: jsonBytes(profile) + 1 }])
   );
@@ -387,17 +425,17 @@ export function planBackups(snapshot: WorkspaceSnapshot): BackupPlan {
   const unassigned = new Set(allProfiles.keys());
   if (defaultProfile) unassigned.delete(defaultProfile.profile.id);
 
-  const emptyBytes = jsonBytes(envelope(snapshot.preferences)) + (defaultProfile?.bytes ?? 0);
+  const emptyBytes =
+    jsonBytes(envelope(snapshot.preferences, exportedIds)) + (defaultProfile?.bytes ?? 0);
   let encodedBytes = emptyBytes;
   let projectBytes = 0;
   let projects: SavedProject[] = [];
   const profiles = new Map<string, PrinterProfile>();
   if (defaultProfile) profiles.set(defaultProfile.profile.id, defaultProfile.profile);
-  const parts: WorkspaceSnapshot[] = [];
-  const excluded: BackupPlan['excluded'] = [];
+  const parts: BackupPart[] = [];
 
   function finishPart(): void {
-    parts.push({ ...snapshot, projects, profiles: [...profiles.values()] });
+    parts.push({ ...snapshot, projects, profiles: [...profiles.values()], exportedIds });
     projects = [];
     profiles.clear();
     if (defaultProfile) profiles.set(defaultProfile.profile.id, defaultProfile.profile);
@@ -406,12 +444,8 @@ export function planBackups(snapshot: WorkspaceSnapshot): BackupPlan {
   }
 
   if (emptyBytes > MAX_FILE_BYTES) throw new WorkspaceError('too-large');
-  for (const project of snapshot.projects) {
+  for (const project of included) {
     const size = project.file.size;
-    if (size > MAX_PROJECT_BYTES) {
-      excluded.push({ id: project.id, title: project.title });
-      continue;
-    }
     // Base64 uses four ASCII bytes per three input bytes. Reserve one byte for the comma.
     const bytes = jsonBytes({ ...project, file: '' }) + 4 * Math.ceil(size / 3) + 1;
     const linked = allProfiles.get(project.profileId ?? '');
@@ -445,7 +479,7 @@ export function planBackups(snapshot: WorkspaceSnapshot): BackupPlan {
   return { parts, excluded };
 }
 
-export async function encodeBackup(snapshot: WorkspaceSnapshot): Promise<Blob> {
+export async function encodeBackup(snapshot: BackupPart): Promise<Blob> {
   if (snapshot.projects.length > MAX_ITEMS || snapshot.profiles.length > MAX_ITEMS) {
     throw new WorkspaceError('too-large');
   }
@@ -463,7 +497,11 @@ export async function encodeBackup(snapshot: WorkspaceSnapshot): Promise<Blob> {
     });
   }
   const backup = new Blob(
-    [JSON.stringify(envelope(snapshot.preferences, projects, snapshot.profiles))],
+    [
+      JSON.stringify(
+        envelope(snapshot.preferences, snapshot.exportedIds, projects, snapshot.profiles)
+      )
+    ],
     {
       type: 'application/json'
     }
@@ -491,6 +529,15 @@ export async function decodeBackup(
   if (projectItems.length > MAX_ITEMS || profileItems.length > MAX_ITEMS) {
     throw new WorkspaceError('too-large');
   }
+  let exportedIds: BackupIdentities | undefined;
+  if (root.exportedIds !== undefined) {
+    const ids = asObject(root.exportedIds);
+    if (!ids) throw new WorkspaceError('invalid');
+    exportedIds = {
+      projects: decodeIds(ids.projects, projectItems),
+      profiles: decodeIds(ids.profiles, profileItems)
+    };
+  }
   const profiles = decodeProfiles(profileItems);
   const preferences = decodePreferences(root.preferences);
   const profileIds = new Set(profiles.map(({ id }) => id));
@@ -498,13 +545,20 @@ export async function decodeBackup(
     throw new WorkspaceError('invalid');
   }
   const projects = await decodeProjects(projectItems, profileIds, validateProject);
-  return { version: BACKUP_VERSION, projects, profiles, preferences };
+  return {
+    version: BACKUP_VERSION,
+    projects,
+    profiles,
+    preferences,
+    ...(exportedIds ? { exportedIds } : {})
+  };
 }
 
 export function previewRestore(backup: WorkspaceBackup, snapshot: WorkspaceSnapshot): RestorePlan {
   const profiles = planRecords(
     backup.profiles,
     snapshot.profiles,
+    backup.exportedIds?.profiles,
     sameProfile,
     (profile) => profile.name,
     (profile, name) => ({ ...profile, name }),
@@ -521,6 +575,7 @@ export function previewRestore(backup: WorkspaceBackup, snapshot: WorkspaceSnaps
   const projects = planRecords(
     backup.projects,
     snapshot.projects,
+    backup.exportedIds?.projects,
     (candidate, source) =>
       sameView(candidate.view, source.view) &&
       candidate.digest === source.digest &&

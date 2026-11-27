@@ -4,7 +4,7 @@
   import { text } from './text';
   import { workspaceProblem, type Workspace } from './workspace.svelte';
   import { encodeBackup, type BackupPlan, type WorkspaceBackup } from './workspace-backup';
-  import { WorkspaceError, type RestorePlan, type WorkspaceSnapshot } from './workspace-store';
+  import { WorkspaceError, type RestorePlan } from './workspace-store';
 
   let { workspace, dismiss }: { workspace: Workspace; dismiss: () => void } = $props();
   const words = text.backup;
@@ -18,7 +18,7 @@
   let backup = $state.raw<WorkspaceBackup>();
   let preview = $state.raw<RestorePlan>();
   let preferences = $state(false);
-  let parts = $state.raw<WorkspaceSnapshot[]>([]);
+  let parts = $state.raw<BackupPlan['parts']>([]);
   let nextPart = $state(0);
 
   async function action(

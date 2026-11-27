@@ -244,21 +244,24 @@ export interface WorkspaceStore {
 class Store implements WorkspaceStore {
   readonly #db: IDBDatabase;
   readonly #channel: BroadcastChannel;
-  readonly #onChange: () => void;
-  readonly #onVersionChange: () => void;
   #closed = false;
 
-  constructor(db: IDBDatabase, onChange: () => void, onVersionChange: () => void) {
+  constructor(
+    db: IDBDatabase,
+    onChange: () => void,
+    onVersionChange: () => void,
+    onClose: (store: WorkspaceStore) => void
+  ) {
     this.#db = db;
-    this.#onChange = onChange;
-    this.#onVersionChange = onVersionChange;
     this.#channel = new BroadcastChannel(CHANNEL);
-    this.#channel.onmessage = () => {
-      this.#onChange();
-    };
+    this.#channel.onmessage = onChange;
     db.onversionchange = () => {
-      this.#onVersionChange();
       this.close();
+      onVersionChange();
+    };
+    db.onclose = () => {
+      this.close();
+      onClose(this);
     };
   }
 
@@ -266,6 +269,8 @@ class Store implements WorkspaceStore {
     if (this.#closed) return;
     this.#closed = true;
     this.#channel.close();
+    this.#db.onversionchange = null;
+    this.#db.onclose = null;
     this.#db.close();
   }
 
@@ -540,13 +545,14 @@ class Store implements WorkspaceStore {
 /**
  * Opens the workspace database, migrating the old local-storage preferences once on first
  * use. `onChange` runs when another tab commits a change; `onVersionChange` runs when
- * another tab wants a newer schema, after which this connection is closed.
+ * another tab wants a newer schema. `onClose` runs if the connection closes unexpectedly.
  *
  * Quota and disabled-storage exceptions propagate to the caller.
  */
 export function openWorkspace(
   onChange: () => void,
-  onVersionChange: () => void
+  onVersionChange: () => void,
+  onClose: (store: WorkspaceStore) => void
 ): Promise<WorkspaceStore> {
   return new Promise((resolve, reject) => {
     const request = indexedDB.open(DB_NAME, DB_VERSION);
@@ -568,7 +574,7 @@ export function openWorkspace(
         reject(new WorkspaceError('upgrade', 'The workspace uses a newer storage version.'));
         return;
       }
-      resolve(new Store(db, onChange, onVersionChange));
+      resolve(new Store(db, onChange, onVersionChange, onClose));
     };
     request.onerror = () => {
       const error = request.error;

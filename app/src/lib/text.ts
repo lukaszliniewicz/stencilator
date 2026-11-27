@@ -169,7 +169,9 @@ export const text = {
     save: 'Download project',
     body: 'Keep the artwork, fonts, settings and paint choices together. Reopen this file here or use it on the command line.',
     opening: 'Opening…',
-    openBusy: 'Wait for the current file to finish opening or saving, then try again.'
+    openBusy: 'Wait for the current file to finish opening or saving, then try again.',
+    openFailed:
+      'This project file could not be opened. It may be damaged or need a newer version of Stencilator.'
   },
 
   workspace: {
@@ -250,6 +252,8 @@ export const text = {
       `Start a separate project, or replace the artwork in “${name}”.`,
     separate: 'Start new project',
     replaceNow: 'Replace artwork',
+    replaceChanged:
+      'The project has changed. Check the current version before replacing its artwork.',
     replaceText: (name: string) => `Replace the artwork in “${name}” with text?`,
     errors: {
       conflict: 'This item changed in another tab. Reopen it to see the current version.',
@@ -371,6 +375,7 @@ export const text = {
     allFit: 'All parts fit as drawn.',
     checking: 'Checking the latest parts against this bed…',
     none: 'There are no parts to fit yet.',
+    invalidBed: 'Set both bed dimensions between 50 and 2,000 mm to check fit.',
     unavailable:
       'A print-bed preview needs a finished part. Dimensions and downloads are in Files.',
     footprint: 'Footprint only · 10 mm grid',

@@ -15,7 +15,7 @@
   const words = text.bed;
   const bench = $derived(workspace.bench);
   const parts = $derived(printParts(bench));
-  const warnings = $derived(parts.filter(({ fit }) => fit !== 'as-drawn'));
+  const warnings = $derived(parts?.filter(({ fit }) => fit !== 'as-drawn') ?? []);
   const tooLarge = $derived(warnings.some(({ fit }) => fit === 'too-large'));
   const { bedWidthMm, bedDepthMm } = $derived(bench.settings);
 </script>
@@ -54,6 +54,8 @@
     </div>
     {#if !bench.current || !bench.valid}
       <p class="note wide">{bench.current ? words.unavailable : words.checking}</p>
+    {:else if parts === null}
+      <p class="notice wide">{words.invalidBed}</p>
     {:else if warnings.length}
       <ul class="notice wide">
         {#each warnings as part (part.id)}

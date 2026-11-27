@@ -18,7 +18,12 @@
   import { Theme, type ThemeChoice } from './lib/theme.svelte';
   import Toolbar from './lib/Toolbar.svelte';
   import { fileKind, type Preset, Workbench } from './lib/workbench.svelte';
-  import { suggestedTitle, TITLE_LIMIT, Workspace } from './lib/workspace.svelte';
+  import {
+    type ReplacementTarget,
+    suggestedTitle,
+    TITLE_LIMIT,
+    Workspace
+  } from './lib/workspace.svelte';
   import type { SavedProject } from './lib/workspace-store';
 
   type Panel = 'canvas' | 'artwork' | 'settings';
@@ -45,12 +50,18 @@
   let picker: HTMLInputElement | undefined = $state();
   let projectPicker: HTMLInputElement | undefined = $state();
   let pickUse: PickerUse = 'incoming';
+  let pickerTarget: ReplacementTarget | undefined;
   let dragging = $state(false);
   let chosenPreset = $state<Preset>();
   const preset = $derived(chosenPreset ?? workspace.suggestedPreset);
   let panel = $state<Panel>('canvas');
   let modal = $state<Popup>();
   let incoming = $state.raw<File>();
+  let replaceTarget = $state.raw<ReplacementTarget>();
+  const replacementChanged = $derived(!workspace.canReplace(replaceTarget));
+  const replacementProblem = $derived(
+    replacementChanged ? words.replaceChanged : workspace.message || bench.problem
+  );
   let search = $state('');
   let rename = $state('');
   let renameFrom = $state.raw<{ id: string; title: string }>();
@@ -73,8 +84,8 @@
   });
 
   $effect(() => {
-    const persisted = workspace.snapshot?.preferences.theme;
-    if (persisted) theme.pick(persisted);
+    const choice = workspace.themeChoice;
+    if (choice) theme.pick(choice);
   });
 
   $effect(() => {
@@ -82,7 +93,6 @@
   });
 
   function pickTheme(choice: ThemeChoice): void {
-    theme.pick(choice);
     void workspace.setTheme(choice);
   }
 
@@ -100,11 +110,14 @@
       rename = renameFrom.title;
       renameNotice = '';
     }
+    if (which === 'incoming' || which === 'replace-text')
+      replaceTarget = workspace.replacementTarget;
   }
 
   function dismiss(): void {
     modal = undefined;
     incoming = undefined;
+    replaceTarget = undefined;
     renameFrom = undefined;
     removeProject = undefined;
   }
@@ -122,7 +135,12 @@
   }
 
   function choose(use: PickerUse): void {
-    if (!picker || !workspace.canOpen) return;
+    if (!picker || !workspace.checkCanOpen()) return;
+    pickerTarget = use === 'replace' ? workspace.replacementTarget : undefined;
+    if (use === 'replace' && !pickerTarget) {
+      workspace.message = words.replaceChanged;
+      return;
+    }
     pickUse = use;
     picker.accept =
       use === 'incoming'
@@ -134,31 +152,29 @@
   }
 
   async function chooseProject(): Promise<void> {
+    if (!workspace.checkCanOpen()) return;
     dismiss();
     await tick();
     projectPicker?.click();
   }
 
   function receive(file: File, use: PickerUse): void {
-    if (!workspace.canOpen) {
-      workspace.message = text.project.openBusy;
-      return;
-    }
+    if (!workspace.checkCanOpen()) return;
     const kind = fileKind(file);
     if (kind === 'project' || !kind) {
       void workspace.startFile(file);
-    } else if (use === 'replace' && workspace.id) {
-      void workspace.replace(file);
+    } else if (use === 'replace') {
+      if (pickerTarget) void workspace.replace(file, pickerTarget);
     } else if (use === 'incoming' && workspace.id && !workspace.starting) {
       incoming = file;
       show('incoming');
     } else void workspace.startFile(file, workspace.starting ? preset : undefined);
   }
 
-  async function chooseIncoming(replace: boolean): Promise<void> {
+  async function chooseIncoming(target?: ReplacementTarget): Promise<void> {
     const file = incoming;
     if (!file) return;
-    const opened = await (replace ? workspace.replace(file) : workspace.startFile(file));
+    const opened = await (target ? workspace.replace(file, target) : workspace.startFile(file));
     if (opened) dismiss();
   }
 
@@ -267,6 +283,7 @@
     event.currentTarget.value = '';
     if (file) receive(file, pickUse);
     pickUse = 'incoming';
+    pickerTarget = undefined;
   }}
 />
 <input
@@ -602,34 +619,16 @@
         type="button"
         class="button primary"
         disabled={workspace.busy}
-        onclick={() => void chooseIncoming(false)}
+        onclick={() => void chooseIncoming()}
       >
         {words.separate}
       </button>
       <button
         type="button"
         class="button"
-        disabled={workspace.busy}
-        onclick={() => void chooseIncoming(true)}
-      >
-        {words.replaceNow}
-      </button>
-      <button type="button" class="quiet" disabled={workspace.busy} onclick={dismiss}>
-        {words.cancel}
-      </button>
-    </div>
-    {#if bench.problem}<p class="notice" role="alert">{bench.problem}</p>{/if}
-  </Modal>
-{:else if modal === 'replace-text'}
-  <Modal title={text.freeform.type} {dismiss} busy={workspace.busy}>
-    <p>{words.replaceText(workspace.title)}</p>
-    <div class="button-row">
-      <button
-        type="button"
-        class="button primary"
-        disabled={workspace.busy}
-        onclick={async () => {
-          if (await workspace.startText(true)) dismiss();
+        disabled={!workspace.canOpen || replacementChanged}
+        onclick={() => {
+          if (replaceTarget) void chooseIncoming(replaceTarget);
         }}
       >
         {words.replaceNow}
@@ -638,7 +637,27 @@
         {words.cancel}
       </button>
     </div>
-    {#if bench.problem}<p class="notice" role="alert">{bench.problem}</p>{/if}
+    {#if replacementProblem}<p class="notice" role="alert">{replacementProblem}</p>{/if}
+  </Modal>
+{:else if modal === 'replace-text'}
+  <Modal title={text.freeform.type} {dismiss} busy={workspace.busy}>
+    <p>{words.replaceText(workspace.title)}</p>
+    <div class="button-row">
+      <button
+        type="button"
+        class="button primary"
+        disabled={!workspace.canOpen || replacementChanged}
+        onclick={async () => {
+          if (replaceTarget && (await workspace.startText(replaceTarget))) dismiss();
+        }}
+      >
+        {words.replaceNow}
+      </button>
+      <button type="button" class="quiet" disabled={workspace.busy} onclick={dismiss}>
+        {words.cancel}
+      </button>
+    </div>
+    {#if replacementProblem}<p class="notice" role="alert">{replacementProblem}</p>{/if}
   </Modal>
 {:else if modal === 'printer' || modal === 'profiles'}
   <PrinterDialog {workspace} {dismiss} profilesFirst={modal === 'profiles'} />

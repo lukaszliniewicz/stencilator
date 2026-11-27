@@ -148,6 +148,22 @@ describe('workspace backups', () => {
     expect(validate).not.toHaveBeenCalled();
   });
 
+  it('requires a part’s records to be included in its list of exported IDs', async () => {
+    const validate = vi.fn(validateProject);
+    const file = new Blob([
+      JSON.stringify({
+        stencilator_workspace: 1,
+        projects: [wireProject('p1')],
+        profiles: [],
+        preferences: preferences(),
+        exportedIds: { projects: ['elsewhere'], profiles: [] }
+      })
+    ]);
+
+    await expect(decodeBackup(file, validate)).rejects.toMatchObject({ code: 'invalid' });
+    expect(validate).not.toHaveBeenCalled();
+  });
+
   it('distinguishes an unavailable validator from an invalid project', async () => {
     const snapshot: WorkspaceSnapshot = {
       revision: 1,
@@ -362,6 +378,70 @@ describe('workspace backups', () => {
       { action: 'skip', record: entry.record }
     ]);
   });
+
+  it.each(['original first', 'copy first'])(
+    'restores a missing original beside its identical saved copy in a different part (%s)',
+    async (order) => {
+      const printer = profile('pr1', 'Ender');
+      const original = await project('p1', 'Fox', 'bytes', { profileId: printer.id });
+      const snapshot: WorkspaceSnapshot = {
+        revision: 1,
+        projects: [await project(original.id, original.title, 'old bytes')],
+        profiles: [profile(printer.id, printer.name, 300)],
+        preferences: preferences()
+      };
+      const incoming = {
+        version: 1 as const,
+        projects: [original],
+        profiles: [printer],
+        preferences: preferences()
+      };
+      const { projects, profiles } = previewRestore(incoming, snapshot);
+      const [projectCopy] = projects;
+      const [profileCopy] = profiles;
+      assert(projectCopy?.action === 'copy' && profileCopy?.action === 'copy');
+
+      // Both originals now match the copies. Put each project and its linked
+      // profile in a different numbered backup file.
+      const fillers = Array.from({ length: 499 }, (_, i) => ({
+        ...original,
+        id: `extra-${String(i)}`,
+        title: `Extra ${String(i)}`
+      }));
+      const { parts } = planBackups({
+        ...snapshot,
+        projects: [original, ...fillers, projectCopy.record],
+        profiles: [printer, profileCopy.record]
+      });
+      expect(parts.map((part) => part.projects.length)).toEqual([500, 1]);
+      const backups = await Promise.all(
+        parts.map(async (part) => decodeBackup(await encodeBackup(part), validateProject))
+      );
+      if (order === 'copy first') backups.reverse();
+
+      // Only the copies are still in the browser when the backup is restored.
+      snapshot.projects = [projectCopy.record];
+      snapshot.profiles = [profileCopy.record];
+      for (const backup of backups) {
+        const plan = previewRestore(backup, snapshot);
+        snapshot.projects.push(
+          ...plan.projects.filter(({ action }) => action !== 'skip').map(({ record }) => record)
+        );
+        snapshot.profiles.push(
+          ...plan.profiles.filter(({ action }) => action !== 'skip').map(({ record }) => record)
+        );
+      }
+      expect(snapshot.projects).toHaveLength(501);
+      expect(snapshot.projects.find(({ id }) => id === original.id)?.profileId).toBe(printer.id);
+      expect(snapshot.profiles.map(({ id }) => id)).toEqual([profileCopy.record.id, printer.id]);
+      for (const backup of backups) {
+        const plan = previewRestore(backup, snapshot);
+        expect([...plan.projects, ...plan.profiles].every(({ action }) => action === 'skip')).toBe(
+          true
+        );
+      }
+    }
+  );
 
   it('skips already-imported copies on a repeat restore', async () => {
     const userProject = await project('p1', 'User project', 'user-bytes');

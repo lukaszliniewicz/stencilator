@@ -5,6 +5,10 @@ import { fileURLToPath } from 'node:url';
 import { expect, test, type Page } from '@playwright/test';
 
 const IMAGE = fileURLToPath(new URL('../../fixtures/reference/chart-0.png', import.meta.url));
+const WIDE_SVG =
+  '<svg xmlns="http://www.w3.org/2000/svg" width="80mm" height="60mm" viewBox="0 0 80 60">' +
+  '<rect width="80" height="60" fill="#1d2f5c"/></svg>';
+const OPEN_BUSY = 'Wait for the current file to finish opening or saving, then try again.';
 
 /** Fails the test on any console error, content security policy violations included. */
 function watchForProblems(page: Page): string[] {
@@ -94,6 +98,42 @@ async function savedName(page: Page, click: () => Promise<void>): Promise<string
   const download = page.waitForEvent('download');
   await click();
   return (await download).suggestedFilename();
+}
+
+/** Holds one engine request so the test can make assertions before it finishes. */
+async function controlWorkerRequest(page: Page, kind: string) {
+  await page.addInitScript((kind) => {
+    let release: (() => void) | undefined;
+    document.addEventListener('release-worker-request', () => {
+      document.documentElement.removeAttribute('data-hold-worker-request');
+      release?.();
+      release = undefined;
+    });
+    window.Worker = class extends Worker {
+      override postMessage(
+        message: { request?: { kind?: string } },
+        options: StructuredSerializeOptions | Transferable[] = []
+      ): void {
+        const forward = (): void => {
+          if (Array.isArray(options)) super.postMessage(message, options);
+          else super.postMessage(message, options);
+        };
+        const root = document.documentElement;
+        if (message.request?.kind === kind && root.dataset.holdWorkerRequest === 'next') {
+          release = forward;
+          root.dataset.holdWorkerRequest = 'held';
+        } else forward();
+      }
+    };
+  }, kind);
+  return {
+    hold: () =>
+      page.evaluate(() => {
+        document.documentElement.dataset.holdWorkerRequest = 'next';
+      }),
+    held: () => expect(page.locator('html')).toHaveAttribute('data-hold-worker-request', 'held'),
+    release: () => page.evaluate(() => document.dispatchEvent(new Event('release-worker-request')))
+  };
 }
 
 /** Files in a downloaded zip, counted by their entries in its central directory. */
@@ -229,9 +269,19 @@ test('the example, a dropped picture and the theme', async ({ page }) => {
   await page.getByRole('combobox', { name: 'Theme' }).selectOption('dark');
   await expect(root).toHaveAttribute('data-theme', 'dark');
   await saved(page);
+  await page.evaluate(() => {
+    localStorage.setItem('stencilator.theme', JSON.stringify('auto'));
+  });
   await page.reload();
+  await expect(page.getByRole('button', { name: 'dropped', exact: true })).toBeEnabled();
   await expect(root).toHaveAttribute('data-theme', 'dark');
   await page.getByRole('combobox', { name: 'Theme' }).selectOption('auto');
+  await expect(root).toHaveAttribute('data-theme', 'auto');
+  await page.evaluate(() => {
+    localStorage.setItem('stencilator.theme', JSON.stringify('dark'));
+  });
+  await page.reload();
+  await expect(page.getByRole('button', { name: 'dropped', exact: true })).toBeEnabled();
   await expect(root).toHaveAttribute('data-theme', 'auto');
 
   expect(problems).toEqual([]);
@@ -248,11 +298,45 @@ test('a second drop during a project open tells the user to retry', async ({ pag
       window.dispatchEvent(new DragEvent('drop', { dataTransfer: transfer, cancelable: true }));
     }
   }, readFileSync(IMAGE).toString('base64'));
-  await expect(page.getByRole('alert')).toContainText(
-    'Wait for the current file to finish opening or saving, then try again.'
-  );
+  await expect(page.getByRole('alert')).toContainText(OPEN_BUSY);
   await expect(page.getByRole('button', { name: 'first', exact: true })).toBeVisible();
   await expect(page.getByRole('dialog')).toHaveCount(0);
+});
+
+test('a theme write failure keeps the local choice through a workspace refresh', async ({
+  page
+}) => {
+  await page.goto('/');
+  await workspaceReady(page);
+  await page.evaluate(() => {
+    // eslint-disable-next-line @typescript-eslint/unbound-method -- Restored after the failed write.
+    const transaction = IDBDatabase.prototype.transaction;
+    IDBDatabase.prototype.transaction = function (stores, mode, options) {
+      if (mode === 'readwrite') {
+        IDBDatabase.prototype.transaction = transaction;
+        throw new DOMException('The workspace is full.', 'QuotaExceededError');
+      }
+      return transaction.call(this, stores, mode, options);
+    };
+  });
+  const root = page.locator('html');
+  await page.getByRole('combobox', { name: 'Theme' }).selectOption('dark');
+  await expect(page.getByRole('alert')).toHaveText('The browser ran out of storage space.');
+  await expect(root).toHaveAttribute('data-theme', 'dark');
+
+  const picker = await projects(page);
+  await picker.getByRole('button', { name: 'Manage printer profiles…' }).click();
+  const profiles = page.getByRole('dialog', { name: 'Printer profiles' });
+  await profiles.getByRole('textbox', { name: 'Profile name' }).fill('Sheet A');
+  await profiles.getByRole('button', { name: 'Save profile' }).click();
+  // The option comes from the refreshed IndexedDB snapshot.
+  await expect(profiles.getByRole('option', { name: 'Sheet A' })).toBeAttached();
+  await expect(root).toHaveAttribute('data-theme', 'dark');
+  expect(await page.evaluate(() => localStorage.getItem('stencilator.theme'))).toBe('"dark"');
+
+  await page.reload();
+  await workspaceReady(page);
+  await expect(root).toHaveAttribute('data-theme', 'auto');
 });
 
 test('pixel art, with paints merged and the canvas colour left without a stencil', async ({
@@ -725,8 +809,11 @@ test('replacing a picture starts fresh undo history for the fitted artwork', asy
 });
 
 test('replacing a raster picture keeps settings-only undo', async ({ page }) => {
+  const write = await controlWorkerRequest(page, 'projectFile');
   await page.goto('/');
   await openPicture(page);
+  await saved(page);
+  await write.hold();
   const tile = page.getByLabel('Tile (mm)', { exact: true });
   await tile.fill('6');
   const undo = page.getByRole('button', { name: 'Undo (Ctrl+Z)' });
@@ -735,10 +822,13 @@ test('replacing a raster picture keeps settings-only undo', async ({ page }) => 
   await page
     .getByLabel('Picture file', { exact: true })
     .setInputFiles(fileURLToPath(new URL('../../fixtures/pixel-art/fox.png', import.meta.url)));
-  await page
-    .getByRole('dialog', { name: 'Open “fox”' })
-    .getByRole('button', { name: 'Replace artwork', exact: true })
-    .click();
+  const dialog = page.getByRole('dialog', { name: 'Open “fox”' });
+  await expect(dialog).toBeVisible();
+  await write.held();
+  // Saving the draft already in this tab should not invalidate confirmation.
+  await write.release();
+  await saved(page);
+  await dialog.getByRole('button', { name: 'Replace artwork', exact: true }).click();
   await expect(page.getByText('fox.png', { exact: true })).toBeVisible();
   await expect(undo).toBeEnabled();
   await undo.click();
@@ -915,6 +1005,73 @@ test('a saved project that fails to open can be retried from the Projects dialog
   await letter.click();
   await expect(picker).not.toBeVisible();
   await expect(page.getByRole('textbox', { name: 'Text', exact: true })).toHaveValue('O');
+});
+
+test('an unreadable project file is explained without replacing the open project', async ({
+  page
+}) => {
+  await page.goto('/');
+  await openPicture(page);
+  await saved(page);
+  const field = page.getByLabel('Stencilator project file');
+  for (const contents of [
+    'not json',
+    '{"stencilator":999}',
+    '{"stencilator":1,"source":{"kind":"picture","data":"YmFkIGltYWdl"}}'
+  ]) {
+    await field.setInputFiles({
+      name: 'Unreadable.stencilator',
+      mimeType: 'application/json',
+      buffer: Buffer.from(contents)
+    });
+    await expect(page.getByRole('button', { name: 'chart-0', exact: true })).toBeEnabled();
+    await expect(page.getByRole('alert')).toHaveText(
+      'This project file could not be opened. It may be damaged or need a newer version of Stencilator.'
+    );
+  }
+  await page.getByRole('button', { name: 'Files', exact: true }).click();
+  await expect(page.getByRole('button', { name: /^Save stencil 1,/ })).toBeEnabled();
+});
+
+test('the Projects dialog explains why opening is blocked during an STL export', async ({
+  page
+}) => {
+  const stencil = await controlWorkerRequest(page, 'stencil');
+  await page.goto('/');
+  await openPicture(page);
+  await renameProject(page, 'First chart');
+  await page.getByRole('button', { name: 'New project', exact: true }).click();
+  await openPicture(page);
+  await saved(page);
+
+  await page.getByRole('button', { name: 'Files', exact: true }).click();
+  await stencil.hold();
+  const download = page.waitForEvent('download');
+  await page.getByRole('button', { name: /^Save stencil 1,/ }).click();
+  await stencil.held();
+
+  const picker = await projects(page, 'chart-0');
+  const first = picker.getByRole('button', { name: /^First chart/ });
+  await first.click();
+  await expect(picker.getByRole('alert')).toHaveText(OPEN_BUSY);
+  await page.keyboard.press('Escape');
+  await projects(page, 'chart-0');
+  await picker.getByRole('button', { name: 'Import a project…' }).click();
+  await expect(picker.getByRole('alert')).toHaveText(OPEN_BUSY);
+  await page.keyboard.press('Escape');
+  await projects(page, 'chart-0');
+  // A file-picker result can also arrive after the export has started.
+  await page.getByLabel('Stencilator project file').setInputFiles({
+    name: 'Incoming.stencilator',
+    mimeType: 'application/json',
+    buffer: Buffer.from('not json')
+  });
+  await expect(picker.getByRole('alert')).toHaveText(OPEN_BUSY);
+
+  await stencil.release();
+  expect((await download).suggestedFilename()).toMatch(/\.stl$/);
+  await first.click();
+  await expect(page.getByRole('button', { name: 'First chart', exact: true })).toBeEnabled();
 });
 
 for (const withDraft of [false, true]) {
@@ -1130,6 +1287,57 @@ test('removal needs a new confirmation after another tab saves', async ({ page, 
   await expect(page.getByRole('heading', { name: 'What are you making?' })).toBeVisible();
 });
 
+for (const choice of ['incoming artwork', 'text'] as const) {
+  test(`replacing with ${choice} needs a new confirmation after another tab saves`, async ({
+    page,
+    context
+  }) => {
+    await page.goto('/');
+    await page.getByRole('button', { name: 'Free-form', exact: true }).click();
+    await page.getByRole('button', { name: 'Try the badge' }).click();
+    await page.getByRole('button', { name: 'Keep project' }).click();
+    await saved(page);
+    const other = await context.newPage();
+    await other.goto('/');
+
+    if (choice === 'text') {
+      await page.getByRole('button', { name: 'Type text', exact: true }).click();
+    } else {
+      await page.getByLabel('Picture file', { exact: true }).setInputFiles(IMAGE);
+    }
+    const dialog = page.getByRole('dialog', {
+      name: choice === 'text' ? 'Type text' : 'Open “chart-0”'
+    });
+    const replace = dialog.getByRole('button', { name: 'Replace artwork', exact: true });
+    await expect(replace).toBeEnabled();
+
+    const file = other.waitForEvent('filechooser');
+    await other.getByRole('button', { name: 'Replace', exact: true }).click();
+    await (
+      await file
+    ).setFiles({
+      name: 'updated.svg',
+      mimeType: 'image/svg+xml',
+      buffer: Buffer.from(WIDE_SVG)
+    });
+    await saved(other);
+    await expect(page.getByText('updated.svg', { exact: true })).toBeVisible();
+    await expect(replace).toBeDisabled();
+    await expect(dialog.getByRole('alert')).toContainText('The project has changed');
+
+    if (choice === 'text') {
+      await dialog.getByRole('button', { name: 'Cancel', exact: true }).click();
+      await page.getByRole('button', { name: 'Type text', exact: true }).click();
+      await replace.click();
+      await expect(page.getByLabel('Text', { exact: true })).toHaveValue('YOUR TEXT');
+    } else {
+      await dialog.getByRole('button', { name: 'Start new project', exact: true }).click();
+      await expect(page.getByRole('button', { name: 'chart-0', exact: true })).toBeVisible();
+      await expect(other.getByText('updated.svg', { exact: true })).toBeVisible();
+    }
+  });
+}
+
 test('settings and theme remembered by v0.1.0 carry over to a new workspace', async ({ page }) => {
   await page.addInitScript(() => {
     if (localStorage.getItem('stencilator.settings') === null) {
@@ -1198,9 +1406,70 @@ test('a browser without storage keeps the draft editable and asks before leaving
   await expect(page.getByLabel('Tile (mm)', { exact: true })).toHaveValue('6');
 });
 
+for (const removed of [false, true]) {
+  test(
+    removed
+      ? 'reconnecting for Retry save cannot recreate a removed project'
+      : 'Retry save reconnects after the workspace database closes unexpectedly',
+    async ({ page, context }) => {
+      const file = await controlWorkerRequest(page, 'projectFile');
+      await page.addInitScript(() => {
+        const open = indexedDB.open.bind(indexedDB);
+        let connection: IDBDatabase | undefined;
+        indexedDB.open = (name, version) => {
+          const request = open(name, version);
+          request.addEventListener('success', () => {
+            connection = request.result;
+          });
+          return request;
+        };
+        document.addEventListener('close-workspace', () => {
+          // Close this connection without deleting the database, and deliver
+          // the event that an unexpected close would send.
+          connection?.close();
+          connection?.dispatchEvent(new Event('close'));
+        });
+      });
+      await page.goto('/');
+      await openPicture(page);
+      await saved(page);
+      await file.hold();
+      const tile = page.getByLabel('Tile (mm)', { exact: true });
+      await tile.fill('6');
+      await file.held();
+      await page.evaluate(() => document.dispatchEvent(new Event('close-workspace')));
+      await file.release();
+      const recovery = page.getByRole('region', { name: 'Could not save in this browser' });
+      await expect(recovery).toBeVisible();
+
+      if (removed) {
+        const other = await context.newPage();
+        await other.goto('/');
+        await openProjectActions(other);
+        await other.getByRole('button', { name: 'Remove from this browser…' }).click();
+        await other.getByRole('button', { name: 'Remove project', exact: true }).click();
+        await expect(other.getByRole('heading', { name: 'What are you making?' })).toBeVisible();
+      }
+
+      await recovery.getByRole('button', { name: 'Retry save' }).click();
+      if (removed) {
+        await expect(page.getByText('This project was removed in another tab')).toBeVisible();
+        await expect(tile).toHaveValue('6');
+        const picker = await projects(page, 'chart-0');
+        await expect(picker.getByText('No saved projects here yet.')).toBeVisible();
+      } else {
+        await saved(page);
+        await page.reload();
+        await expect(tile).toHaveValue('6');
+      }
+    }
+  );
+}
+
 test('the keyed badge fits turned, with the unchanged frame file when the bed gets smaller', async ({
   page
 }) => {
+  const build = await controlWorkerRequest(page, 'freeform');
   await page.goto('/');
   await page.getByRole('button', { name: 'Free-form', exact: true }).click();
   await page.getByRole('button', { name: 'Try the badge' }).click();
@@ -1236,21 +1505,32 @@ test('the keyed badge fits turned, with the unchanged frame file when the bed ge
   await page.getByRole('button', { name: 'Reset view' }).click();
   await expect(fitted).toHaveAttribute('aria-pressed', 'true');
 
+  const saveFrame = page.getByRole('button', { name: 'Save frame STL' });
   const downloadFrame = async () => {
-    await page.getByRole('button', { name: 'Files', exact: true }).click();
     const file = page.waitForEvent('download');
-    await page.getByRole('button', { name: 'Save frame STL' }).click();
+    await saveFrame.click();
     return readFile(await (await file).path());
   };
+  await page.getByRole('button', { name: 'Files', exact: true }).click();
   const original = await downloadFrame();
   await expect(
     bench(page).getByText('The 3MF opens with the parts side by side. Arrange them in your slicer.')
   ).toBeVisible();
-  await page.getByRole('button', { name: 'Back to the artwork' }).click();
+  const printFiles = bench(page).getByRole('region', { name: 'Individual parts' });
+  const oldVerdict = printFiles.getByText('Fits after a quarter-turn');
+  await expect(oldVerdict).toBeVisible();
+  await build.hold();
   await changeBed(page, '103.49', '101');
+  await build.held();
+  await expect(fit.getByText('Checking the latest parts against this bed…')).toBeVisible();
+  await expect(oldVerdict).toHaveCount(0);
+  await expect(saveFrame).toBeDisabled();
+  await build.release();
+  await expect(printFiles.getByText('Too large for this bed')).toBeVisible();
+  expect(await downloadFrame()).toEqual(original);
+  await page.getByRole('button', { name: 'Back to the artwork' }).click();
   await expect(fit.getByText('Too large for this bed', { exact: true })).toBeVisible();
   await expect(fit.getByText(/Turned: 0\.01 mm wider/)).toBeVisible();
-  expect(await downloadFrame()).toEqual(original);
 });
 
 test('Tiles checks the saved bed in the preview and in Files', async ({ page }) => {
@@ -1269,6 +1549,90 @@ test('Tiles checks the saved bed in the preview and in Files', async ({ page }) 
   await expect(fit.getByText(/Too large for this bed/).first()).toBeVisible();
   await fit.getByRole('button', { name: 'Change size…' }).click();
   await expect(settings(page).getByRole('heading', { name: 'Tile sizing' })).toBeFocused();
+});
+
+test('Tiles reports a legacy bed outside the fit range and still offers stencil files', async ({
+  page
+}) => {
+  await page.addInitScript(() => {
+    localStorage.setItem('stencilator.settings', JSON.stringify({ bedWidthMm: 40 }));
+  });
+  await page.goto('/');
+  await openPicture(page);
+  const fit = bench(page).getByRole('region', { name: 'Print-bed fit' });
+  const outsideRange = 'Set both bed dimensions between 50 and 2,000 mm to check fit.';
+  await page.getByRole('button', { name: 'Print bed', exact: true }).click();
+  await expect(fit.getByText(outsideRange)).toBeVisible();
+  await expect(fit.getByRole('button', { name: 'Change bed…' })).toBeEnabled();
+  await page.getByRole('button', { name: 'Files', exact: true }).click();
+  await expect(fit.getByText(outsideRange)).toBeVisible();
+  await expect(page.getByRole('button', { name: /^Save stencil 1,/ })).toBeEnabled();
+  await changeBed(page, '256', '256');
+  await expect(fit.getByText('All parts fit as drawn.')).toBeVisible();
+});
+
+test('the separate fit verdict does not sit beside a no-warnings message', async ({ page }) => {
+  await page.goto('/');
+  await workspaceReady(page);
+  await page.getByLabel('Picture file', { exact: true }).setInputFiles({
+    name: 'wide.svg',
+    mimeType: 'image/svg+xml',
+    buffer: Buffer.from(WIDE_SVG)
+  });
+  const noWarnings = 'No printability warnings.';
+  await expect(page.getByText(noWarnings, { exact: true })).toBeVisible();
+  await changeBed(page, '50', '50');
+  await page.getByRole('button', { name: 'Print bed', exact: true }).click();
+  const fit = bench(page).getByRole('region', { name: 'Print-bed fit' });
+  await expect(fit.getByText('Too large for this bed', { exact: true })).toBeVisible();
+  await expect(bench(page).getByText(noWarnings, { exact: true })).toHaveCount(0);
+
+  await page.getByRole('button', { name: 'Files', exact: true }).click();
+  await expect(fit.getByText(/Too large for this bed/)).toBeVisible();
+  await expect(bench(page).getByText(noWarnings, { exact: true })).toHaveCount(0);
+});
+
+test('a printer profile can be renamed without changing small restored measurements', async ({
+  page
+}) => {
+  await page.goto('/');
+  await backups(page);
+  await importBackup(
+    page,
+    Buffer.from(
+      JSON.stringify({
+        stencilator_workspace: 1,
+        projects: [],
+        profiles: [
+          {
+            id: 'printer',
+            revision: 1,
+            name: 'Printer',
+            widthMm: 200,
+            depthMm: 200,
+            lineWidthMm: 0.0005,
+            layerHeightMm: 0.005,
+            nozzleMm: 0.009
+          }
+        ],
+        preferences: { defaults: {}, theme: 'auto', defaultProfileId: null }
+      })
+    )
+  );
+  const preview = page.getByRole('dialog', { name: 'Preview import' });
+  await preview.getByRole('button', { name: 'Import backup' }).click();
+  await expect(page.getByText('Workspace imported.')).toBeVisible();
+  await page.keyboard.press('Escape');
+
+  await (await projects(page)).getByRole('button', { name: 'Manage printer profiles…' }).click();
+  const profiles = page.getByRole('dialog', { name: 'Printer profiles' });
+  await profiles.getByRole('textbox', { name: 'Profile name' }).fill('Fine settings');
+  await profiles.getByRole('button', { name: 'Save profile' }).click();
+  await expect(profiles.getByRole('option', { name: 'Fine settings' })).toBeAttached();
+  await profiles.getByText('Optional slicer settings', { exact: true }).click();
+  await expect(profiles.getByLabel('Extrusion line width (mm)')).toHaveValue('0.0005');
+  await expect(profiles.getByLabel('Layer height (mm)')).toHaveValue('0.005');
+  await expect(profiles.getByLabel('Nozzle diameter (mm)')).toHaveValue('0.009');
 });
 
 test('printer profiles keep an applied bed until explicitly updated, and backups round-trip', async ({
@@ -1460,7 +1824,7 @@ test('skipping an already restored backup leaves another tab’s restore preview
   await expect(otherOptions.getByText('0 projects · 2 printer profiles')).toBeVisible();
 });
 
-test('an unchanged drawn import keeps its bytes and can be restored from backup', async ({
+test('text and SVG imports marked Tiles build in Free-form and keep their original bytes', async ({
   page,
   browser
 }) => {
@@ -1472,41 +1836,69 @@ test('an unchanged drawn import keeps its bytes and can be restored from backup'
     };
   });
   await page.goto('/');
-  const original = Buffer.from(
-    '{"stencilator":1,"mode":"tiles","source":{"kind":"text","text":"O","font_mm":30,"colour":"#1d2f5c"}}'
-  );
-  await page.getByLabel('Stencilator project file').setInputFiles({
-    name: 'Letter.stencilator',
-    mimeType: '',
-    buffer: original
-  });
-  await saved(page);
-  const design = await downloadProject(page);
-  expect(await readFile(await design.path())).toEqual(original);
-  await expect.soft(page.locator('html')).toHaveAttribute('data-blob-type', 'application/json');
+  await workspaceReady(page);
+  const originals = [
+    {
+      title: 'Letter',
+      source: { kind: 'text', text: 'O', font_mm: 30, colour: '#1d2f5c' }
+    },
+    {
+      title: 'Drawing',
+      source: { kind: 'svg', name: 'wide.svg', data: Buffer.from(WIDE_SVG).toString('base64') }
+    }
+  ].map(({ title, source }) => ({
+    title,
+    bytes: Buffer.from(JSON.stringify({ stencilator: 1, mode: 'tiles', source }))
+  }));
+  for (const { title, bytes } of originals) {
+    await page.getByLabel('Stencilator project file').setInputFiles({
+      name: `${title}.stencilator`,
+      mimeType: '',
+      buffer: bytes
+    });
+    await expect(page.getByRole('button', { name: title, exact: true })).toBeEnabled();
+    await saved(page);
+    await page.getByRole('button', { name: 'Files', exact: true }).click();
+    await expect(page.getByRole('button', { name: 'Save 3MF' })).toBeEnabled();
+    const design = await downloadProject(page);
+    expect(await readFile(await design.path())).toEqual(bytes);
+    await expect.soft(page.locator('html')).toHaveAttribute('data-blob-type', 'application/json');
+  }
 
   const download = page.waitForEvent('download');
-  await (await backups(page, 'Letter')).getByRole('button', { name: 'Download backup' }).click();
-  const bytes = await readFile(await (await download).path());
+  await (await backups(page, 'Drawing')).getByRole('button', { name: 'Download backup' }).click();
+  const backupBytes = await readFile(await (await download).path());
   const fresh = await browser.newPage();
   try {
     await fresh.goto(page.url());
     const dialog = await backups(fresh);
     const font = '**/NotoSans-Bold-*.ttf';
     await fresh.route(font, (route) => route.fulfill({ status: 503 }));
-    await importBackup(fresh, bytes);
+    await importBackup(fresh, backupBytes);
     await expect(dialog.getByRole('alert')).toContainText('Could not check the projects');
     await expect(dialog.getByRole('button', { name: 'Choose backup…' })).toBeEnabled();
     await fresh.unroute(font);
-    await importBackup(fresh, bytes);
+    await importBackup(fresh, backupBytes);
     const preview = fresh.getByRole('dialog', { name: 'Preview import' });
     await expect(preview.getByText('Letter', { exact: true })).toBeVisible();
-    await expect(preview.getByText(/^Free-form ·/)).toBeVisible();
+    await expect(preview.getByText('Drawing', { exact: true })).toBeVisible();
+    await expect(preview.getByText(/^Free-form ·/)).toHaveCount(2);
     await preview.getByRole('button', { name: 'Import backup' }).click();
     await expect(fresh.getByText('Workspace imported.')).toBeVisible();
     await fresh.keyboard.press('Escape');
-    await (await projects(fresh)).getByRole('button', { name: /^Letter/ }).click();
-    await expect(fresh.getByRole('textbox', { name: 'Text', exact: true })).toHaveValue('O');
+    let current: string | undefined;
+    for (const { title, bytes } of originals) {
+      const picker = await projects(fresh, current);
+      await picker.getByRole('button', { name: new RegExp(`^${title}`) }).click();
+      if (title === 'Letter') {
+        await expect(fresh.getByRole('textbox', { name: 'Text', exact: true })).toHaveValue('O');
+      }
+      await fresh.getByRole('button', { name: 'Files', exact: true }).click();
+      await expect(fresh.getByRole('button', { name: 'Save 3MF' })).toBeEnabled();
+      const design = await downloadProject(fresh);
+      expect(await readFile(await design.path())).toEqual(bytes);
+      current = title;
+    }
   } finally {
     await fresh.close();
   }
@@ -1807,6 +2199,48 @@ test.describe('narrow workspace', () => {
     await page.setViewportSize({ width: 1024, height: 768 });
     await page.getByRole('button', { name: 'Back to the artwork' }).tap();
     await expect(canvas).toBeInViewport();
+  });
+
+  test('a finger moving before the second lands does not skew a two-finger pan', async ({
+    page
+  }) => {
+    await page.goto('/');
+    await openPicture(page);
+    const canvas = page.getByRole('application', { name: 'Canvas view' });
+    const bounds = await canvas.boundingBox();
+    if (!bounds) throw new Error('The viewport has no box.');
+    const left = Math.round(bounds.x + bounds.width / 2 - 50);
+    const y = Math.round(bounds.y + bounds.height / 2);
+    const transform = () =>
+      canvas.locator(':scope > div').evaluate((element) => {
+        const matrix = new DOMMatrix(getComputedStyle(element).transform);
+        return { scale: matrix.a, x: matrix.e };
+      });
+    const touch = await page.context().newCDPSession(page);
+    const a = (offset: number) => ({ x: left + offset, y, id: 1 });
+    const b = (offset: number) => ({ x: left + 100 + offset, y, id: 2 });
+    await touch.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [a(0)] });
+    await touch.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [a(4)] });
+    expect(await transform()).toEqual({ scale: 1, x: 0 });
+    await touch.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [a(4), b(0)] });
+    await touch.send('Input.dispatchTouchEvent', {
+      type: 'touchMove',
+      touchPoints: [a(14), b(10)]
+    });
+    await touch.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+    await touch.detach();
+    const moved = await transform();
+    expect(moved.scale).toBeCloseTo(1, 5);
+    expect(moved.x).toBeCloseTo(10, 5);
+
+    await canvas.press('0');
+    await page.mouse.move(left, y);
+    await page.mouse.down();
+    await page.mouse.move(left + 4, y);
+    expect(await transform()).toEqual({ scale: 1, x: 0 });
+    await page.mouse.move(left + 10, y);
+    await page.mouse.up();
+    expect(await transform()).toEqual({ scale: 1, x: 10 });
   });
 
   test('two-finger panning preserves zoom at the limits', async ({ page }) => {

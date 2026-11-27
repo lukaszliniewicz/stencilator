@@ -12,7 +12,8 @@ export interface PrintPart {
   plate?: PlateReport;
 }
 
-export function printParts(bench: Workbench): PrintPart[] {
+/** Null means there are printable parts, but the bed dimensions cannot be checked. */
+export function printParts(bench: Workbench): PrintPart[] | null {
   if (!bench.current || !bench.valid) return [];
   if (bench.isFreeform) {
     const build = bench.freeform;
@@ -41,8 +42,9 @@ export function printParts(bench: Workbench): PrintPart[] {
   }
 
   const chart = bench.chart;
-  const fit = chart?.bedFit;
-  if (!chart || !bench.stencilsPossible || !fit) return [];
+  if (!chart || !bench.stencilsPossible || !bench.stencilCount) return [];
+  const fit = chart.bedFit;
+  if (!fit) return null;
   return bench.colours.flatMap((colour, index) =>
     bench.unstencilled.includes(colour)
       ? []

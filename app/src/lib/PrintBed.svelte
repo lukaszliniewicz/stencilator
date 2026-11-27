@@ -28,7 +28,7 @@
   let room: DOMRectReadOnly | undefined = $state();
   const parts = $derived(printParts(bench));
   const part = $derived(
-    parts.find(({ id }) => id === (bench.bedPart ?? bench.selected)) ?? parts[0]
+    parts?.find(({ id }) => id === (bench.bedPart ?? bench.selected)) ?? parts?.[0]
   );
   const bedW = $derived(bench.settings.bedWidthMm);
   const bedD = $derived(bench.settings.bedDepthMm);
@@ -101,7 +101,7 @@
 </script>
 
 <div class="bed quiet-scroll">
-  {#if part}
+  {#if part && parts}
     <div class="print-head">
       <label class="dialog-field">
         <span class="label">{words.partSelect}</span>
@@ -247,6 +247,11 @@
         <p class="notice">{text.settings.thinLines(bench.minWebMm)}</p>
       {/if}
     </div>
+  {:else if parts === null}
+    <section class="summary" aria-label={words.findings}>
+      <p class="notice" role="status">{words.invalidBed}</p>
+      <button class="quiet" type="button" onclick={changeBed}>{text.printer.change}</button>
+    </section>
   {:else}
     <p class="notice" role="status">
       {bench.current && bench.valid

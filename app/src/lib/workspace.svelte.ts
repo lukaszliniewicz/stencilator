@@ -31,6 +31,11 @@ export const TITLE_LIMIT = 120;
 const words = text.workspace;
 const legacyDefaults = (): Settings => sanitise(readStored('stencilator.settings'));
 
+export interface ReplacementTarget {
+  id: string;
+  revision: number | null;
+}
+
 function sameView(a: ProjectView, b: ProjectView): boolean {
   return (
     a.view === b.view &&
@@ -74,12 +79,15 @@ export class Workspace {
   #disposed = false;
   #requestedPersistence = false;
   #record = $state.raw<SavedProject>();
+  // The revision loaded into the workbench. Saving its own draft does not change the target.
+  #loadedRevision = $state<number | null>(null);
   #readyBytes = $state.raw<{ version: number; file: Blob }>();
   #savedVersion = $state(-1);
   #sampleVersion = $state(-1);
   #failedVersion = $state(-1);
   #writing = $state(false);
   #refreshWhenIdle = $state(false);
+  #localTheme = $state.raw<{ choice: ThemeChoice; useSnapshot: boolean }>();
   id = $state('');
   title = $state('');
   starting = $state(true);
@@ -113,6 +121,10 @@ export class Workspace {
   );
   readonly remote = $derived(this.snapshot?.projects.find(({ id }) => id === this.id));
   readonly removable = $derived(this.conflict || this.upgrade ? undefined : this.#record);
+  readonly replacementTarget: ReplacementTarget | undefined = $derived(
+    this.id && !this.starting ? { id: this.id, revision: this.#loadedRevision } : undefined
+  );
+  readonly themeChoice = $derived(this.#localTheme?.choice ?? this.snapshot?.preferences.theme);
   readonly sample = $derived.by(
     () => this.id !== '' && this.#sampleVersion === this.bench.editVersion
   );
@@ -150,6 +162,12 @@ export class Workspace {
 
   get canOpen(): boolean {
     return !this.initialising && !this.busy && this.bench.canOpen;
+  }
+
+  checkCanOpen(): boolean {
+    if (this.canOpen) return true;
+    this.message = text.project.openBusy;
+    return false;
   }
 
   constructor(bench: Workbench) {
@@ -217,6 +235,11 @@ export class Workspace {
       () => {
         this.upgrade = true;
         this.#store = undefined;
+      },
+      (closed) => {
+        if (this.#store !== closed) return;
+        this.#store = undefined;
+        this.storageProblem = words.errors.unavailable;
       }
     )
       .then(
@@ -246,10 +269,14 @@ export class Workspace {
     if (!store || this.#disposed || this.initialising) return;
     if (this.canOpen) this.#refreshWhenIdle = false;
     const read = ++this.#reads;
+    // Only a snapshot taken after the preference commit can replace the local choice.
+    const theme = this.#localTheme;
+    const useSnapshot = theme?.useSnapshot;
     try {
       const next = await store.snapshot();
       if (read !== this.#reads || store !== this.#store) return;
       this.snapshot = next;
+      if (useSnapshot && this.#localTheme === theme) this.#localTheme = undefined;
       this.storageProblem = '';
       const saved = this.#record;
       if (!saved || this.#flight || this.conflict) return;
@@ -263,6 +290,7 @@ export class Workspace {
       if (this.pending || !remote) this.conflict = true;
       else if (remote.digest === saved.digest && sameView(remote.view, saved.view)) {
         this.#record = remote;
+        this.#loadedRevision = remote.revision;
         this.title = remote.title;
         this.bench.profileId = remote.profileId;
       } else await this.#transition(() => this.#openSaved(remote, false), false);
@@ -353,7 +381,7 @@ export class Workspace {
   }
 
   async #transition(task: () => Promise<boolean>, refresh = true): Promise<boolean> {
-    if (!this.canOpen) return false;
+    if (!this.checkCanOpen()) return false;
     this.busy = true;
     this.message = '';
     try {
@@ -397,7 +425,8 @@ export class Workspace {
         return true;
       }
       if (!(await this.#canLeave())) return false;
-      const record = (await this.#store?.snapshot())?.projects.find((project) => project.id === id);
+      const store = await this.#requireStore();
+      const record = (await store.snapshot()).projects.find((project) => project.id === id);
       if (!record) {
         this.message = words.errors.conflict;
         return false;
@@ -426,6 +455,7 @@ export class Workspace {
     this.id = id;
     this.title = title;
     this.#record = record;
+    this.#loadedRevision = record?.revision ?? null;
     this.#readyBytes = undefined;
     this.#savedVersion = record ? this.bench.editVersion : -1;
     this.#sampleVersion = -1;
@@ -451,19 +481,18 @@ export class Workspace {
       return true;
     });
 
-  startText = (replace = false): Promise<boolean> =>
+  startText = (target?: ReplacementTarget): Promise<boolean> =>
     this.#transition(async () => {
-      if (!replace && !(await this.#canLeave())) return false;
-      if (replace && this.#flight) await this.#flight;
+      if (!(await (target ? this.#confirmReplacement(target) : this.#canLeave()))) return false;
       if (
         !(await this.bench.typeText({
           defaults: this.#defaults(),
-          replace,
-          profileId: replace ? this.bench.profileId : (this.defaultProfile?.id ?? null)
+          replace: target !== undefined,
+          profileId: target ? this.bench.profileId : (this.defaultProfile?.id ?? null)
         }))
       )
         return false;
-      if (!replace) this.#activate(crypto.randomUUID(), words.textTitle);
+      if (!target) this.#activate(crypto.randomUUID(), words.textTitle);
       return true;
     });
 
@@ -483,9 +512,23 @@ export class Workspace {
       return true;
     });
 
-  replace = (file: File): Promise<boolean> =>
+  canReplace(target: ReplacementTarget | undefined): boolean {
+    const current = this.replacementTarget;
+    return (
+      target !== undefined && current?.id === target.id && current.revision === target.revision
+    );
+  }
+
+  async #confirmReplacement(target: ReplacementTarget): Promise<boolean> {
+    if (this.#flight) await this.#flight;
+    if (this.canReplace(target)) return true;
+    this.message = words.replaceChanged;
+    return false;
+  }
+
+  replace = (file: File, target: ReplacementTarget): Promise<boolean> =>
     this.#transition(async () => {
-      if (this.#flight) await this.#flight;
+      if (!(await this.#confirmReplacement(target))) return false;
       return this.bench.open(file, { replace: true, profileId: this.bench.profileId });
     });
 
@@ -520,7 +563,8 @@ export class Workspace {
   loadRemote = (): Promise<boolean> =>
     this.#transition(async () => {
       if (this.#flight) await this.#flight;
-      const record = (await this.#store?.snapshot())?.projects.find(({ id }) => id === this.id);
+      const store = await this.#requireStore();
+      const record = (await store.snapshot()).projects.find(({ id }) => id === this.id);
       if (!record) {
         this.message = words.errors.conflict;
         return false;
@@ -609,13 +653,16 @@ export class Workspace {
   }
 
   async setTheme(theme: ThemeChoice): Promise<void> {
+    const local = { choice: theme, useSnapshot: false };
+    this.#localTheme = local;
+    this.message = '';
     try {
-      const store = await this.#connect();
-      if (!store) return;
+      const store = await this.#requireStore();
       await store.updatePreferences({ theme });
+      local.useSnapshot = true;
       await this.refresh();
     } catch (error) {
-      this.message = workspaceProblem(error);
+      if (this.#localTheme === local) this.message = workspaceProblem(error);
     }
   }
 
@@ -636,10 +683,12 @@ export class Workspace {
     plan: ReturnType<typeof previewRestore>,
     preferences: boolean
   ): Promise<boolean> {
+    const theme = this.#localTheme;
     const store = await this.#requireStore();
     const imported = await store.restore(plan, preferences);
     if (imported) {
       if (plan.projects.some(({ action }) => action !== 'skip')) this.#requestPersistence();
+      if (preferences && theme) theme.useSnapshot = true;
       await this.refresh();
     }
     return imported;

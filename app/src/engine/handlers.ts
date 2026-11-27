@@ -42,6 +42,15 @@ interface Workspace {
 }
 
 const file = (bytes: Uint8Array): Answer => ({ value: bytes, transfer: [bytes.buffer] });
+
+function readProjectFile<T>(read: () => T): T {
+  try {
+    return read();
+  } catch (error) {
+    throw new Error(text.project.openFailed, { cause: error });
+  }
+}
+
 function settingsOf(project: Wasm.Project): ProjectSettings {
   const settings = JSON.parse(project.settings) as ProjectSettings;
   const { mode, count, background } = settings.colours;
@@ -190,12 +199,11 @@ export function createHandlers(
       : new engine.Artwork(w.project, await drawingFonts()));
   }
 
-  /** Decodes the project's artwork once, for validation without keeping it. */
-  async function artworkFor(project: Wasm.Project): Promise<Wasm.Artwork> {
-    return new engine.Artwork(project, await drawingFonts());
-  }
-
-  async function install(project: Wasm.Project, rawPicture?: Uint8Array): Promise<Answer> {
+  async function install(
+    project: Wasm.Project,
+    rawPicture?: Uint8Array,
+    readArtwork: <T>(read: () => T) => T = (read) => read()
+  ): Promise<Answer> {
     const next: Workspace = {
       project,
       picture: undefined,
@@ -209,7 +217,7 @@ export function createHandlers(
       let pictureBytes: Uint8Array | undefined;
       if (project.kind === 'picture') {
         const bytes = rawPicture ?? project.sourceData();
-        const picture = new engine.Source(bytes);
+        const picture = readArtwork(() => new engine.Source(bytes));
         next.picture = picture;
         source = {
           kind: 'picture',
@@ -226,7 +234,8 @@ export function createHandlers(
           transfer.push(bytes.buffer);
         }
       } else {
-        next.artwork = await artworkFor(project);
+        const fonts = await drawingFonts();
+        next.artwork = readArtwork(() => new engine.Artwork(project, fonts));
         source =
           project.kind === 'svg'
             ? { kind: 'svg', name: project.name }
@@ -324,7 +333,11 @@ export function createHandlers(
           case 'svg':
             return install(engine.Project.svg(request.name, bytes));
           case 'project':
-            return install(engine.Project.open(bytes));
+            return install(
+              readProjectFile(() => engine.Project.open(bytes)),
+              undefined,
+              readProjectFile
+            );
         }
         break;
       }
@@ -403,7 +416,7 @@ export function createHandlers(
           // Validate changed text or fonts on the copy; an unchanged drawing was already
           // validated when it opened, and its live artwork is still current.
           if (snapshot.kind !== 'picture' && (changed || !w.artwork)) {
-            (await artworkFor(snapshot)).free();
+            new engine.Artwork(snapshot, await drawingFonts()).free();
           }
           return file(snapshot.file());
         } catch (error) {

@@ -36,7 +36,7 @@
       <li>{issue}</li>
     {/each}
   </ul>
-{:else}
+{:else if includeFit}
   <p class="note">{words.noWarnings}</p>
 {/if}
 

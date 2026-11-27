@@ -75,8 +75,9 @@
           <div class="about">
             <strong>{text.registration.heading}</strong>
             <p class="note">
-              {words.partSize(frame.width_mm, frame.height_mm, thickness)} ·
-              {text.bed.fit[frame.bed_fit]}
+              {words.partSize(frame.width_mm, frame.height_mm, thickness)}
+              {#if bench.current && bench.valid}
+                · {text.bed.fit[frame.bed_fit]}{/if}
             </p>
           </div>
           <button type="button" class="button" disabled={!bench.ready} onclick={bench.saveFrame}>

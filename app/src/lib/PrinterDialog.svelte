@@ -271,7 +271,7 @@
               class="field-input"
               type="number"
               bind:value={lineWidth}
-              min="0.01"
+              min="0"
               step="any"
               disabled={busy}
             />
@@ -282,7 +282,7 @@
               class="field-input"
               type="number"
               bind:value={layer}
-              min="0.01"
+              min="0"
               step="any"
               disabled={busy}
             />
@@ -293,7 +293,7 @@
               class="field-input"
               type="number"
               bind:value={nozzle}
-              min="0.01"
+              min="0"
               step="any"
               disabled={busy}
             />

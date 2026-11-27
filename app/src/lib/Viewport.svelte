@@ -115,19 +115,25 @@
     const pointer = pointers.get(event.pointerId);
     if (!pointer || !enabled) return;
     const { clientX, clientY } = event;
+    const { x: previousX, y: previousY } = pointer;
+    pointer.x = clientX;
+    pointer.y = clientY;
+    let dx = clientX - previousX;
+    let dy = clientY - previousY;
     if (!moving) {
-      if (Math.hypot(clientX - pointer.startX, clientY - pointer.startY) < START_DISTANCE) return;
+      // Begin a one-finger drag at its landing point, including any earlier drift.
+      dx = clientX - pointer.startX;
+      dy = clientY - pointer.startY;
+      if (Math.hypot(dx, dy) < START_DISTANCE) return;
       viewport?.setPointerCapture(event.pointerId);
       moving = true;
       suppressClick = true;
     }
-    const dx = clientX - pointer.x;
-    const dy = clientY - pointer.y;
     const sibling = [...pointers.values()].find((point) => point !== pointer);
     if (sibling) {
       pinchStart ??= {
         scale,
-        distance: Math.hypot(pointer.x - sibling.x, pointer.y - sibling.y)
+        distance: Math.hypot(previousX - sibling.x, previousY - sibling.y)
       };
       const distance = Math.hypot(clientX - sibling.x, clientY - sibling.y);
       // Start from the unclamped gesture so returning to the same separation
@@ -135,14 +141,12 @@
       if (pinchStart.distance > 0) {
         zoomTo(
           (pinchStart.scale * distance) / pinchStart.distance,
-          (pointer.x + sibling.x) / 2,
-          (pointer.y + sibling.y) / 2
+          (previousX + sibling.x) / 2,
+          (previousY + sibling.y) / 2
         );
       } else pinchStart.distance = distance;
       pan(dx / 2, dy / 2);
     } else pan(dx, dy);
-    pointer.x = clientX;
-    pointer.y = clientY;
   }
 
   function up(event: PointerEvent): void {
