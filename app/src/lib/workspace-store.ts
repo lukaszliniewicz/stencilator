@@ -236,6 +236,7 @@ export interface WorkspaceStore {
   saveProfile(input: ProfileWrite, expectedRevision: number | null): Promise<PrinterProfile>;
   removeProfile(id: string, expectedRevision: number): Promise<void>;
   updatePreferences(patch: Partial<WorkspacePreferences>): Promise<void>;
+  /** Returns false for a stale preview, true even when the valid preview needs no writes. */
   restore(plan: RestorePlan, restorePreferences: boolean): Promise<boolean>;
   close(): void;
 }
@@ -464,20 +465,22 @@ class Store implements WorkspaceStore {
   }
 
   async restore(plan: RestorePlan, restorePreferences: boolean): Promise<boolean> {
+    const projects = plan.projects.filter(({ action }) => action !== 'skip');
+    const profiles = plan.profiles.filter(({ action }) => action !== 'skip');
+    const hasChanges = restorePreferences || projects.length > 0 || profiles.length > 0;
     const applied = await transact(this.#db, ['projects', 'profiles', 'workspace'], async (tx) => {
       const workspace = tx.objectStore('workspace');
       const revision = (await workspaceValue<number>(workspace, 'revision')) ?? 0;
       if (revision !== plan.revision) return false;
+      if (!hasChanges) return true;
       const next = revision + 1;
       const projectStore = tx.objectStore('projects');
-      for (const entry of plan.projects) {
-        if (entry.action === 'skip') continue;
-        projectStore.put({ ...entry.record, revision: next });
+      for (const { record } of projects) {
+        projectStore.put({ ...record, revision: next });
       }
       const profileStore = tx.objectStore('profiles');
-      for (const entry of plan.profiles) {
-        if (entry.action === 'skip') continue;
-        profileStore.put({ ...entry.record, revision: next });
+      for (const { record } of profiles) {
+        profileStore.put({ ...record, revision: next });
       }
       if (restorePreferences) {
         const current =
@@ -491,7 +494,7 @@ class Store implements WorkspaceStore {
       putWorkspace(workspace, 'revision', next);
       return true;
     });
-    if (applied) this.#broadcast();
+    if (applied && hasChanges) this.#broadcast();
     return applied;
   }
 

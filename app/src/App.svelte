@@ -491,7 +491,9 @@
       </button>
     </div>
     <p class="note">{words.local}</p>
-    {#if workspace.message}<p class="notice" role="alert">{workspace.message}</p>{/if}
+    {#if workspace.message || bench.problem}
+      <p class="notice" role="alert">{workspace.message || bench.problem}</p>
+    {/if}
   </Modal>
 {:else if modal === 'actions'}
   <Modal title={words.projectActions} {dismiss} busy={workspace.busy}>

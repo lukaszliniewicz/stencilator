@@ -79,6 +79,7 @@ export class Workspace {
   #sampleVersion = $state(-1);
   #failedVersion = $state(-1);
   #writing = $state(false);
+  #refreshWhenIdle = $state(false);
   id = $state('');
   title = $state('');
   starting = $state(true);
@@ -171,6 +172,9 @@ export class Workspace {
       };
     });
     $effect(() => {
+      if (this.#refreshWhenIdle && this.canOpen) void this.refresh();
+    });
+    $effect(() => {
       if (!this.pending) return;
       const warn = (event: BeforeUnloadEvent): void => {
         event.preventDefault();
@@ -202,6 +206,7 @@ export class Workspace {
   dispose(): void {
     this.#disposed = true;
     this.#store?.close();
+    this.#store = undefined;
   }
 
   async #connect(): Promise<WorkspaceStore | undefined> {
@@ -239,6 +244,7 @@ export class Workspace {
   refresh = async (): Promise<void> => {
     const store = this.#store;
     if (!store || this.#disposed || this.initialising) return;
+    if (this.canOpen) this.#refreshWhenIdle = false;
     const read = ++this.#reads;
     try {
       const next = await store.snapshot();
@@ -246,9 +252,14 @@ export class Workspace {
       this.snapshot = next;
       this.storageProblem = '';
       const saved = this.#record;
-      if (!saved || this.busy || this.#flight || this.conflict) return;
+      if (!saved || this.#flight || this.conflict) return;
       const remote = next.projects.find(({ id }) => id === saved.id);
       if (remote?.revision === saved.revision) return;
+      if (!this.canOpen) {
+        // Reread once the export or project switch finishes. Either copy may have changed.
+        this.#refreshWhenIdle = true;
+        return;
+      }
       if (this.pending || !remote) this.conflict = true;
       else if (remote.digest === saved.digest && sameView(remote.view, saved.view)) {
         this.#record = remote;

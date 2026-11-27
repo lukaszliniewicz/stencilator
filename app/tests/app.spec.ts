@@ -889,6 +889,99 @@ test('a sample is temporary until kept, and projects with the same artwork have 
   await expect(page.getByRole('button', { name: 'Garden sign', exact: true })).toBeVisible();
 });
 
+test('a saved project that fails to open can be retried from the Projects dialog', async ({
+  page
+}) => {
+  await page.goto('/');
+  await openText(page);
+  await page.getByRole('textbox', { name: 'Text', exact: true }).fill('O');
+  await renameProject(page, 'Letter');
+  await page.getByRole('button', { name: 'New project', exact: true }).click();
+  await openPicture(page);
+  await saved(page);
+
+  const font = '**/NotoSans-Bold-*.ttf';
+  await page.route(font, (route) => route.fulfill({ status: 503 }));
+  await page.reload();
+  const picker = await projects(page, 'chart-0');
+  const letter = picker.getByRole('button', { name: /^Letter/ });
+  await letter.click();
+  await expect(picker.getByRole('alert')).toHaveText(
+    'The bundled font NotoSans-Bold.ttf could not be loaded.'
+  );
+  await expect(letter).toBeEnabled();
+
+  await page.unroute(font);
+  await letter.click();
+  await expect(picker).not.toBeVisible();
+  await expect(page.getByRole('textbox', { name: 'Text', exact: true })).toHaveValue('O');
+});
+
+for (const withDraft of [false, true]) {
+  test(
+    withDraft
+      ? 'a local edit made during an STL export survives a newer save from another tab'
+      : 'a clean tab opens the newer save after its STL export',
+    async ({ page, context }) => {
+      await page.goto('/');
+      await openPicture(page);
+      await saved(page);
+      const other = await context.newPage();
+      await other.addInitScript(() => {
+        let release: (() => void) | undefined;
+        document.addEventListener('release-stencil', () => {
+          release?.();
+        });
+        window.Worker = class extends Worker {
+          override postMessage(
+            message: { request?: { kind?: string } },
+            options: StructuredSerializeOptions | Transferable[] = []
+          ): void {
+            if (message.request?.kind === 'stencil') {
+              release = () => {
+                if (Array.isArray(options)) super.postMessage(message, options);
+                else super.postMessage(message, options);
+              };
+              document.documentElement.dataset.heldStencil = 'yes';
+            } else if (Array.isArray(options)) super.postMessage(message, options);
+            else super.postMessage(message, options);
+          }
+        };
+      });
+      await other.goto('/');
+      await other.getByRole('button', { name: 'Files', exact: true }).click();
+      const download = other.waitForEvent('download');
+      await other.getByRole('button', { name: /^Save stencil 1,/ }).click();
+      await expect(other.locator('html')).toHaveAttribute('data-held-stencil', 'yes');
+
+      const size = 'Tile (mm)';
+      await page.getByLabel(size, { exact: true }).fill('6');
+      await saved(page);
+      await renameProject(page, 'Newer chart');
+      const picker = await projects(other, 'chart-0');
+      // The list has read the newer save, but the export still has the old project open.
+      await expect(picker.getByRole('button', { name: /^Newer chart/ })).toBeVisible();
+      await other.keyboard.press('Escape');
+      await other.getByRole('button', { name: 'Back to the chart' }).click();
+      const tile = other.getByLabel(size, { exact: true });
+      await expect(tile).toHaveValue('5');
+      if (withDraft) await tile.fill('7');
+      await other.evaluate(() => document.dispatchEvent(new Event('release-stencil')));
+      expect((await download).suggestedFilename()).toMatch(/^chart-0-stencil-01-[0-9a-f]{6}\.stl$/);
+
+      if (withDraft) {
+        await expect(other.getByRole('button', { name: 'Load the newer version' })).toBeVisible();
+        await expect(tile).toHaveValue('7');
+        await expect(page.getByLabel(size, { exact: true })).toHaveValue('6');
+      } else {
+        await expect(tile).toHaveValue('6');
+        await expect(other.getByRole('button', { name: 'Newer chart', exact: true })).toBeVisible();
+        await saved(other);
+      }
+    }
+  );
+}
+
 test('a second tab cannot overwrite a newer save and can keep its draft as a copy', async ({
   page,
   context
@@ -1309,6 +1402,62 @@ test('printer profiles keep an applied bed until explicitly updated, and backups
   } finally {
     await fresh.close();
   }
+});
+
+test('skipping an already restored backup leaves another tab’s restore preview valid', async ({
+  page,
+  context
+}) => {
+  await page.addInitScript(() => {
+    window.BroadcastChannel = class extends BroadcastChannel {
+      override postMessage(message: unknown): void {
+        if (this.name === 'stencilator-workspace')
+          document.documentElement.dataset.workspaceBroadcast = 'yes';
+        super.postMessage(message);
+      }
+    };
+  });
+  const printerBackup = (id: string) =>
+    Buffer.from(
+      JSON.stringify({
+        stencilator_workspace: 1,
+        projects: [],
+        profiles: [{ id, name: id, revision: 1, widthMm: 220, depthMm: 220 }],
+        preferences: { defaults: {}, theme: 'auto', defaultProfileId: null }
+      })
+    );
+  await page.goto('/');
+  const options = await backups(page);
+  const first = printerBackup('Textured sheet');
+  await importBackup(page, first);
+  const preview = page.getByRole('dialog', { name: 'Preview import' });
+  const restore = preview.getByRole('button', { name: 'Import backup' });
+  await restore.click();
+  await expect(options.getByText('Workspace imported.')).toBeVisible();
+  await expect(page.locator('html')).toHaveAttribute('data-workspace-broadcast', 'yes');
+
+  const other = await context.newPage();
+  await other.goto('/');
+  const otherOptions = await backups(other);
+  await importBackup(other, printerBackup('Smooth sheet'));
+  const otherPreview = other.getByRole('dialog', { name: 'Preview import' });
+  await expect(otherPreview.getByText('Add', { exact: true })).toBeVisible();
+
+  await importBackup(page, first);
+  await expect(preview.getByText('Skip: already here', { exact: true })).toBeVisible();
+  await expect(
+    preview.getByRole('checkbox', { name: 'Also restore app preferences' })
+  ).not.toBeChecked();
+  await page.evaluate(() => {
+    document.documentElement.removeAttribute('data-workspace-broadcast');
+  });
+  await restore.click();
+  await expect(options.getByText('Workspace imported.')).toBeVisible();
+  expect.soft(await page.locator('html').getAttribute('data-workspace-broadcast')).toBeNull();
+
+  await otherPreview.getByRole('button', { name: 'Import backup' }).click();
+  await expect(otherOptions.getByText('Workspace imported.')).toBeVisible();
+  await expect(otherOptions.getByText('0 projects · 2 printer profiles')).toBeVisible();
 });
 
 test('an unchanged drawn import keeps its bytes and can be restored from backup', async ({

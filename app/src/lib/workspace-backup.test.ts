@@ -196,19 +196,27 @@ describe('workspace backups', () => {
       profiles: [],
       preferences: preferences()
     };
-    // Each file works on its own, including when restored out of order.
-    for (const part of parts.toReversed()) {
+    const [, middlePart] = parts;
+    assert(middlePart);
+    // Each file works on its own, including when restored out of order or twice.
+    for (const part of [middlePart, ...parts.toReversed()]) {
       const backup = await decodeBackup(await encodeBackup(part), validateProject);
       const plan = previewRestore(backup, restored);
-      restored.projects.push(...plan.projects.map(({ record }) => record));
+      restored.projects.push(
+        ...plan.projects.filter(({ action }) => action !== 'skip').map(({ record }) => record)
+      );
       restored.profiles.push(
         ...plan.profiles.filter(({ action }) => action !== 'skip').map(({ record }) => record)
       );
       expect(plan.preferences.theme).toBe('dark');
       expect(plan.preferences.defaultProfileId).toBe(defaultPrinter.id);
     }
-    expect(restored.profiles).toHaveLength(snapshot.profiles.length);
-    expect(restored.projects).toHaveLength(snapshot.projects.length);
+    expect(restored.profiles.map(({ id }) => id).sort()).toEqual(
+      snapshot.profiles.map(({ id }) => id).sort()
+    );
+    expect(restored.projects.map(({ id }) => id).sort()).toEqual(
+      snapshot.projects.map(({ id }) => id).sort()
+    );
     expect(restored.projects.every(({ profileId }) => profileId === shared.id)).toBe(true);
     for (const part of parts) {
       const backup = await decodeBackup(await encodeBackup(part), validateProject);
