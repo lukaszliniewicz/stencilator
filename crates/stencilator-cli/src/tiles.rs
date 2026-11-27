@@ -97,16 +97,9 @@ pub(crate) fn run(args: &TilesArgs) -> Result<(), String> {
     args.apply(&mut project);
     // Settings first, so that a typing mistake is reported before a large picture is read.
     project.check().map_err(|e| e.to_string())?;
-    let settings = project.chart_settings();
-    if !matches!(project.source, Source::Picture { .. }) {
-        return Err(
-            "tiles take PNG, JPEG and WebP pictures; use stencilator freeform for SVG drawings and text".to_owned()
-        );
-    }
+    picture(&project)?;
     input.load(&mut project)?;
-    let Source::Picture { data, .. } = &project.source else { unreachable!("checked above") };
-    let image = source::decode(data).map_err(|e| e.to_string())?;
-    let chart = merge_paints(&build_chart(&image, &settings).map_err(|e| e.to_string())?, &project.merges());
+    let chart = build(&project)?;
     let skip = project.stencil_skip();
 
     let mut destinations: Vec<(String, PathBuf)> = Vec::new();
@@ -156,30 +149,8 @@ pub(crate) fn run(args: &TilesArgs) -> Result<(), String> {
         return Err(message);
     }
 
-    let g = &chart.layout;
-    let size_mm = (g.width_mm(), g.height_mm());
-    let bed = project.stencils.bed_mm;
-    let mut warnings = Vec::new();
-    if g.line_px > 0 && g.line_mm() < RECOMMENDED_MIN_WEB_MM {
-        warnings.push(format!(
-            "grid lines of {:.2} mm make a fragile stencil web; {RECOMMENDED_MIN_WEB_MM} mm or more suits a 0.4 mm nozzle",
-            g.line_mm()
-        ));
-    }
-    if !fits_bed(size_mm, bed) {
-        warnings.push(format!(
-            "the stencils, {:.1} x {:.1} mm, do not fit a {} x {} mm bed",
-            size_mm.0, size_mm.1, bed[0], bed[1]
-        ));
-    }
     let written: Vec<&Path> = outputs.iter().map(|(p, _)| p.as_path()).collect();
-    let summary = Summary {
-        chart: &chart,
-        skip: &skip,
-        written: &written,
-        warnings: &warnings,
-        fits_bed: fits_bed(size_mm, bed),
-    };
+    let summary = Summary::new(&chart, &project, &skip, &written);
     if args.json {
         println!("{}", serde_json::to_string_pretty(&summary.json()).unwrap_or_default());
     } else {
@@ -188,16 +159,53 @@ pub(crate) fn run(args: &TilesArgs) -> Result<(), String> {
     Ok(())
 }
 
-struct Summary<'a> {
+fn picture(project: &Project) -> Result<&[u8], String> {
+    match &project.source {
+        Source::Picture { data, .. } => Ok(data),
+        _ => {
+            Err("tiles take PNG, JPEG and WebP pictures; use stencilator freeform for SVG drawings and text".to_owned())
+        }
+    }
+}
+
+/// Builds the chart without reading or writing any files.
+pub(crate) fn build(project: &Project) -> Result<TileChart, String> {
+    let image = source::decode(picture(project)?).map_err(|e| e.to_string())?;
+    let chart = build_chart(&image, &project.chart_settings()).map_err(|e| e.to_string())?;
+    Ok(merge_paints(&chart, &project.merges()))
+}
+
+pub(crate) struct Summary<'a> {
     chart: &'a TileChart,
     skip: &'a [Rgb],
     written: &'a [&'a Path],
-    warnings: &'a [String],
+    warnings: Vec<String>,
     fits_bed: bool,
 }
 
-impl Summary<'_> {
-    fn json(&self) -> serde_json::Value {
+impl<'a> Summary<'a> {
+    pub(crate) fn new(chart: &'a TileChart, project: &Project, skip: &'a [Rgb], written: &'a [&'a Path]) -> Self {
+        let g = &chart.layout;
+        let size_mm = (g.width_mm(), g.height_mm());
+        let [bed_w, bed_h] = project.stencils.bed_mm;
+        let fits_bed = fits_bed(size_mm, [bed_w, bed_h]);
+        let mut warnings = Vec::new();
+        if g.line_px > 0 && g.line_mm() < RECOMMENDED_MIN_WEB_MM {
+            warnings.push(format!(
+                "grid lines of {:.2} mm make a fragile stencil web; {RECOMMENDED_MIN_WEB_MM} mm or more suits a 0.4 mm nozzle",
+                g.line_mm()
+            ));
+        }
+        if !fits_bed {
+            warnings.push(format!(
+                "the stencils, {:.1} x {:.1} mm, do not fit a {bed_w} x {bed_h} mm bed",
+                size_mm.0, size_mm.1
+            ));
+        }
+        Self { chart, skip, written, warnings, fits_bed }
+    }
+
+    pub(crate) fn json(&self) -> serde_json::Value {
         let g = &self.chart.layout;
         let count = self.chart.palette.len();
         let palette: Vec<_> = (0..)
@@ -242,7 +250,7 @@ impl Summary<'_> {
         for path in self.written {
             println!("wrote    {}", path.display());
         }
-        for warning in self.warnings {
+        for warning in &self.warnings {
             eprintln!("warning: {warning}");
         }
     }

@@ -19,6 +19,7 @@ const MAX_REACH: i32 = 8_000;
 
 /// Settings for raised connectors. All dimensions are trial settings.
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "project-schema", derive(schemars::JsonSchema))]
 #[serde(default)]
 pub struct RaisedSettings {
     /// Width of the beam and square landings.
@@ -64,6 +65,7 @@ impl RaisedSettings {
 
 /// Supports for one way of printing and painting.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[cfg_attr(feature = "project-schema", derive(schemars::JsonSchema))]
 #[serde(rename_all = "lowercase")]
 pub enum SupportKind {
     /// A bridge cut out of the opening at the work face.
@@ -77,6 +79,7 @@ pub type Ends = [[i32; 2]; 2];
 
 /// Remove or move a suggestion at these exact ends, or add a new support.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
+#[cfg_attr(feature = "project-schema", derive(schemars::JsonSchema))]
 pub struct SupportEdit {
     /// Source paint, independent of the coat order and of any RAL match.
     pub paint: Colour,

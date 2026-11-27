@@ -48,14 +48,7 @@ impl Input {
     pub(crate) fn project(&self) -> Result<Project, String> {
         Ok(match self {
             Input::Project(path) => read_project(&read(path)?).map_err(|e| format!("{}: {e}", path.display()))?,
-            Input::File(path) => {
-                let name = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
-                if has_extension(path, "svg") {
-                    Project::new(Source::Svg { name, data: Vec::new() })
-                } else {
-                    Project::new(Source::Picture { name, data: Vec::new() })
-                }
-            }
+            Input::File(path) => artwork(path, Vec::new()),
             Input::Text(lines) => Project::new(Source::text(lines.join("\n"))),
         })
     }
@@ -69,6 +62,13 @@ impl Input {
         }
         Ok(())
     }
+}
+
+/// A new project from a picture or SVG, named after its source file.
+pub(crate) fn artwork(path: &Path, data: Vec<u8>) -> Project {
+    let name = path.file_name().unwrap_or_default().to_string_lossy().into_owned();
+    let source = if has_extension(path, "svg") { Source::Svg { name, data } } else { Source::Picture { name, data } };
+    Project::new(source)
 }
 
 fn has_extension(path: &Path, extension: &str) -> bool {
