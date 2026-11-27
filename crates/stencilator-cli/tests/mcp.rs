@@ -19,7 +19,7 @@ struct Session {
 }
 
 impl Session {
-    fn start(workspace: &Path) -> Self {
+    fn launch(workspace: &Path) -> Self {
         let mut child = Command::new(env!("CARGO_BIN_EXE_stencilator"))
             .args(["mcp", "--workspace"])
             .arg(workspace)
@@ -38,7 +38,11 @@ impl Session {
                 }
             }
         });
-        let mut session = Self { child, input, replies, next_id: 1 };
+        Self { child, input, replies, next_id: 1 }
+    }
+
+    fn start(workspace: &Path) -> Self {
+        let mut session = Self::launch(workspace);
         let handshake = session.request(
             "initialize",
             &json!({
@@ -106,6 +110,38 @@ fn same_file(workspace: &Path, mcp: &str, cli: &str) {
         fs::read(workspace.join(mcp)).unwrap() == fs::read(workspace.join(cli)).unwrap(),
         "{mcp} differs from {cli}"
     );
+}
+
+#[test]
+fn discovers_and_calls_a_tool_without_a_legacy_handshake() {
+    let temp = tempfile::tempdir().unwrap();
+    let mut session = Session::launch(temp.path());
+    let metadata = json!({
+        "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+        "io.modelcontextprotocol/clientInfo": {"name": "stencilator-test", "version": "1"},
+        "io.modelcontextprotocol/clientCapabilities": {}
+    });
+    let discover = session.request("server/discover", &json!({"_meta": metadata}));
+    assert_eq!(discover["resultType"], "complete");
+    assert!(discover["supportedVersions"].as_array().unwrap().contains(&json!("2026-07-28")));
+    assert_eq!(discover["_meta"]["io.modelcontextprotocol/serverInfo"]["name"], "stencilator");
+
+    let list = session.request("tools/list", &json!({"_meta": metadata}));
+    assert_eq!(list["resultType"], "complete");
+    assert!(list["ttlMs"].is_number());
+    assert_eq!(list["cacheScope"], "public");
+    let names: Vec<_> = list["tools"].as_array().unwrap().iter().map(|tool| &tool["name"]).collect();
+    assert_eq!(names, ["check_stencil", "export_stencil"]);
+
+    let design = json!({"source": {"kind": "text", "text": "O"}});
+    let check = session
+        .request("tools/call", &json!({"_meta": metadata, "name": "check_stencil", "arguments": {"design": design}}));
+    assert_eq!(check["resultType"], "complete");
+    assert_eq!(check["isError"], false);
+    let report = &check["structuredContent"];
+    assert_eq!(report["mode"], "freeform");
+    assert_eq!(serde_json::from_str::<Value>(check["content"][0]["text"].as_str().unwrap()).unwrap(), *report);
+    assert_eq!(fs::read_dir(temp.path()).unwrap().count(), 0);
 }
 
 #[test]
@@ -257,19 +293,29 @@ fn refuses_unknown_settings_and_never_writes_over_a_file() {
 
 #[cfg(unix)]
 #[test]
-fn refuses_symlinks_leaving_the_workspace_even_when_the_input_looks_like_svg() {
+fn accepts_links_within_the_workspace_and_refuses_links_leaving_it() {
     let outside = tempfile::tempdir().unwrap();
     let inside = tempfile::tempdir().unwrap();
-    let secret = outside.path().join("other.svg");
-    fs::write(&secret, include_bytes!("../../../fixtures/svg/badge.svg")).unwrap();
-    std::os::unix::fs::symlink(&secret, inside.path().join("art.svg")).unwrap();
+    let svg = include_bytes!("../../../fixtures/svg/badge.svg");
+    let other = outside.path().join("other.svg");
+    fs::write(&other, svg).unwrap();
+    std::os::unix::fs::symlink(&other, inside.path().join("other.svg")).unwrap();
     std::os::unix::fs::symlink(outside.path(), inside.path().join("elsewhere")).unwrap();
+    let folder = inside.path().join("sets");
+    fs::create_dir(&folder).unwrap();
+    fs::write(folder.join("badge.svg"), svg).unwrap();
+    std::os::unix::fs::symlink(folder.join("badge.svg"), inside.path().join("badge.svg")).unwrap();
+    std::os::unix::fs::symlink("sets", inside.path().join("exports")).unwrap();
     let mut session = Session::start(inside.path());
-    let design = json!({"source": {"kind": "file", "path": "art.svg"}});
+    let design = json!({"source": {"kind": "file", "path": "other.svg"}});
     let result = session.call("check_stencil", &json!({"design": design}));
     assert_eq!(result["isError"], true);
     assert!(result["content"][0]["text"].as_str().unwrap().contains("outside the workspace"));
     let inline = json!({"source": {"kind": "text", "text": "O"}});
     assert_eq!(session.export(&inline, "elsewhere/new.3mf")["isError"], true);
     assert!(!outside.path().join("new.3mf").exists());
+
+    assert_eq!(session.check(&json!({"source": {"kind": "file", "path": "badge.svg"}}))["mode"], "freeform");
+    session.save(&inline, "exports/new.3mf");
+    assert!(folder.join("new.3mf").is_file());
 }

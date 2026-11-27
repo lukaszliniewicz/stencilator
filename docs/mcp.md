@@ -1,30 +1,38 @@
 # Stencilator with an MCP client
 
-Stencilator's MCP server runs on your computer over stdio. Choose a folder for
-the designs and exports you want the assistant to work with. Paths in tool
-requests are relative to that folder, and the server follows links only within
-it. Export creates a new file in an existing folder and refuses to replace a
-file, including the source. The server does its processing locally; your MCP
-client receives the check results and export paths.
+Stencilator's MCP server runs on your computer over stdio. Choose an existing
+workspace folder for the designs and exports, and keep it in place while the
+server runs. Tool paths are relative to that folder. Exports go into existing
+folders under new file names. The workspace limits what the tools can open;
+it is not an operating-system sandbox. Stencilator processes the artwork
+locally. Your MCP client receives reports and the paths to the files it asked
+Stencilator to create.
 
 ## Set up
 
 Build the command with `cargo build --release --locked -p stencilator-cli`, or
-use a matching prebuilt binary. Use absolute paths for the executable and
-workspace when configuring the client.
+extract the matching standalone ZIP. Use absolute paths for the executable and
+workspace when configuring the client. Quote paths that contain spaces.
 
-In Claude Code:
+### Claude Code
 
 ```sh
 claude mcp add --transport stdio stencilator -- \
-    /absolute/path/to/stencilator mcp --workspace /absolute/path/to/workspace
+    "/absolute/path/to/stencilator" mcp --workspace "/absolute/path/to/workspace"
 claude mcp list
 ```
 
-For Claude Desktop, open the `.mcpb` for your operating system and architecture
-and choose an existing workspace folder when asked. This installs the binary
-with its tool configuration. You can also configure a binary by hand under
-`mcpServers`:
+### Claude Desktop
+
+In **Settings → Desktop app**, select **Manage** next to **Extensions**.
+Under **Advanced settings → Extension Developer**, choose **Install
+Extension…** and select the `.mcpb` for your operating system and architecture.
+Choose an existing workspace folder when asked. To check the connection, open
+**Connectors** from the **+** menu by the chat box. See [Claude's installation
+guide](https://support.claude.com/en/articles/10949351-getting-started-with-local-mcp-servers-on-claude-desktop)
+for older Settings layouts.
+
+You can also configure a standalone binary in `claude_desktop_config.json`:
 
 ```json
 {
@@ -40,13 +48,65 @@ with its tool configuration. You can also configure a binary by hand under
 On Windows the command ends in `stencilator.exe`; double each backslash in JSON
 paths.
 
+### OpenCode V2
+
+From the project where you want to use the server:
+
+```sh
+opencode mcp add stencilator -- \
+    "/absolute/path/to/stencilator" mcp --workspace "/absolute/path/to/workspace"
+opencode mcp list
+```
+
+This writes a local server under `mcp.servers` in the project configuration.
+Use `/mcps` in OpenCode to see the connection. See the [OpenCode MCP
+guide](https://opencode.ai/docs/mcp-servers) for other configuration options.
+
+If OpenCode 2.4.2 says `No MCP servers configured` after saving the entry, you
+can register and connect it for the running OpenCode service using its
+[experimental API](https://opencode.ai/docs/api):
+
+```sh
+opencode api put /api/experimental/mcp/stencilator --data '{
+  "config": {
+    "type": "local",
+    "command": ["/absolute/path/to/stencilator", "mcp", "--workspace", "/absolute/path/to/workspace"]
+  }
+}'
+opencode api post /api/experimental/mcp/stencilator/connect
+opencode mcp list
+```
+
+### Local Codex
+
+```sh
+codex mcp add stencilator -- \
+    "/absolute/path/to/stencilator" mcp --workspace "/absolute/path/to/workspace"
+codex mcp list
+```
+
+Use `/mcp` in Codex to check the live connection. In the ChatGPT desktop
+app's local Codex experience, you can also use **Settings → MCP servers →
+Add server**, select **STDIO**, enter the same command and arguments, then
+save and select **Restart**. These clients share the [local Codex
+configuration](https://learn.chatgpt.com/docs/extend/mcp). Set
+`default_tools_approval_mode = "writes"` under `[mcp_servers.stencilator]`
+in `~/.codex/config.toml` if you want Codex to ask before exports.
+
+ChatGPT web uses [MCP-backed plugins](https://developers.openai.com/plugins/deploy/connect-chatgpt)
+with an HTTPS endpoint or a Secure MCP Tunnel. The standalone binary and
+Claude Desktop bundle are for local clients; they do not install a ChatGPT
+web plugin.
+
 ## Check, then export
 
 `check_stencil` builds the design without writing files. It returns the same
 dimensions, palette and printability report as the CLI's `--json`. The report
 can flag loose islands, fragile webs, narrow openings and a plate or frame that
 doesn't fit the chosen bed. A particularly long report is shortened in the
-tool result and marked `report_truncated`.
+tool result and marked `report_truncated`. If your client cancels an export,
+Stencilator checks for cancellation before installing the file. A file already
+installed at the time of cancellation is kept.
 
 For example, these are the arguments to `check_stencil` for a 30 mm-wide ring
 of text with flat bridges and a keyed frame:
@@ -100,10 +160,11 @@ for later when doing this, set `inactive_bridge_width_mm` to that width.
 
 ## Build a bundle
 
-The [package workflow](https://github.com/lukaszliniewicz/stencilator/blob/main/.github/workflows/package.yml) builds and tests on
-Linux x86-64, macOS Apple Silicon and Windows x86-64. It makes a standalone ZIP,
-an MCP bundle and SHA-256 checksums as build artifacts. Both archives include
-the bundled font licences and a third-party licence report.
+The [package workflow](https://github.com/lukaszliniewicz/stencilator/blob/main/.github/workflows/package.yml)
+is set up to build and test on Linux x86-64, macOS Apple Silicon and Windows
+x86-64. It produces a standalone ZIP, a Claude Desktop `.mcpb` bundle and
+SHA-256 checksums as build artifacts. Both archives include the bundled font
+licences and a third-party licence report.
 
 To package a locally built Linux binary, run this from the repository root
 with Python 3.11 or later and `cargo-about` 0.9.3:

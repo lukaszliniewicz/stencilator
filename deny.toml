@@ -11,17 +11,14 @@ targets = [
 
 [advisories]
 # Advisories fail the check. Ignore one only with a dated reason.
-ignore = [
-    # 2026-11-26: chrono is unmaintained, not vulnerable. Only the MCP server
-    # pulls it in, through rmcp and schemars; the engine and the browser build
-    # do not. Drop this once rmcp no longer depends on it.
-    { id = "RUSTSEC-2026-0543", reason = "unmaintained chrono via rmcp, MCP shell only" },
-]
 
 [licenses]
 # Permissive licences only, so the project's own licence stays a free choice.
 allow = [
     "Apache-2.0",
+    # winx, used for directory handles on Windows. The LLVM exception adds
+    # permissions to Apache 2.0 for compiled redistribution.
+    "Apache-2.0 WITH LLVM-exception",
     "BSD-2-Clause",
     "BSD-3-Clause",
     # jpeg-encoder: permissive, but binaries must credit the Independent JPEG Group

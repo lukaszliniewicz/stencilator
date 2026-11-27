@@ -4,10 +4,13 @@ mod design;
 mod workspace;
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::time::Duration;
 
 use clap::Args;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{CallToolResult, ContentBlock, Implementation, ServerCapabilities, ServerConfig};
+use rmcp::service::{RequestContext, RoleServer, ServerInitializeError};
 use rmcp::{ServerHandler, ServiceExt, tool, tool_handler, tool_router};
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -19,10 +22,13 @@ use stencilator_core::plate::{plate_files, plates_3mf};
 use stencilator_core::project::{Mode, Project};
 use stencilator_core::stencil::stencil_files;
 use stencilator_core::zip::zip;
+use tokio::sync::Mutex;
 
 use self::design::{Design, extension};
 use self::workspace::{MAX_INPUT_BYTES, Workspace};
 use crate::{freeform, tiles};
+
+const CANCELLED: &str = "The stencil request was cancelled.";
 
 #[derive(Args)]
 pub(crate) struct McpArgs {
@@ -32,14 +38,21 @@ pub(crate) struct McpArgs {
 }
 
 pub(crate) fn run(args: &McpArgs) -> Result<(), String> {
-    let server = Server { workspace: Workspace::new(&args.workspace)? };
+    let server = Server { workspace: Arc::new(Mutex::new(Workspace::new(&args.workspace)?)) };
     let runtime =
         tokio::runtime::Builder::new_current_thread().enable_all().build().map_err(|error| error.to_string())?;
-    runtime.block_on(async {
-        let service = server.serve(rmcp::transport::stdio()).await.map_err(|error| error.to_string())?;
-        service.waiting().await.map_err(|error| error.to_string())?;
+    let result = runtime.block_on(async {
+        match server.serve(rmcp::transport::stdio_pipes()).await {
+            Ok(service) => service.waiting().await.map_err(|error| error.to_string())?,
+            Err(ServerInitializeError::ConnectionClosed(_)) => return Ok(()),
+            Err(error) => return Err(error.to_string()),
+        };
         Ok(())
-    })
+    });
+    // The SDK has drained responses and cancelled any remaining requests.
+    // Don't keep a disconnected client waiting for an entire engine build.
+    runtime.shutdown_timeout(Duration::from_secs(1));
+    result
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -60,67 +73,121 @@ struct ExportRequest {
 
 #[derive(Clone)]
 struct Server {
-    workspace: Workspace,
+    workspace: Arc<Mutex<Workspace>>,
 }
 
 #[tool_router]
 impl Server {
     #[tool(
         description = "Check a tile or free-form stencil design. Report the paints, dimensions, print-bed fit and printability warnings without writing files.",
-        annotations(title = "Check stencils", read_only_hint = true, open_world_hint = false)
+        annotations(title = "Check stencils", read_only_hint = true, idempotent_hint = true, open_world_hint = false)
     )]
-    fn check_stencil(&self, Parameters(request): Parameters<CheckRequest>) -> CallToolResult {
-        tool_result(self.build(request.design).map(|(project, built)| built.report(&project, &[])))
+    async fn check_stencil(
+        &self,
+        Parameters(request): Parameters<CheckRequest>,
+        context: RequestContext<RoleServer>,
+    ) -> CallToolResult {
+        self.run_tool(context, move |workspace, context| {
+            let (project, built) = build(workspace, request.design, context)?;
+            active(context)?;
+            Ok(built.report(&project, &[]))
+        })
+        .await
     }
 
     #[tool(
         description = "Export one new file for a stencil design and report what may not print well. A .stencilator file opens in the web app. A .zip or free-form .3mf includes any registration frame. Existing files are never overwritten.",
         annotations(
             title = "Export a stencil file",
+            read_only_hint = false,
             destructive_hint = false,
             idempotent_hint = true,
             open_world_hint = false
         )
     )]
-    fn export_stencil(&self, Parameters(request): Parameters<ExportRequest>) -> CallToolResult {
-        tool_result(self.export(request))
+    async fn export_stencil(
+        &self,
+        Parameters(request): Parameters<ExportRequest>,
+        context: RequestContext<RoleServer>,
+    ) -> CallToolResult {
+        self.run_tool(context, move |workspace, context| export(workspace, request, context)).await
     }
 }
 
 #[tool_handler]
-#[allow(clippy::unused_async_trait_impl, reason = "the MCP SDK generates the handler for the synchronous tools")]
+#[allow(clippy::unused_async_trait_impl, reason = "the SDK generates an async tools/list handler")]
 impl ServerHandler for Server {
     fn get_info(&self) -> ServerConfig {
         ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
             .with_server_info(Implementation::new("stencilator", VERSION))
             .with_instructions(
-                "Make painting stencils locally. Use check_stencil to inspect a design before printing. \
-                 Tile mode takes a picture; free-form takes pictures, SVG and text. Tool paths are relative \
-                 to the workspace chosen at launch. Export a .stencilator project to open it in the web app.",
+                "Make painting stencils locally. check_stencil reports printability without writing files. \
+                 export_stencil creates one new file; use .stencilator for a project the web app can open. \
+                 All tool paths are relative to the workspace chosen at launch. Tile mode takes pictures; \
+                 free-form also takes SVG and text.",
             )
     }
 }
 
 impl Server {
-    fn build(&self, design: Design) -> Result<(Project, Built), String> {
-        let project = design.project(&self.workspace)?;
-        let built = match project.mode {
-            Mode::Tiles => Built::Tiles(tiles::build(&project)?),
-            Mode::Freeform => Built::Freeform(freeform::build(&project)?),
+    async fn run_tool(
+        &self,
+        context: RequestContext<RoleServer>,
+        work: impl FnOnce(&Workspace, &RequestContext<RoleServer>) -> Result<Value, String> + Send + 'static,
+    ) -> CallToolResult {
+        // One build at a time to bound memory use. The blocking worker keeps
+        // its slot until it exits, while stdio can still receive cancellation.
+        let workspace = tokio::select! {
+            workspace = Arc::clone(&self.workspace).lock_owned() => workspace,
+            () = context.ct.cancelled() => return tool_result(Err(CANCELLED.to_owned())),
         };
-        Ok((project, built))
+        let result = tokio::task::spawn_blocking(move || {
+            active(&context)?;
+            work(&workspace, &context).map(compact)
+        })
+        .await
+        .unwrap_or_else(|_| Err("The stencil build stopped unexpectedly. Try again with a simpler design.".to_owned()));
+        tool_result(result)
     }
+}
 
-    fn export(&self, request: ExportRequest) -> Result<Value, String> {
-        let path = &request.path;
-        let format = ExportFormat::from_path(path)?;
-        let destination = self.workspace.destination(path)?;
-        let (project, built) = self.build(request.design)?;
-        let bytes = built.file(&project, format)?;
-        let report = built.report(&project, &[path.as_path()]);
-        self.workspace.write(path, &destination, &bytes)?;
-        Ok(report)
+fn active(context: &RequestContext<RoleServer>) -> Result<(), String> {
+    if context.ct.is_cancelled() {
+        return Err(CANCELLED.to_owned());
     }
+    Ok(())
+}
+
+fn build(
+    workspace: &Workspace,
+    design: Design,
+    context: &RequestContext<RoleServer>,
+) -> Result<(Project, Built), String> {
+    let project = design.project(workspace)?;
+    active(context)?;
+    let built = match project.mode {
+        Mode::Tiles => Built::Tiles(tiles::build(&project)?),
+        Mode::Freeform => Built::Freeform(freeform::build(&project)?),
+    };
+    Ok((project, built))
+}
+
+fn export(
+    workspace: &Workspace,
+    request: ExportRequest,
+    context: &RequestContext<RoleServer>,
+) -> Result<Value, String> {
+    let path = &request.path;
+    let format = ExportFormat::from_path(path)?;
+    let destination = workspace.destination(path)?;
+    let (project, built) = build(workspace, request.design, context)?;
+    active(context)?;
+    let bytes = built.file(&project, format)?;
+    active(context)?;
+    let report = built.report(&project, &[path.as_path()]);
+    active(context)?;
+    workspace.write(&destination, &bytes, || active(context))?;
+    Ok(report)
 }
 
 enum ExportFormat {
@@ -202,7 +269,7 @@ impl Built {
 
 fn tool_result(result: Result<Value, String>) -> CallToolResult {
     match result {
-        Ok(report) => CallToolResult::structured(compact(report)),
+        Ok(report) => CallToolResult::structured(report),
         Err(message) => CallToolResult::error(vec![ContentBlock::text(message)]),
     }
 }
