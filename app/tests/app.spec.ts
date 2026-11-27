@@ -237,6 +237,24 @@ test('the example, a dropped picture and the theme', async ({ page }) => {
   expect(problems).toEqual([]);
 });
 
+test('a second drop during a project open tells the user to retry', async ({ page }) => {
+  await page.goto('/');
+  await workspaceReady(page);
+  await page.evaluate((base64) => {
+    const bytes = Uint8Array.from(atob(base64), (c) => c.charCodeAt(0));
+    for (const name of ['first.png', 'second.png']) {
+      const transfer = new DataTransfer();
+      transfer.items.add(new File([bytes], name, { type: 'image/png' }));
+      window.dispatchEvent(new DragEvent('drop', { dataTransfer: transfer, cancelable: true }));
+    }
+  }, readFileSync(IMAGE).toString('base64'));
+  await expect(page.getByRole('alert')).toContainText(
+    'Wait for the current file to finish opening or saving, then try again.'
+  );
+  await expect(page.getByRole('button', { name: 'first', exact: true })).toBeVisible();
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+});
+
 test('pixel art, with paints merged and the canvas colour left without a stencil', async ({
   page
 }) => {
@@ -1224,25 +1242,33 @@ test('printer profiles keep an applied bed until explicitly updated, and backups
     await expect(preview.getByText('230 × 210 mm', { exact: true })).toBeVisible();
     const preferences = preview.getByRole('checkbox', { name: 'Also restore app preferences' });
     await expect(preferences).not.toBeChecked();
-    // Simulate a storage failure on the final write, after the project, profile
-    // and preferences writes have been queued. None of them should commit.
+    // Simulate an asynchronous request error before the transaction has its final
+    // quota error. None of the already queued writes should commit.
     await fresh.evaluate(() => {
       // eslint-disable-next-line @typescript-eslint/unbound-method -- Restored below and otherwise called with the store as `this`.
       const put = IDBObjectStore.prototype.put;
       IDBObjectStore.prototype.put = function (value: unknown, key?: IDBValidKey) {
+        const request = put.call(this, value, key);
+        const tx = this.transaction;
         if (
           this.name === 'workspace' &&
-          this.transaction.objectStoreNames.contains('projects') &&
-          this.transaction.objectStoreNames.contains('profiles') &&
+          tx.objectStoreNames.contains('projects') &&
+          tx.objectStoreNames.contains('profiles') &&
           typeof value === 'object' &&
           value !== null &&
           'key' in value &&
           value.key === 'revision'
         ) {
           IDBObjectStore.prototype.put = put;
-          throw new DOMException('The workspace is full.', 'QuotaExceededError');
+          request.addEventListener('success', () => {
+            tx.dispatchEvent(new Event('error'));
+            Object.defineProperty(tx, 'error', {
+              value: new DOMException('The workspace is full.', 'QuotaExceededError')
+            });
+            tx.abort();
+          });
         }
-        return put.call(this, value, key);
+        return request;
       };
     });
     const importButton = preview.getByRole('button', { name: 'Import backup' });
@@ -1316,7 +1342,13 @@ test('an unchanged drawn import keeps its bytes and can be restored from backup'
   const fresh = await browser.newPage();
   try {
     await fresh.goto(page.url());
-    await backups(fresh);
+    const dialog = await backups(fresh);
+    const font = '**/NotoSans-Bold-*.ttf';
+    await fresh.route(font, (route) => route.fulfill({ status: 503 }));
+    await importBackup(fresh, bytes);
+    await expect(dialog.getByRole('alert')).toContainText('Could not check the projects');
+    await expect(dialog.getByRole('button', { name: 'Choose backup…' })).toBeEnabled();
+    await fresh.unroute(font);
     await importBackup(fresh, bytes);
     const preview = fresh.getByRole('dialog', { name: 'Preview import' });
     await expect(preview.getByText('Letter', { exact: true })).toBeVisible();
@@ -1329,6 +1361,37 @@ test('an unchanged drawn import keeps its bytes and can be restored from backup'
   } finally {
     await fresh.close();
   }
+});
+
+test('an imported raster project with natural sizing builds at a set width', async ({ page }) => {
+  await page.goto('/');
+  await workspaceReady(page);
+  const original = Buffer.from(
+    JSON.stringify({
+      stencilator: 1,
+      mode: 'freeform',
+      source: {
+        kind: 'picture',
+        name: 'picture.png',
+        data: readFileSync(IMAGE).toString('base64')
+      },
+      freeform: { size: 'natural' }
+    })
+  );
+  await page.getByLabel('Stencilator project file').setInputFiles({
+    name: 'Raster.stencilator',
+    mimeType: 'application/json',
+    buffer: original
+  });
+  await expect(settings(page).getByRole('button', { name: 'Width', exact: true })).toHaveAttribute(
+    'aria-pressed',
+    'true'
+  );
+  await expect(settings(page).getByText(/^Resulting size:/)).toBeVisible();
+  await saved(page);
+  expect(await readFile(await (await downloadProject(page)).path())).toEqual(original);
+  await page.reload();
+  await expect(settings(page).getByText(/^Resulting size:/)).toBeVisible();
 });
 
 test('an oversized backup import identifies the file that could not be read', async ({ page }) => {
@@ -1344,6 +1407,85 @@ test('an oversized backup import identifies the file that could not be read', as
   });
   await expect(dialog.getByRole('alert')).toContainText('“Studio archive.json” is too large');
   await expect(dialog.getByRole('button', { name: 'Choose backup…' })).toBeEnabled();
+});
+
+test('a backup can leave out an oversized project and keep the rest', async ({ page }) => {
+  await page.goto('/');
+  await openPicture(page);
+  await saved(page);
+  // Seed a valid project with enough JSON whitespace to exceed the backup limit.
+  await page.evaluate(
+    () =>
+      new Promise<void>((resolve, reject) => {
+        const request = indexedDB.open('stencilator-workspace');
+        request.onerror = () => {
+          reject(request.error ?? new Error('The workspace database could not open.'));
+        };
+        request.onsuccess = () => {
+          const db = request.result;
+          const tx = db.transaction('projects', 'readwrite');
+          const store = tx.objectStore('projects');
+          const read = store.getAll();
+          read.onsuccess = () => {
+            const [original] = read.result as { file: Blob }[];
+            if (!original) {
+              tx.abort();
+              return;
+            }
+            store.put({
+              ...original,
+              id: 'oversized',
+              title: 'Large studio artwork',
+              file: new Blob([original.file, ' '.repeat(32 * 1024 * 1024)])
+            });
+          };
+          tx.oncomplete = () => {
+            db.close();
+            resolve();
+          };
+          tx.onabort = () => {
+            db.close();
+            reject(tx.error ?? new Error('Could not seed the oversized project.'));
+          };
+        };
+      })
+  );
+  const dialog = await backups(page, 'chart-0');
+  await dialog.getByRole('button', { name: 'Download backup', exact: true }).click();
+  await expect(dialog.getByText('Large studio artwork', { exact: true })).toBeVisible();
+  await expect(dialog.getByText(/32 MiB/)).toContainText('Download project');
+  const download = page.waitForEvent('download');
+  await dialog.getByRole('button', { name: 'Download the rest of the workspace' }).click();
+  const file = await download;
+  expect(file.suggestedFilename()).toBe('stencilator-workspace.json');
+  expect(JSON.parse(await readFile(await file.path(), 'utf8'))).toMatchObject({
+    projects: [{ title: 'chart-0' }]
+  });
+  await expect(dialog.getByText('Large studio artwork', { exact: true })).toBeVisible();
+});
+
+test('an aborted backup snapshot reports the failure and allows a retry', async ({ page }) => {
+  await page.goto('/');
+  const dialog = await backups(page);
+  await page.evaluate(() => {
+    // eslint-disable-next-line @typescript-eslint/unbound-method -- Restored after the one injected abort.
+    const get = IDBObjectStore.prototype.get;
+    IDBObjectStore.prototype.get = function (key: IDBValidKey | IDBKeyRange) {
+      const request = get.call(this, key);
+      const tx = this.transaction;
+      if (this.name === 'workspace' && tx.mode === 'readonly' && key === 'preferences') {
+        IDBObjectStore.prototype.get = get;
+        request.addEventListener('success', () => {
+          tx.abort();
+        });
+      }
+      return request;
+    };
+  });
+  const button = dialog.getByRole('button', { name: 'Download backup', exact: true });
+  await button.click();
+  await expect(dialog.getByRole('alert')).toHaveText('Browser storage is unavailable.');
+  expect(await savedName(page, () => button.click())).toBe('stencilator-workspace.json');
 });
 
 test('two restores can be backed up as separate files when the workspace outgrows one', async ({

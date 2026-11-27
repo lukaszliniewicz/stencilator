@@ -209,18 +209,53 @@ describe('the engine in WebAssembly', () => {
     expect(await ask({ kind: 'stencil', index: 0, thicknessMm: 1.2 })).toEqual(before);
   });
 
+  it('reports save failures and uses the last valid inactive settings for a download', async () => {
+    await picture('pixel-art/fox.png');
+    const small = toProjectSettings({ ...sanitise(undefined), sizing: 'pixels', tileMm: 10 });
+    const large = toProjectSettings({ ...sanitise(undefined), sizing: 'pixels', tileMm: 20 });
+    await ask({ kind: 'chart', settings: small });
+    const stencil = () => ask({ kind: 'stencil', index: 0, thicknessMm: 1.2 });
+    const before = await stencil();
+    const inactive = { ...large, freeform: { ...large.freeform, cell_mm: -1 } };
+    const active = { ...large, tiles: { ...large.tiles, tile_mm: -1 } };
+    const save = (
+      settings: typeof large,
+      strict: boolean,
+      edits: RequestOf<'projectFile'>['edits'] = { fonts: { revision: 0, files: [] } }
+    ) => ask({ kind: 'projectFile', settings, edits, strict });
+
+    await expect(save(inactive, true)).rejects.toMatchObject({
+      name: 'ProjectSaveError',
+      problem: { kind: 'inactive-settings', mode: 'freeform' }
+    });
+    expect(await stencil()).toEqual(before);
+
+    await expect(save(active, true)).rejects.toMatchObject({
+      name: 'ProjectSaveError',
+      problem: { kind: 'settings' }
+    });
+    expect(await stencil()).toEqual(before);
+
+    const saved = new TextDecoder().decode(await save(inactive, false));
+    expect(saved).toContain('"tile_mm": 20');
+    expect(saved).not.toContain('"cell_mm": -1');
+    expect(await stencil()).toEqual(before);
+
+    await expect(
+      save(large, true, { fonts: { revision: 1, files: [{ name: 'Missing.ttf' }] } })
+    ).rejects.toMatchObject({ name: 'ProjectSaveError', problem: { kind: 'artwork' } });
+    expect(await stencil()).toEqual(before);
+  });
+
   it('validates a project file without opening it', async () => {
     expect(await ask({ kind: 'validateProject', bytes: bytesOf('projects/fox.stencilator') })).toBe(
       'freeform'
     );
-    await expect(
-      ask({ kind: 'validateProject', bytes: new TextEncoder().encode('{}').buffer })
-    ).rejects.toThrow('This is not a Stencilator project');
+    const malformed = new TextEncoder().encode('{}').buffer;
+    expect(await ask({ kind: 'validateProject', bytes: malformed })).toBeNull();
     const undecodable = new TextEncoder().encode(
       '{"stencilator": 1, "source": {"kind": "picture", "data": "AAAA"}}'
     ).buffer;
-    await expect(ask({ kind: 'validateProject', bytes: undecodable })).rejects.toThrow(
-      'The image could not be read'
-    );
+    expect(await ask({ kind: 'validateProject', bytes: undecodable })).toBeNull();
   });
 });

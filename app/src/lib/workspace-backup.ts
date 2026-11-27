@@ -48,6 +48,11 @@ export interface WorkspaceBackup {
   preferences: Omit<WorkspacePreferences, 'lastProjectId'>;
 }
 
+export interface BackupPlan {
+  parts: WorkspaceSnapshot[];
+  excluded: Pick<SavedProject, 'id' | 'title'>[];
+}
+
 type EncodedProject = Omit<SavedProject, 'file'> & { file: string };
 
 function envelope(
@@ -135,17 +140,20 @@ function decodeView(value: unknown): SavedProject['view'] {
 function decodeOrigin(value: unknown): Origin | undefined {
   if (value === undefined) return undefined;
   const obj = asObject(value);
-  const id = obj === undefined ? undefined : asString(obj.id);
-  const name = obj === undefined ? undefined : asString(obj.name);
-  const importedAs = obj === undefined ? undefined : asString(obj.importedAs);
+  if (!obj) throw new WorkspaceError('invalid');
+  const id = asString(obj.id);
+  const name = asString(obj.name);
+  const importedAs = asString(obj.importedAs);
+  const sourceId = asString(obj.sourceId);
   if (!id || name === undefined || importedAs === undefined) throw new WorkspaceError('invalid');
-  return { id, name, importedAs };
+  if (obj.sourceId !== undefined && !sourceId) throw new WorkspaceError('invalid');
+  return { id, name, importedAs, ...(sourceId ? { sourceId } : {}) };
 }
 
 async function decodeProjects(
   raw: unknown[],
   profileIds: ReadonlySet<string>,
-  validateProject: (file: Blob) => Promise<ProjectMode>
+  validateProject: (file: Blob) => Promise<ProjectMode | null>
 ): Promise<SavedProject[]> {
   // First pass: shape, identity, sizes and timestamps, before any engine work.
   const seen = new Set<string>();
@@ -205,11 +213,11 @@ async function decodeProjects(
   // Second pass: engine validation and fingerprinting, once everything is known to fit.
   const projects: SavedProject[] = [];
   for (const record of pending) {
-    let validated: ProjectMode;
+    let validated: ProjectMode | null;
     try {
       validated = await validateProject(record.file);
     } catch {
-      throw new WorkspaceError('invalid');
+      throw new WorkspaceError('validation-unavailable');
     }
     if (validated !== record.mode) throw new WorkspaceError('invalid');
     projects.push({ ...record, digest: await digest(record.file) });
@@ -271,11 +279,6 @@ function decodePreferences(raw: unknown): Omit<WorkspacePreferences, 'lastProjec
   return { defaults: sanitise(defaults), theme, defaultProfileId };
 }
 
-/** A record's identity, stable across imports: its origin when it has one, else its id. */
-function stableId(record: { id: string; origin?: Origin }): string {
-  return record.origin?.id ?? record.id;
-}
-
 /**
  * The name a record was imported under, or its current name once the person renamed it.
  * Only when the current name still equals `origin.importedAs` is `origin.name` a fair
@@ -329,8 +332,8 @@ function sameProfile(a: PrinterProfile, b: PrinterProfile): boolean {
 
 /**
  * How each source record compares to the workspace: skip an identical record, copy a
- * changed one under a fresh id, or add a new one. Identity is the exact id or a common
- * origin; among identical peers the exact id is preferred.
+ * changed one under a fresh id, or add a new one. A common origin is not enough:
+ * separate saved copies have their own ids, even in different backup files.
  */
 function planRecords<T extends { id: string; origin?: Origin }>(
   sources: T[],
@@ -341,12 +344,16 @@ function planRecords<T extends { id: string; origin?: Origin }>(
   remap: (record: T) => T
 ): RestoreEntry<T>[] {
   const taken = new Set(existing.map((record) => nameOf(record).toLocaleLowerCase()));
+  const sourceIds = new Set(sources.map(({ id }) => id));
   return sources.map((source) => {
-    const stable = stableId(source);
     const incoming = remap(source);
     const sourceName = comparableName(source, nameOf);
+    // Reserve exact ids for their own rows. On older restores, the original id is
+    // the only evidence of the exported id, so compare it to the incoming id directly.
     const candidates = existing.filter(
-      (record) => record.id === source.id || stableId(record) === stable
+      (record) =>
+        record.id === source.id ||
+        (!sourceIds.has(record.id) && (record.origin?.sourceId ?? record.origin?.id) === source.id)
     );
     const matches = candidates.filter(
       (record) => comparableName(record, nameOf) === sourceName && same(record, incoming)
@@ -355,7 +362,12 @@ function planRecords<T extends { id: string; origin?: Origin }>(
     if (identical) return { source, record: identical, action: 'skip' };
 
     const name = distinctName(nameOf(source), taken);
-    const origin: Origin = { id: stable, name: sourceName, importedAs: name };
+    const origin: Origin = {
+      id: source.origin?.id ?? source.id,
+      sourceId: source.id,
+      name: sourceName,
+      importedAs: name
+    };
     const action = candidates.length ? 'copy' : 'add';
     const id = action === 'copy' ? crypto.randomUUID() : source.id;
     const record = withName({ ...incoming, id, revision: 0, origin }, name);
@@ -367,7 +379,7 @@ function planRecords<T extends { id: string; origin?: Origin }>(
  * Splits one saved snapshot into files that can be imported independently. Every part
  * carries the default profile and any profiles needed by its projects.
  */
-export function planBackups(snapshot: WorkspaceSnapshot): WorkspaceSnapshot[] {
+export function planBackups(snapshot: WorkspaceSnapshot): BackupPlan {
   const allProfiles = new Map(
     snapshot.profiles.map((profile) => [profile.id, { profile, bytes: jsonBytes(profile) + 1 }])
   );
@@ -382,6 +394,7 @@ export function planBackups(snapshot: WorkspaceSnapshot): WorkspaceSnapshot[] {
   const profiles = new Map<string, PrinterProfile>();
   if (defaultProfile) profiles.set(defaultProfile.profile.id, defaultProfile.profile);
   const parts: WorkspaceSnapshot[] = [];
+  const excluded: BackupPlan['excluded'] = [];
 
   function finishPart(): void {
     parts.push({ ...snapshot, projects, profiles: [...profiles.values()] });
@@ -395,7 +408,10 @@ export function planBackups(snapshot: WorkspaceSnapshot): WorkspaceSnapshot[] {
   if (emptyBytes > MAX_FILE_BYTES) throw new WorkspaceError('too-large');
   for (const project of snapshot.projects) {
     const size = project.file.size;
-    if (size > MAX_PROJECT_BYTES) throw new WorkspaceError('too-large');
+    if (size > MAX_PROJECT_BYTES) {
+      excluded.push({ id: project.id, title: project.title });
+      continue;
+    }
     // Base64 uses four ASCII bytes per three input bytes. Reserve one byte for the comma.
     const bytes = jsonBytes({ ...project, file: '' }) + 4 * Math.ceil(size / 3) + 1;
     const linked = allProfiles.get(project.profileId ?? '');
@@ -426,7 +442,7 @@ export function planBackups(snapshot: WorkspaceSnapshot): WorkspaceSnapshot[] {
     encodedBytes += bytes;
   }
   finishPart();
-  return parts;
+  return { parts, excluded };
 }
 
 export async function encodeBackup(snapshot: WorkspaceSnapshot): Promise<Blob> {
@@ -458,7 +474,7 @@ export async function encodeBackup(snapshot: WorkspaceSnapshot): Promise<Blob> {
 
 export async function decodeBackup(
   file: Blob,
-  validateProject: (file: Blob) => Promise<ProjectMode>
+  validateProject: (file: Blob) => Promise<ProjectMode | null>
 ): Promise<WorkspaceBackup> {
   if (file.size > MAX_FILE_BYTES) throw new WorkspaceError('too-large');
   let raw: unknown;

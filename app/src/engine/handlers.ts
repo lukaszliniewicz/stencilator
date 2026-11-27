@@ -414,10 +414,21 @@ export function createHandlers(
         }
       }
       case 'validateProject': {
-        const project = engine.Project.open(new Uint8Array(request.bytes));
+        let project: Wasm.Project;
         try {
-          if (project.kind === 'picture') new engine.Source(project.sourceData()).free();
-          else (await artworkFor(project)).free();
+          project = engine.Project.open(new Uint8Array(request.bytes));
+        } catch {
+          return { value: null, transfer: [] };
+        }
+        try {
+          // A failed font load says nothing about the file. Let it reject the request.
+          const fonts = project.kind === 'picture' ? undefined : await drawingFonts();
+          try {
+            if (fonts) new engine.Artwork(project, fonts).free();
+            else new engine.Source(project.sourceData()).free();
+          } catch {
+            return { value: null, transfer: [] };
+          }
           return { value: settingsOf(project).mode, transfer: [] };
         } finally {
           project.free();

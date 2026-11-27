@@ -267,7 +267,7 @@ export interface Replies {
   platesZip: Uint8Array;
   threeMf: Uint8Array;
   projectFile: Uint8Array;
-  validateProject: ProjectMode;
+  validateProject: ProjectMode | null;
 }
 
 export type Kind = Request['kind'];

@@ -12,6 +12,7 @@ import {
   decodeBackup,
   planBackups,
   previewRestore,
+  type BackupPlan,
   type WorkspaceBackup
 } from './workspace-backup';
 import {
@@ -145,6 +146,10 @@ export class Workspace {
         ? 'pixel'
         : 'tile'
   );
+
+  get canOpen(): boolean {
+    return !this.initialising && !this.busy && this.bench.canOpen;
+  }
 
   constructor(bench: Workbench) {
     this.bench = bench;
@@ -337,7 +342,7 @@ export class Workspace {
   }
 
   async #transition(task: () => Promise<boolean>, refresh = true): Promise<boolean> {
-    if (this.busy || this.initialising || !this.bench.canOpen) return false;
+    if (!this.canOpen) return false;
     this.busy = true;
     this.message = '';
     try {
@@ -603,7 +608,7 @@ export class Workspace {
     }
   }
 
-  async backupParts(): Promise<WorkspaceSnapshot[]> {
+  async planBackup(): Promise<BackupPlan> {
     const store = await this.#requireStore();
     return planBackups(await store.snapshot());
   }

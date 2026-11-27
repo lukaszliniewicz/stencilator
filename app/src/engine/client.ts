@@ -183,8 +183,8 @@ export class Engine {
     return this.#call({ kind: 'projectFile', settings, edits, strict });
   }
 
-  /** Validates a file and returns the mode the app would open it in, without opening it. */
-  async validateProject(file: Blob): Promise<ProjectMode> {
+  /** Returns the mode or null for an invalid file; rejects if validation is unavailable. */
+  async validateProject(file: Blob): Promise<ProjectMode | null> {
     const bytes = await file.arrayBuffer();
     return this.#call({ kind: 'validateProject', bytes }, [bytes]);
   }

@@ -8,11 +8,13 @@ Any settings it omits use the engine's defaults.
 
 `stencils.bed_mm` holds the usable bed width and depth applied to the project.
 The browser's printer profiles, project list and app preferences are kept
-separately. Use **Back up or restore…** for a copy of the whole workspace.
+separately. Use **Back up or restore…** for a copy of the workspace.
 If it needs more than one backup file, download all the numbered files and
-import them one at a time. Printer profiles shared by files are skipped when
-they are already present. A project larger than 32 MiB needs its own
-**Download project** file.
+import them one at a time, in any order. An unchanged record already restored
+from a backup is skipped. Separate projects and printer profiles are kept
+even if their contents match. The dialog lists projects larger than 32 MiB
+before you download the rest of the workspace. Open each listed project and
+choose **Download project** to keep a separate copy.
 
 A minimal project that makes plain plates from typed text:
 

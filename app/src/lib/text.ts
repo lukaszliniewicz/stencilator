@@ -258,6 +258,8 @@ export const text = {
       unsupported: 'This backup uses a format this version cannot read. No changes were made.',
       'too-large':
         'This workspace is too large for a single backup. Keep the individual project files.',
+      'validation-unavailable':
+        'Could not check the projects in this backup. Choose the file again or reload the app and retry.',
       full: 'The browser ran out of storage space.',
       unavailable: 'Browser storage is unavailable.',
       saveSettings: 'Check the settings for this project before saving.',
@@ -274,10 +276,13 @@ export const text = {
     exportBody: 'Keep a copy of your saved projects, printer profiles and app preferences.',
     export: 'Download backup',
     exportSaved: 'Download saved projects only',
+    exportRemaining: 'Download the rest of the workspace',
     split: (count: number) =>
       `This workspace needs ${num(count)} backup files. Keep them together and import each one when restoring.`,
     exportPart: (part: number, count: number) => `Download file ${num(part)} of ${num(count)}`,
-    excluded: (name: string) => `Unsaved changes in “${name}” will be left out of the backup.`,
+    unsaved: (name: string) => `Unsaved changes in “${name}” will be left out of the backup.`,
+    oversized:
+      'Projects over 32 MiB are left out of the workspace backup. Open each project listed here and choose Download project to keep a separate copy.',
     importTitle: 'Import a backup',
     importBody: 'Review the contents before adding them. Your existing work stays here.',
     importTooLarge: (name: string) =>

@@ -34,9 +34,11 @@ export interface ProjectView {
   comparePaint: boolean;
 }
 
-/** Where a restored record came from, kept stable so a repeat restore is recognised. */
+/** A record's original lineage and the specific saved entry it was restored from. */
 export interface Origin {
   id: string;
+  /** The incoming backup's record id, absent on older restores. */
+  sourceId?: string;
   name: string;
   importedAs: string;
 }
@@ -111,7 +113,8 @@ export interface RestorePlan {
   preferences: Omit<WorkspacePreferences, 'lastProjectId'>;
 }
 
-export type WorkspaceErrorCode = 'conflict' | 'upgrade' | 'invalid' | 'unsupported' | 'too-large';
+export type WorkspaceErrorCode =
+  'conflict' | 'upgrade' | 'invalid' | 'unsupported' | 'too-large' | 'validation-unavailable';
 
 /** A typed failure the interface can show a message for. */
 export class WorkspaceError extends Error {
@@ -176,6 +179,21 @@ function putWorkspace(store: IDBObjectStore, key: string, value: unknown): void 
   store.put({ key, value });
 }
 
+function transactionDone(tx: IDBTransaction): Promise<void> {
+  const done = new Promise<void>((resolve, reject) => {
+    tx.oncomplete = () => {
+      resolve();
+    };
+    // A request error can bubble before IndexedDB sets the transaction's final error.
+    tx.onabort = () => {
+      reject(tx.error ?? new DOMException('The transaction was aborted.', 'AbortError'));
+    };
+  });
+  // A request can reject first, leaving the caller no chance to await completion.
+  void done.catch(() => undefined);
+  return done;
+}
+
 /**
  * Runs `work` inside a readwrite transaction and waits for it to commit. A throw aborts
  * the transaction and leaves nothing written; the rejection is handled without leaving an
@@ -187,23 +205,12 @@ async function transact<T>(
   work: (tx: IDBTransaction) => Promise<T>
 ): Promise<T> {
   const tx = db.transaction(stores, 'readwrite');
-  const done = new Promise<void>((resolve, reject) => {
-    tx.oncomplete = () => {
-      resolve();
-    };
-    tx.onabort = () => {
-      reject(tx.error ?? new DOMException('The transaction was aborted.', 'AbortError'));
-    };
-    tx.onerror = () => {
-      reject(tx.error ?? new DOMException('The transaction failed.', 'UnknownError'));
-    };
-  });
+  const done = transactionDone(tx);
   try {
     const result = await work(tx);
     await done;
     return result;
   } catch (error) {
-    done.catch(() => undefined);
     try {
       tx.abort();
     } catch {
@@ -268,6 +275,7 @@ class Store implements WorkspaceStore {
 
   async snapshot(): Promise<WorkspaceSnapshot> {
     const tx = this.#db.transaction(['projects', 'profiles', 'workspace'], 'readonly');
+    const done = transactionDone(tx);
     const projects = await requestResult(
       tx.objectStore('projects').getAll() as IDBRequest<SavedProject[]>
     );
@@ -279,14 +287,7 @@ class Store implements WorkspaceStore {
     const preferences =
       (await workspaceValue<WorkspacePreferences>(workspace, 'preferences')) ??
       defaultPreferences();
-    await new Promise<void>((resolve, reject) => {
-      tx.oncomplete = () => {
-        resolve();
-      };
-      tx.onerror = () => {
-        reject(tx.error ?? new DOMException('The read failed.', 'UnknownError'));
-      };
-    });
+    await done;
     return { revision, projects, profiles, preferences };
   }
 

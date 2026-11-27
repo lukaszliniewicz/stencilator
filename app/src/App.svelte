@@ -122,7 +122,7 @@
   }
 
   function choose(use: PickerUse): void {
-    if (!picker || workspace.busy || workspace.initialising || !bench.canOpen) return;
+    if (!picker || !workspace.canOpen) return;
     pickUse = use;
     picker.accept =
       use === 'incoming'
@@ -140,6 +140,10 @@
   }
 
   function receive(file: File, use: PickerUse): void {
+    if (!workspace.canOpen) {
+      workspace.message = text.project.openBusy;
+      return;
+    }
     const kind = fileKind(file);
     if (kind === 'project' || !kind) {
       void workspace.startFile(file);

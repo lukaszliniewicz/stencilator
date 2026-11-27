@@ -721,7 +721,6 @@ export class Workbench {
                   : guessSizing(source.info);
             if (preset) this.settings.projectMode = preset === 'freeform' ? 'freeform' : 'tiles';
           }
-          if (this.settings.sizeMode === 'natural') this.settings.sizeMode = 'width';
         } else {
           this.settings.sizeMode = 'natural';
           this.settings.projectMode = 'freeform';
@@ -737,6 +736,8 @@ export class Workbench {
       this.artworkVersion++;
       this.editVersion++;
       if (cached) this.settings = { ...cached.edit.settings };
+      if (source.kind === 'picture' && this.settings.sizeMode === 'natural')
+        this.settings.sizeMode = 'width';
       this.typed = cached ? cached.edit.typed : source.kind === 'text' ? source.style : undefined;
       if (!keepHistory) this.fonts = cached?.edit.fonts ?? { revision: 0, files: fonts };
       this.profileId = options.profileId;
@@ -887,7 +888,7 @@ export class Workbench {
     return !this.opening && serial === this.#buildSerial ? mesh : undefined;
   }
 
-  validateProject = (file: Blob): Promise<ProjectMode> => this.#engine.validateProject(file);
+  validateProject = (file: Blob): Promise<ProjectMode | null> => this.#engine.validateProject(file);
 
   async projectBytes(strict: boolean): Promise<Blob> {
     const edit = this.#snapshot();

@@ -3,7 +3,7 @@
   import Modal from './Modal.svelte';
   import { text } from './text';
   import { workspaceProblem, type Workspace } from './workspace.svelte';
-  import { encodeBackup, type WorkspaceBackup } from './workspace-backup';
+  import { encodeBackup, type BackupPlan, type WorkspaceBackup } from './workspace-backup';
   import { WorkspaceError, type RestorePlan, type WorkspaceSnapshot } from './workspace-store';
 
   let { workspace, dismiss }: { workspace: Workspace; dismiss: () => void } = $props();
@@ -13,7 +13,8 @@
   let checking = $state(false);
   let problem = $state('');
   let note = $state('');
-  let excluded = $state('');
+  let unsaved = $state('');
+  let oversized = $state.raw<BackupPlan['excluded']>([]);
   let backup = $state.raw<WorkspaceBackup>();
   let preview = $state.raw<RestorePlan>();
   let preferences = $state(false);
@@ -40,24 +41,26 @@
   function downloaded(): void {
     parts = [];
     nextPart = 0;
-    excluded = '';
+    unsaved = '';
     note = words.ready;
   }
 
   function download(savedOnly = false): void {
     void action(async () => {
+      oversized = [];
       const saved = await workspace.flush();
       if (!saved && !savedOnly) {
-        excluded = workspace.title;
+        unsaved = workspace.title;
         return;
       }
-      const planned = await workspace.backupParts();
-      const [part] = planned;
+      const plan = await workspace.planBackup();
+      oversized = plan.excluded;
+      const [part] = plan.parts;
       if (!part) return;
-      if (planned.length === 1) {
+      if (plan.parts.length === 1 && !oversized.length) {
         save(await encodeBackup(part), 'stencilator-workspace.json', 'application/json');
         downloaded();
-      } else parts = planned;
+      } else parts = plan.parts;
     });
   }
 
@@ -65,7 +68,10 @@
     const part = parts[nextPart];
     if (!part) return;
     void action(async () => {
-      const name = `stencilator-workspace-${String(nextPart + 1)}-of-${String(parts.length)}.json`;
+      const name =
+        parts.length === 1
+          ? 'stencilator-workspace.json'
+          : `stencilator-workspace-${String(nextPart + 1)}-of-${String(parts.length)}.json`;
       save(await encodeBackup(part), name, 'application/json');
       nextPart++;
       if (nextPart === parts.length) downloaded();
@@ -183,13 +189,23 @@
       {#if !parts.length}
         <p class="note">{words.count(workspace.projects.length, workspace.profiles.length)}</p>
       {/if}
-      {#if excluded}<p class="notice">{words.excluded(excluded)}</p>{/if}
+      {#if unsaved}<p class="notice">{words.unsaved(unsaved)}</p>{/if}
+      {#if oversized.length}
+        <p class="notice" role="alert">{words.oversized}</p>
+        <ul class="quiet-scroll">
+          {#each oversized as { id, title } (id)}
+            <li>{title}</li>
+          {/each}
+        </ul>
+      {/if}
       {#if parts.length}
-        <p class="note">{words.split(parts.length)}</p>
+        {#if parts.length > 1}<p class="note">{words.split(parts.length)}</p>{/if}
         <button type="button" class="button primary" disabled={busy} onclick={downloadNext}>
-          {words.exportPart(nextPart + 1, parts.length)}
+          {parts.length === 1
+            ? words.exportRemaining
+            : words.exportPart(nextPart + 1, parts.length)}
         </button>
-      {:else if excluded}
+      {:else if unsaved}
         <div class="button-row">
           <button
             type="button"

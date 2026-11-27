@@ -148,6 +148,25 @@ describe('workspace backups', () => {
     expect(validate).not.toHaveBeenCalled();
   });
 
+  it('distinguishes an unavailable validator from an invalid project', async () => {
+    const snapshot: WorkspaceSnapshot = {
+      revision: 1,
+      projects: [await project('p1', 'One', 'bytes')],
+      profiles: [],
+      preferences: preferences()
+    };
+    const file = await encodeBackup(snapshot);
+    await expect(
+      decodeBackup(file, () => Promise.reject(new Error('Fonts unavailable')))
+    ).rejects.toMatchObject({ code: 'validation-unavailable' });
+    await expect(decodeBackup(file, () => Promise.resolve(null))).rejects.toMatchObject({
+      code: 'invalid'
+    });
+    await expect(decodeBackup(file, () => Promise.resolve('freeform'))).rejects.toMatchObject({
+      code: 'invalid'
+    });
+  });
+
   it('splits large workspaces without losing projects, unlinked profiles or printer links', async () => {
     const shared = profile('shared', 'Textured sheet');
     const defaultPrinter = profile('default', 'Smooth sheet');
@@ -168,7 +187,8 @@ describe('workspace backups', () => {
       ],
       preferences: preferences({ theme: 'dark', defaultProfileId: defaultPrinter.id })
     };
-    const parts = planBackups(snapshot);
+    const { parts, excluded } = planBackups(snapshot);
+    expect(excluded).toEqual([]);
     expect(parts.map(({ projects }) => projects.length)).toEqual([500, 1, 0]);
     const restored: WorkspaceSnapshot = {
       revision: 0,
@@ -199,7 +219,7 @@ describe('workspace backups', () => {
     }
   });
 
-  it('splits by the total project bytes and refuses a single oversized project', async () => {
+  it('splits by the total project bytes and excludes only an oversized project', async () => {
     const original = await project('p', 'One', 'bytes');
     const sizedFile = (size: number): Blob => {
       const file = new Blob();
@@ -207,20 +227,132 @@ describe('workspace backups', () => {
       return file;
     };
     const size = 32 * 1024 * 1024;
+    const printer = profile('pr1', 'Ender');
     const snapshot: WorkspaceSnapshot = {
       revision: 1,
-      projects: Array.from({ length: 4 }, (_, i) => ({
-        ...original,
-        id: `p${String(i)}`,
-        file: sizedFile(size)
-      })),
+      projects: [
+        { ...original, id: 'large', title: 'Too large', file: sizedFile(size + 1) },
+        ...Array.from({ length: 4 }, (_, i) => ({
+          ...original,
+          id: `p${String(i)}`,
+          file: sizedFile(size)
+        }))
+      ],
+      profiles: [printer],
+      preferences: preferences({ defaultProfileId: printer.id })
+    };
+    expect(planBackups(snapshot)).toMatchObject({
+      excluded: [{ id: 'large', title: 'Too large' }],
+      parts: [
+        { projects: [{ id: 'p0' }, { id: 'p1' }, { id: 'p2' }], profiles: [printer] },
+        { projects: [{ id: 'p3' }], profiles: [printer] }
+      ]
+    });
+    expect(planBackups({ ...snapshot, projects: snapshot.projects.slice(0, 1) })).toMatchObject({
+      excluded: [{ id: 'large', title: 'Too large' }],
+      parts: [{ projects: [], profiles: [printer], preferences: snapshot.preferences }]
+    });
+  });
+
+  it.each(['original first', 'copy first'])(
+    'keeps identical saved copies across backup files (%s)',
+    async (order) => {
+      const defaultPrinter = profile('pr0', 'Smooth sheet');
+      const printer = profile('pr1', 'Ender');
+      const copiedPrinter = {
+        ...printer,
+        id: 'pr1-copy',
+        name: 'Ender (copy)',
+        origin: { id: printer.id, name: printer.name, importedAs: 'Ender (copy)' }
+      };
+      const fox = await project('p1', 'Fox', 'bytes', { profileId: defaultPrinter.id });
+      const copiedFox = {
+        ...fox,
+        id: 'p1-copy',
+        title: 'Fox (copy)',
+        origin: { id: fox.id, name: fox.title, importedAs: 'Fox (copy)' }
+      };
+      const restored: WorkspaceSnapshot = {
+        revision: 0,
+        projects: [],
+        profiles: [],
+        preferences: preferences()
+      };
+      const parts = await Promise.all(
+        [
+          { design: fox, linked: printer },
+          { design: copiedFox, linked: copiedPrinter }
+        ].map(async ({ design, linked }) =>
+          encodeBackup({
+            revision: 4,
+            projects: [
+              design,
+              await project(`sign-${linked.id}`, `Sign for ${linked.name}`, 'sign', {
+                profileId: linked.id
+              })
+            ],
+            profiles: [defaultPrinter, linked],
+            preferences: preferences({ defaultProfileId: defaultPrinter.id })
+          })
+        )
+      );
+      if (order === 'copy first') parts.reverse();
+      for (const part of parts) {
+        const plan = previewRestore(await decodeBackup(part, validateProject), restored);
+        expect(plan.projects.map(({ action }) => action)).toEqual(['add', 'add']);
+        restored.projects.push(...plan.projects.map(({ record }) => record));
+        restored.profiles.push(
+          ...plan.profiles.filter(({ action }) => action !== 'skip').map(({ record }) => record)
+        );
+      }
+      expect(restored.profiles.map(({ id }) => id).sort()).toEqual(['pr0', 'pr1', 'pr1-copy']);
+      expect(restored.projects).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ id: fox.id, profileId: defaultPrinter.id }),
+          expect.objectContaining({ id: copiedFox.id, profileId: defaultPrinter.id }),
+          expect.objectContaining({ id: 'sign-pr1', profileId: printer.id }),
+          expect.objectContaining({ id: 'sign-pr1-copy', profileId: copiedPrinter.id })
+        ])
+      );
+      for (const part of parts) {
+        const plan = previewRestore(await decodeBackup(part, validateProject), restored);
+        expect([...plan.projects, ...plan.profiles].map(({ action }) => action)).toEqual([
+          'skip',
+          'skip',
+          'skip',
+          'skip'
+        ]);
+      }
+    }
+  );
+
+  it('recognises a repeat restore when that saved copy needed a new id', async () => {
+    const imported = await project('p1-copy', 'Fox (copy)', 'bytes', {
+      origin: { id: 'p1', name: 'Fox', importedAs: 'Fox (copy)' }
+    });
+    const local = await project(imported.id, 'Local project', 'other bytes');
+    const snapshot: WorkspaceSnapshot = {
+      revision: 2,
+      projects: [local],
       profiles: [],
       preferences: preferences()
     };
-    expect(planBackups(snapshot).map(({ projects }) => projects.length)).toEqual([3, 1]);
-    expect(() =>
-      planBackups({ ...snapshot, projects: [{ ...original, file: sizedFile(size + 1) }] })
-    ).toThrow(expect.objectContaining({ code: 'too-large' }));
+    const backup = await decodeBackup(
+      await encodeBackup({ ...snapshot, projects: [imported] }),
+      validateProject
+    );
+    const [entry] = previewRestore(backup, snapshot).projects;
+    assert(entry);
+    expect(entry.action).toBe('copy');
+    expect(entry.record.id).not.toBe(imported.id);
+    snapshot.projects.push(entry.record);
+    // An unrelated record restored from the common origin must still get its own entry.
+    const original = await project('p1', 'Fox', 'bytes');
+    const otherBackup = { ...backup, projects: [original] };
+    expect(previewRestore(otherBackup, snapshot).projects).toMatchObject([{ action: 'add' }]);
+    expect(previewRestore(backup, snapshot).projects).toMatchObject([
+      { action: 'skip', record: entry.record }
+    ]);
   });
 
   it('skips already-imported copies on a repeat restore', async () => {
