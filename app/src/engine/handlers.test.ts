@@ -132,6 +132,22 @@ describe('the engine in WebAssembly', () => {
     expect(entries(await ask({ kind: 'stencilsZip', thicknessMm: 1.2, skip: [0xffffff] }))).toBe(2);
   });
 
+  it('checks tile stencils against the saved bed without changing the mesh', async () => {
+    await picture('pixel-art/fox.png');
+    const fox = toProjectSettings({ ...sanitise(undefined), sizing: 'pixels', tileMm: 20 });
+    const build = (bed: [number, number]) =>
+      ask({ kind: 'chart', settings: { ...fox, stencils: { ...fox.stencils, bed_mm: bed } } });
+    const stencil = () => ask({ kind: 'stencil', index: 0, thicknessMm: 1.2 });
+
+    const largeBed = await build([500, 500]);
+    expect(largeBed.widthMm).toBeGreaterThan(256);
+    expect(largeBed.bedFit).toBe('as-drawn');
+    const mesh = await stencil();
+    expect((await build([50, 50])).bedFit).toBe('too-large');
+    expect(await stencil()).toEqual(mesh);
+    expect((await build([-1, 500])).bedFit).toBeUndefined();
+  });
+
   it('passes on the engine messages, and forgets the old chart', async () => {
     await expect(
       ask({
@@ -172,5 +188,110 @@ describe('the engine in WebAssembly', () => {
     expect(saved).toContain(`"seed": ${seed}`);
     expect(saved).toContain('"mode": "tiles"');
     expect(saved).toContain('"width_mm": 190');
+  });
+
+  it('saves a snapshot without disturbing the active preview or its exports', async () => {
+    await picture('pixel-art/fox.png');
+    const small = toProjectSettings({ ...sanitise(undefined), sizing: 'pixels', tileMm: 10 });
+    const large = toProjectSettings({ ...sanitise(undefined), sizing: 'pixels', tileMm: 20 });
+
+    await ask({ kind: 'chart', settings: small });
+    const before = await ask({ kind: 'stencil', index: 0, thicknessMm: 1.2 });
+
+    const file = await ask({
+      kind: 'projectFile',
+      settings: large,
+      edits: { fonts: { revision: 0, files: [] } },
+      strict: true
+    });
+    expect(new TextDecoder().decode(file)).toContain('"tile_mm": 20');
+    // The live chart and its exports still come from the small settings.
+    expect(await ask({ kind: 'stencil', index: 0, thicknessMm: 1.2 })).toEqual(before);
+  });
+
+  it('reports save failures and uses the last valid inactive settings for a download', async () => {
+    await picture('pixel-art/fox.png');
+    const small = toProjectSettings({ ...sanitise(undefined), sizing: 'pixels', tileMm: 10 });
+    const large = toProjectSettings({ ...sanitise(undefined), sizing: 'pixels', tileMm: 20 });
+    await ask({ kind: 'chart', settings: small });
+    const stencil = () => ask({ kind: 'stencil', index: 0, thicknessMm: 1.2 });
+    const before = await stencil();
+    const inactive = { ...large, freeform: { ...large.freeform, cell_mm: -1 } };
+    const active = { ...large, tiles: { ...large.tiles, tile_mm: -1 } };
+    const save = (
+      settings: typeof large,
+      strict: boolean,
+      edits: RequestOf<'projectFile'>['edits'] = { fonts: { revision: 0, files: [] } }
+    ) => ask({ kind: 'projectFile', settings, edits, strict });
+
+    await expect(save(inactive, true)).rejects.toMatchObject({
+      name: 'ProjectSaveError',
+      problem: { kind: 'inactive-settings', mode: 'freeform' }
+    });
+    expect(await stencil()).toEqual(before);
+
+    await expect(save(active, true)).rejects.toMatchObject({
+      name: 'ProjectSaveError',
+      problem: { kind: 'settings' }
+    });
+    expect(await stencil()).toEqual(before);
+
+    const saved = new TextDecoder().decode(await save(inactive, false));
+    expect(saved).toContain('"tile_mm": 20');
+    expect(saved).not.toContain('"cell_mm": -1');
+    expect(await stencil()).toEqual(before);
+
+    await expect(
+      save(large, true, { fonts: { revision: 1, files: [{ name: 'Missing.ttf' }] } })
+    ).rejects.toMatchObject({ name: 'ProjectSaveError', problem: { kind: 'artwork' } });
+    expect(await stencil()).toEqual(before);
+  });
+
+  it('uses the last valid bed only for a Tiles download with an invalid bed', async () => {
+    await picture('pixel-art/fox.png');
+    const withBed = (bed_mm: [number, number]) => ({
+      ...SETTINGS,
+      stencils: { ...SETTINGS.stencils, bed_mm }
+    });
+    const save = (settings: typeof SETTINGS, strict: boolean) =>
+      ask({ kind: 'projectFile', settings, edits: { fonts: { revision: 0, files: [] } }, strict });
+    const reopen = (bytes: Uint8Array) =>
+      ask({
+        kind: 'open',
+        file: 'project',
+        name: 'tiles.stencilator',
+        bytes: new Uint8Array(bytes).buffer
+      });
+
+    const previousBed: [number, number] = [120, 345];
+    await reopen(await save(withBed(previousBed), true));
+    const invalid = withBed([40, 256]);
+    await expect(save(invalid, true)).rejects.toMatchObject({
+      name: 'ProjectSaveError',
+      problem: { kind: 'settings' }
+    });
+    expect((await reopen(await save(invalid, false))).settings.stencils.bed_mm).toEqual(
+      previousBed
+    );
+    const badThickness = { ...invalid, stencils: { ...invalid.stencils, thickness_mm: 0 } };
+    await expect(save(badThickness, false)).rejects.toThrow();
+
+    const custom = withBed([50, 2_000]);
+    const unfinished = { ...custom, freeform: { ...custom.freeform, cell_mm: -1 } };
+    expect((await reopen(await save(unfinished, false))).settings.stencils.bed_mm).toEqual([
+      50, 2_000
+    ]);
+  });
+
+  it('validates a project file without opening it', async () => {
+    expect(await ask({ kind: 'validateProject', bytes: bytesOf('projects/fox.stencilator') })).toBe(
+      'freeform'
+    );
+    const malformed = new TextEncoder().encode('{}').buffer;
+    expect(await ask({ kind: 'validateProject', bytes: malformed })).toBeNull();
+    const undecodable = new TextEncoder().encode(
+      '{"stencilator": 1, "source": {"kind": "picture", "data": "AAAA"}}'
+    ).buffer;
+    expect(await ask({ kind: 'validateProject', bytes: undecodable })).toBeNull();
   });
 });

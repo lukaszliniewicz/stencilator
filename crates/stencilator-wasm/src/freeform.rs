@@ -44,6 +44,14 @@ impl Project {
         Ok(Project { project: read_project(bytes).map_err(|e| error(&e))? })
     }
 
+    /// A copy of the project, for applying a save's settings and edits without changing
+    /// the live preview.
+    #[must_use]
+    #[wasm_bindgen(js_name = clone)]
+    pub fn snapshot(&self) -> Project {
+        Project { project: self.project.clone() }
+    }
+
     /// A new project of a PNG, JPEG or WebP picture, in tile mode.
     #[must_use]
     pub fn picture(name: String, bytes: Vec<u8>) -> Project {

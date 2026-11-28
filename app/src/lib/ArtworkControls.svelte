@@ -5,7 +5,8 @@
   import { text } from './text';
   import type { Workbench } from './workbench.svelte';
 
-  let { bench, choose }: { bench: Workbench; choose: () => void } = $props();
+  let { bench, choose, typeText }: { bench: Workbench; choose: () => void; typeText: () => void } =
+    $props();
   const words = text.freeform;
   const STENCIL = 'AllertaStencil-Regular.ttf';
   const DEFAULT = 'NotoSans-Bold.ttf';
@@ -115,7 +116,7 @@
     {bench.artwork ? text.picture.replace : words.open}
   </button>
   {#if bench.artwork && !edited}
-    <button type="button" class="button" disabled={!bench.canOpen} onclick={bench.typeText}>
+    <button type="button" class="button" disabled={!bench.canOpen} onclick={typeText}>
       {words.type}
     </button>
   {/if}

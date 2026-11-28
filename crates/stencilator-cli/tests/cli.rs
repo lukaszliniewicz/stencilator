@@ -302,12 +302,13 @@ fn keyed_plates_and_their_frame_export_and_reopen_together() {
         keyed["frame"],
         serde_json::json!({
             "width_mm": 100.6, "height_mm": 103.6, "clearance_mm": 0.3,
-            "fits_bed": false, "file": "registration-frame.stl"
+            "fits_bed": false, "bed_fit": "too-large", "file": "registration-frame.stl"
         })
     );
     for plate in keyed["plates"].as_array().unwrap() {
         assert_eq!(plate["height_mm"], 93.0);
         assert_eq!(plate["fits_bed"], true);
+        assert_eq!(plate["bed_fit"], "as-drawn");
     }
     assert!(keyed["warnings"].as_array().unwrap().iter().any(|w| w.as_str().unwrap().contains("frame, 100.6")));
     let file = |name| fs::read(dir.join(name)).unwrap();
@@ -427,5 +428,46 @@ fn freeform_settings_out_of_range_are_refused_before_reading_the_file() {
         let (ok, _, stderr) = run(&dir, &[&["freeform"][..], args].concat());
         assert!(!ok && stderr.contains(message), "{args:?}: {stderr}");
     }
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn bed_fit_reports_as_drawn_quarter_turn_and_too_large() {
+    let dir = workspace("bed-fit");
+    let badge = fixture("svg/badge.svg");
+    let badge = badge.to_str().unwrap();
+    // The keyed frame is 100.5 x 103.5 mm: it fits a 105 mm bed as drawn, needs a
+    // quarter-turn on a 104 x 101 mm bed, and is 0.01 mm too wide after turning on
+    // a 103.49 x 101 mm bed. The 90 x 93 mm plates fit as drawn on all three.
+    for (bed, frame_fit) in [("105x105", "as-drawn"), ("104x101", "quarter-turn"), ("103.49x101", "too-large")] {
+        let summary = report(&dir, &["freeform", badge, "--registration=0.25", "--bed", bed]);
+        let frame = &summary["frame"];
+        assert_eq!(frame["bed_fit"], frame_fit, "frame on a {bed} mm bed");
+        assert_eq!(frame["fits_bed"], frame_fit != "too-large");
+        for plate in summary["plates"].as_array().unwrap() {
+            assert_eq!(plate["bed_fit"], "as-drawn", "plate on a {bed} mm bed");
+            assert_eq!(plate["fits_bed"], true);
+        }
+    }
+    fs::remove_dir_all(&dir).unwrap();
+}
+
+#[test]
+fn tiles_report_bed_fit_alongside_fits_bed() {
+    let dir = workspace("tiles-bed-fit");
+    let fox = fixture("pixel-art/fox.png");
+    let fox = fox.to_str().unwrap();
+    let large =
+        report(&dir, &["tiles", fox, "--pixels", "--tile", "20", "--bed", "500x500", "--stencils", "large.zip"]);
+    assert_eq!(large["bed_fit"], "as-drawn");
+    assert_eq!(large["fits_bed"], true);
+    let small = report(&dir, &["tiles", fox, "--pixels", "--tile", "20", "--bed", "50x50", "--stencils", "small.zip"]);
+    assert_eq!(small["bed_fit"], "too-large");
+    assert_eq!(small["fits_bed"], false);
+    assert!(small["warnings"].as_array().unwrap().iter().any(|w| w.as_str().unwrap().contains("do not fit")));
+    assert!(
+        fs::read(dir.join("large.zip")).unwrap() == fs::read(dir.join("small.zip")).unwrap(),
+        "changing the bed changed the exported stencils"
+    );
     fs::remove_dir_all(&dir).unwrap();
 }

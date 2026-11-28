@@ -1,10 +1,11 @@
 <script lang="ts">
+  import type { Snippet } from 'svelte';
   import { platesFileName, stencilFileName } from './names';
   import PlateIssues from './PlateIssues.svelte';
   import { text } from './text';
   import type { Workbench } from './workbench.svelte';
 
-  let { bench }: { bench: Workbench } = $props();
+  let { bench, shared }: { bench: Workbench; shared: Snippet } = $props();
   const words = text.freeform;
   const plates = $derived(bench.freeform?.plates ?? []);
   const frame = $derived(bench.freeform?.frame);
@@ -15,7 +16,7 @@
   ] as const;
 </script>
 
-<div class="files">
+<div class="files quiet-scroll">
   <header class="top">
     <h1>{text.files.heading}</h1>
     <p class="note">{bench.fileName || words.typed} · {words.allPlates(plates.length)}</p>
@@ -28,6 +29,8 @@
       </p>
     {/if}
   </header>
+
+  {@render shared()}
 
   <section aria-labelledby="print-files-heading">
     <h2 id="print-files-heading" class="group">{words.forPrinting}</h2>
@@ -72,8 +75,9 @@
           <div class="about">
             <strong>{text.registration.heading}</strong>
             <p class="note">
-              {words.partSize(frame.width_mm, frame.height_mm, thickness)} ·
-              {frame.fits_bed ? text.registration.fits : text.registration.bedWarning}
+              {words.partSize(frame.width_mm, frame.height_mm, thickness)}
+              {#if bench.current && bench.valid}
+                · {text.bed.fit[frame.bed_fit]}{/if}
             </p>
           </div>
           <button type="button" class="button" disabled={!bench.ready} onclick={bench.saveFrame}>
@@ -99,7 +103,7 @@
               · {words.openings(plate.openings)}
             </p>
             {#if plate.ral}<p class="note">{text.finishing.ral(plate.ral.code)}</p>{/if}
-            <PlateIssues {plate} />
+            <PlateIssues {plate} includeFit={false} />
             <button
               type="button"
               class="button small"
@@ -113,21 +117,27 @@
         {/each}
       </ul>
     </section>
+    <section aria-label={text.files.beforeYouPrint}>
+      <h2 class="group">{text.files.beforeYouPrint}</h2>
+      <p class="note">{words.inspect}</p>
+      {#if plates.some((plate) => plate.raised_connectors?.count)}
+        <p class="note">{text.supports.trial}</p>
+      {/if}
+      {#if plates.some((plate) => plate.islands.length)}<p class="note">
+          {words.supportIslands}
+        </p>{/if}
+      {#if plates.some((plate) => plate.thin_webs.length)}<p class="note">
+          {words.inspectThinWebs}
+        </p>{/if}
+      {#if plates.some((plate) => plate.narrow_openings.length)}
+        <p class="note">{words.inspectNarrowOpenings}</p>
+      {/if}
+      {#if frame}
+        <p class="note">{text.registration.seat}</p>
+        <p class="note">{text.registration.clearanceNote(frame.clearance_mm)}</p>
+      {/if}
+    </section>
   {/if}
-
-  <section class="project" aria-labelledby="project-files-heading">
-    <h2 id="project-files-heading" class="group">{text.project.heading}</h2>
-    <p class="note">{text.project.body}</p>
-    <p class="mono filename">{bench.projectName}</p>
-    <button
-      type="button"
-      class="button"
-      disabled={!bench.canSaveProject}
-      onclick={bench.saveProject}
-    >
-      {bench.saving === bench.projectName ? text.files.saving : text.project.save}
-    </button>
-  </section>
 </div>
 
 <style>
@@ -218,12 +228,6 @@
     font-size: 12px;
   }
 
-  .project {
-    border-top: 1px solid var(--line);
-    padding-top: 12px;
-  }
-
-  .project button,
   .small {
     justify-self: start;
   }

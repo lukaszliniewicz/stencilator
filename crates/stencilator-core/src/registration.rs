@@ -3,7 +3,7 @@
 use serde::Serialize;
 
 use crate::Error;
-use crate::geometry::{Contour, Point, Shapes, difference, fits_bed, mm, rectangle, translate, um, union};
+use crate::geometry::{BedFit, Contour, Point, Shapes, bed_fit, difference, mm, rectangle, translate, um, union};
 use crate::mesh::{Mesh, Slab, mesh_slabs};
 use crate::stencil::{check_thickness, encode_stl};
 
@@ -111,6 +111,8 @@ pub struct FrameReport {
     pub clearance_mm: f64,
     /// Whether the frame fits the bed, turned if need be.
     pub fits_bed: bool,
+    /// How the frame fits the bed: as drawn, after a quarter-turn, or not at all.
+    pub bed_fit: BedFit,
     /// The STL file name in a set.
     pub file: &'static str,
 }
@@ -146,11 +148,13 @@ impl Frame {
     /// The frame's dimensions and nominal clearance, and whether it fits the bed.
     pub fn report(&self, bed_mm: (f64, f64)) -> FrameReport {
         let (width_mm, height_mm) = (mm(self.size_um.0), mm(self.size_um.1));
+        let fit = bed_fit((width_mm, height_mm), bed_mm);
         FrameReport {
             width_mm,
             height_mm,
             clearance_mm: mm(self.clearance_um),
-            fits_bed: fits_bed((width_mm, height_mm), bed_mm),
+            fits_bed: fit.fits(),
+            bed_fit: fit,
             file: FRAME_FILE,
         }
     }
@@ -169,7 +173,10 @@ mod tests {
         assert_eq!(registration.plate_size_um(), (90_000, 73_000));
         assert_eq!(frame.size_um, (100_600, 83_600));
         assert!(!frame.report((95.0, 90.0)).fits_bed);
+        assert_eq!(frame.report((95.0, 90.0)).bed_fit, BedFit::TooLarge);
         assert!(frame.report((84.0, 101.0)).fits_bed, "the frame fits when turned");
+        assert_eq!(frame.report((84.0, 101.0)).bed_fit, BedFit::QuarterTurn);
+        assert_eq!(frame.report((101.0, 84.0)).bed_fit, BedFit::AsDrawn);
         let blank = translate(&registration.outline(), 5_300, 5_300);
         assert_eq!(intersection(&frame.solid, &blank), Shapes::new());
         let pocket = registration.pocket();

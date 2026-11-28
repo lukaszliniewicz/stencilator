@@ -1,21 +1,20 @@
 <script lang="ts">
-  // Artwork, theme, shared paint controls, and the selected stencil or plate report.
+  // Artwork, shared paint controls, and the selected stencil or plate report.
   import ArtworkControls from './ArtworkControls.svelte';
   import PlateIssues from './PlateIssues.svelte';
   import Segmented from './Segmented.svelte';
   import TileCanvas from './TileCanvas.svelte';
   import { num, text } from './text';
-  import { THEMES, type Theme } from './theme.svelte';
   import type { Workbench } from './workbench.svelte';
 
   interface Props {
     bench: Workbench;
-    theme: Theme;
+    dark: boolean;
     choose: () => void;
-    chooseProject: () => void;
+    typeText: () => void;
   }
 
-  let { bench, theme, choose, chooseProject }: Props = $props();
+  let { bench, dark, choose, typeText }: Props = $props();
 
   let previewWidth = $state(0);
   const chart = $derived(bench.chart);
@@ -39,35 +38,10 @@
 </script>
 
 <div class="sidebar">
-  <header class="brand">
-    <p class="wordmark">
-      <svg width="30" height="30" viewBox="0 0 34 34" aria-hidden="true">
-        <rect class="plate" x="1" y="1" width="32" height="32" />
-        <rect class="hole" x="6" y="6" width="9" height="9" />
-        <rect class="hole" x="19" y="19" width="9" height="9" />
-        <rect class="hole accent" x="19" y="6" width="9" height="9" />
-      </svg>
-      <span>{text.wordmark}.</span>
-    </p>
-    <div class="themes" role="group" aria-label={text.theme.label}>
-      {#each THEMES as choice (choice)}
-        <button
-          type="button"
-          aria-pressed={theme.choice === choice}
-          onclick={() => {
-            theme.pick(choice);
-          }}
-        >
-          {text.theme[choice]}
-        </button>
-      {/each}
-    </div>
-  </header>
-
   {#if bench.isFreeform}
     <section aria-labelledby="artwork-heading">
       <h2 id="artwork-heading" class="label heading">{text.freeform.artwork}</h2>
-      <ArtworkControls {bench} {choose} />
+      <ArtworkControls {bench} {choose} {typeText} />
     </section>
   {:else}
     <section aria-labelledby="picture-heading">
@@ -81,42 +55,9 @@
         <button type="button" class="button" disabled={!bench.canOpen} onclick={choose}>
           {text.picture.replace}
         </button>
-      {:else}
-        <p class="none">{text.picture.none}</p>
-        <button type="button" class="button" disabled={!bench.canOpen} onclick={choose}>
-          <svg
-            width="16"
-            height="16"
-            viewBox="0 0 16 16"
-            fill="none"
-            stroke="currentColor"
-            stroke-width="1.5"
-            aria-hidden="true"
-          >
-            <path d="M8 11V2.5M4.5 6L8 2.5 11.5 6" />
-            <path d="M2.5 10.5v3h11v-3" />
-          </svg>
-          {text.picture.open}
-        </button>
       {/if}
     </section>
   {/if}
-
-  <div class="project-actions">
-    <button type="button" class="button" disabled={!bench.canOpen} onclick={chooseProject}>
-      {text.project.open}
-    </button>
-    {#if bench.artwork && (!bench.isFreeform || bench.screen !== 'files')}
-      <button
-        type="button"
-        class="button"
-        disabled={!bench.canSaveProject}
-        onclick={bench.saveProject}
-      >
-        {bench.saving === bench.projectName ? text.files.saving : text.project.save}
-      </button>
-    {/if}
-  </div>
 
   {#if paints}
     <section aria-labelledby="paints-heading">
@@ -314,7 +255,7 @@
               colours={bench.colours}
               width={previewWidth}
               stencil={picked}
-              dark={theme.dark}
+              {dark}
               label={text.stencil.label(
                 picked,
                 bench.colours[picked] ?? '',
@@ -330,22 +271,9 @@
         </figure>
       {/if}
     </section>
-  {:else if !bench.isFreeform}
-    <section aria-labelledby="how-heading">
-      <h2 id="how-heading" class="label heading">{text.how.heading}</h2>
-      <ol class="steps">
-        {#each text.how.steps as step, i (step.title)}
-          <li>
-            <span class="number">{i + 1}</span>
-            <span><strong>{step.title}</strong> <span class="body">{step.body}</span></span>
-          </li>
-        {/each}
-      </ol>
-    </section>
   {/if}
 
   <footer class="note">
-    <p>{text.privacy}</p>
     {#if bench.version}<p class="version">{text.engine(bench.version)}</p>{/if}
   </footer>
 </div>
@@ -357,58 +285,6 @@
     display: flex;
     flex-direction: column;
     gap: 24px;
-  }
-
-  .brand {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-  }
-
-  .wordmark {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    font-family: var(--serif);
-    font-size: 30px;
-    letter-spacing: -0.02em;
-    line-height: 1;
-  }
-
-  .plate {
-    fill: var(--text);
-  }
-
-  .hole {
-    fill: var(--panel);
-  }
-
-  .accent {
-    fill: var(--tint-text);
-  }
-
-  .themes {
-    display: flex;
-    gap: 12px;
-  }
-
-  .themes button {
-    padding: 4px 0;
-    border: 0;
-    background: transparent;
-    color: var(--text-3);
-    font-size: 10px;
-    letter-spacing: 0.1em;
-    text-transform: uppercase;
-  }
-
-  .themes button:hover {
-    color: var(--text);
-  }
-
-  .themes button[aria-pressed='true'] {
-    color: var(--text);
-    font-weight: 700;
   }
 
   section {
@@ -455,14 +331,6 @@
   .aside {
     font-weight: 400;
     color: var(--text-3);
-  }
-
-  .none {
-    padding: 20px 12px;
-    border: 1px dashed var(--line-strong);
-    color: var(--text-2);
-    font-size: 12px;
-    text-align: center;
   }
 
   .thumbnail {
@@ -625,51 +493,11 @@
     opacity: 0.4;
   }
 
-  .project-actions {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 6px;
-  }
-
-  .project-actions .button {
-    min-height: 34px;
-    padding-inline: 10px;
-    font-size: 11px;
-  }
-
   .report {
     display: grid;
     gap: 6px;
     padding-top: 10px;
     border-top: 1px solid var(--line);
-  }
-
-  .steps {
-    margin: 0;
-    padding: 0;
-    list-style: none;
-    display: flex;
-    flex-direction: column;
-    gap: 14px;
-    font-size: 13px;
-  }
-
-  .steps li {
-    display: flex;
-    gap: 12px;
-  }
-
-  .number {
-    font-weight: 700;
-    color: var(--tint-text);
-  }
-
-  .steps strong {
-    font-weight: 600;
-  }
-
-  .body {
-    color: var(--text-2);
   }
 
   footer {

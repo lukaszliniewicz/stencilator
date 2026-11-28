@@ -5,6 +5,7 @@ export type Mode = 'colour' | 'greyscale' | 'black-white';
 export type Sizing = 'pixels' | 'canvas';
 export type ChartFormat = 'png' | 'jpeg' | 'pdf';
 export type ProjectMode = 'tiles' | 'freeform';
+export type BedFit = 'as-drawn' | 'quarter-turn' | 'too-large';
 export type SupportKind = 'flat' | 'raised';
 export type Mark = 'none' | 'number' | 'ral';
 export type SupportIssue = 'landings' | 'span' | 'conflict' | 'suggestion';
@@ -125,6 +126,7 @@ export interface ChartSummary {
   lineMm: number;
   widthMm: number;
   heightMm: number;
+  bedFit: BedFit | undefined;
   widthPx: number;
   heightPx: number;
   /** RGB triples, darkest first. */
@@ -163,6 +165,7 @@ export interface PlateReport {
   thin_webs: Spot[];
   narrow_openings: Spot[];
   fits_bed: boolean;
+  bed_fit: BedFit;
   flat_bridges?: { count: number; covered_mm2: number; single_bridge_islands: Spot[] };
   raised_connectors?: { count: number; single_support_islands: Spot[]; long_spans: number };
   height_with_supports_mm?: number;
@@ -206,6 +209,7 @@ export interface FrameReport {
   height_mm: number;
   clearance_mm: number;
   fits_bed: boolean;
+  bed_fit: BedFit;
   file: string;
 }
 
@@ -242,7 +246,8 @@ export type Request =
   | { kind: 'frameFile' }
   | { kind: 'platesZip' }
   | { kind: 'threeMf' }
-  | { kind: 'projectFile'; settings: ProjectSettings; edits: ArtworkEdits };
+  | { kind: 'projectFile'; settings: ProjectSettings; edits: ArtworkEdits; strict?: boolean }
+  | { kind: 'validateProject'; bytes: ArrayBuffer };
 
 /** What each kind of request answers with. */
 export interface Replies {
@@ -262,6 +267,7 @@ export interface Replies {
   platesZip: Uint8Array;
   threeMf: Uint8Array;
   projectFile: Uint8Array;
+  validateProject: ProjectMode | null;
 }
 
 export type Kind = Request['kind'];
@@ -272,7 +278,24 @@ export interface Envelope {
   request: Request;
 }
 
+export type ProjectSaveProblem =
+  | { kind: 'settings' }
+  | { kind: 'inactive-settings'; mode: ProjectMode }
+  | { kind: 'artwork' }
+  | { kind: 'file' };
+
+export class ProjectSaveError extends Error {
+  constructor(
+    readonly problem: ProjectSaveProblem,
+    options?: ErrorOptions
+  ) {
+    super(problem.kind, options);
+    this.name = 'ProjectSaveError';
+  }
+}
+
 export type Reply =
   | { id: number; ok: true; value: Replies[Kind] }
+  | { id: number; ok: false; saveProblem: ProjectSaveProblem }
   | { id: number; ok: false; message: string }
   | { id: number; stage: FreeformStage };

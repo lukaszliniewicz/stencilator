@@ -4,6 +4,7 @@
  */
 import { hexToNumber } from '../lib/colour';
 import { text } from '../lib/text';
+import { ProjectSaveError } from './protocol';
 import type {
   ArtworkEdits,
   ArtworkSource,
@@ -24,7 +25,7 @@ import type * as Wasm from './wasm/stencilator_wasm.js';
 
 type Engine = Pick<
   typeof Wasm,
-  'Artwork' | 'Fonts' | 'Project' | 'Source' | 'version' | 'recommendedMinWebMm'
+  'Artwork' | 'Fonts' | 'Project' | 'Source' | 'version' | 'recommendedMinWebMm' | 'bedFit'
 >;
 
 export interface Answer {
@@ -41,10 +42,25 @@ interface Workspace {
 }
 
 const file = (bytes: Uint8Array): Answer => ({ value: bytes, transfer: [bytes.buffer] });
+
+function readProjectFile<T>(read: () => T): T {
+  try {
+    return read();
+  } catch (error) {
+    throw new Error(text.project.openFailed, { cause: error });
+  }
+}
+
 function settingsOf(project: Wasm.Project): ProjectSettings {
   const settings = JSON.parse(project.settings) as ProjectSettings;
   const { mode, count, background } = settings.colours;
-  return { ...settings, colours: { mode, count, background } };
+  return {
+    ...settings,
+    // A drawing cannot make a tile chart. Use the same mode on open and when
+    // validating an unchanged import, even if its original bytes specify Tiles.
+    mode: project.kind === 'picture' ? settings.mode : 'freeform',
+    colours: { mode, count, background }
+  };
 }
 
 function releaseArtwork(workspace: Workspace): void {
@@ -59,22 +75,11 @@ function takePreview(preview: Wasm.RasterPreview): RasterPreview {
   return { width, height, rgba: preview.pixels() };
 }
 
-function applySettings(
+function applyActiveSettings(
   project: Wasm.Project,
   settings: ProjectSettings,
-  use: 'preview' | 'save'
+  use: 'preview' | 'save' | 'save-with-last-bed'
 ): void {
-  // Keep the exact Rust seed on every write.
-  if (use === 'save') {
-    try {
-      project.setSettings(JSON.stringify(settings), true);
-      return;
-    } catch {
-      // The engine left the project unchanged. Retry with its last valid settings
-      // for the inactive mode, so an unfinished field there cannot block saving.
-    }
-  }
-
   const previous = settingsOf(project);
   const active =
     settings.mode === 'tiles'
@@ -86,27 +91,58 @@ function applySettings(
             // Thickness affects STL files, but an unfinished value should not block the chart.
             thickness_mm:
               use === 'preview' ? previous.stencils.thickness_mm : settings.stencils.thickness_mm,
-            bed_mm: previous.stencils.bed_mm
+            bed_mm: use === 'save' ? settings.stencils.bed_mm : previous.stencils.bed_mm
           }
         }
       : { ...settings, tiles: previous.tiles };
   project.setSettings(JSON.stringify(active), true);
 }
 
-async function applyArtwork(workspace: Workspace, { typed, fonts }: ArtworkEdits): Promise<void> {
-  const { project } = workspace;
+function applySaveSettings(
+  project: Wasm.Project,
+  settings: ProjectSettings,
+  strict: boolean
+): void {
+  try {
+    // Keep the exact Rust seed on every write.
+    project.setSettings(JSON.stringify(settings), true);
+  } catch (error) {
+    // The engine left the snapshot unchanged. Downloads can use the last valid settings
+    // for the inactive mode. Autosave tests that fallback only to explain what failed.
+    try {
+      applyActiveSettings(project, settings, 'save');
+    } catch (activeError) {
+      if (strict) throw new ProjectSaveError({ kind: 'settings' }, { cause: error });
+      if (settings.mode !== 'tiles') throw activeError;
+      // A legacy bed can block a project download even though Tiles can still export stencils.
+      applyActiveSettings(project, settings, 'save-with-last-bed');
+    }
+    if (strict) {
+      const mode = settings.mode === 'tiles' ? 'freeform' : 'tiles';
+      throw new ProjectSaveError({ kind: 'inactive-settings', mode }, { cause: error });
+    }
+  }
+}
+
+async function applyEdits(
+  project: Wasm.Project,
+  state: { fontRevision: number },
+  { typed, fonts }: ArtworkEdits,
+  onChanged?: () => void
+): Promise<boolean> {
   const colour = typed ? hexToNumber(typed.colour) : 0;
+  let changed = false;
   if (
     typed &&
     (project.typedText !== typed.value ||
       project.fontMm !== typed.fontMm ||
       project.textColour !== colour)
   ) {
-    releaseArtwork(workspace);
     project.setText(typed.value, typed.fontMm, colour);
+    changed = true;
+    onChanged?.();
   }
-  if (fonts.revision !== workspace.fontRevision) {
-    releaseArtwork(workspace);
+  if (fonts.revision !== state.fontRevision) {
     const files = await Promise.all(
       fonts.files.map(async ({ name, data }) => ({
         name,
@@ -114,12 +150,21 @@ async function applyArtwork(workspace: Workspace, { typed, fonts }: ArtworkEdits
       }))
     );
     project.clearFonts();
+    onChanged?.();
     for (const font of files) {
       if (font.bytes) project.addFont(font.name, font.bytes);
       else project.addBuiltInFont(font.name);
     }
-    workspace.fontRevision = fonts.revision;
+    state.fontRevision = fonts.revision;
+    changed = true;
   }
+  return changed;
+}
+
+async function applyArtwork(workspace: Workspace, edits: ArtworkEdits): Promise<void> {
+  await applyEdits(workspace.project, workspace, edits, () => {
+    releaseArtwork(workspace);
+  });
 }
 
 export function createHandlers(
@@ -156,7 +201,11 @@ export function createHandlers(
       : new engine.Artwork(w.project, await drawingFonts()));
   }
 
-  async function install(project: Wasm.Project, rawPicture?: Uint8Array): Promise<Answer> {
+  async function install(
+    project: Wasm.Project,
+    rawPicture?: Uint8Array,
+    readArtwork: <T>(read: () => T) => T = (read) => read()
+  ): Promise<Answer> {
     const next: Workspace = {
       project,
       picture: undefined,
@@ -170,7 +219,7 @@ export function createHandlers(
       let pictureBytes: Uint8Array | undefined;
       if (project.kind === 'picture') {
         const bytes = rawPicture ?? project.sourceData();
-        const picture = new engine.Source(bytes);
+        const picture = readArtwork(() => new engine.Source(bytes));
         next.picture = picture;
         source = {
           kind: 'picture',
@@ -187,7 +236,8 @@ export function createHandlers(
           transfer.push(bytes.buffer);
         }
       } else {
-        await artworkOf(next);
+        const fonts = await drawingFonts();
+        next.artwork = readArtwork(() => new engine.Artwork(project, fonts));
         source =
           project.kind === 'svg'
             ? { kind: 'svg', name: project.name }
@@ -230,7 +280,7 @@ export function createHandlers(
   ): Promise<Answer> {
     const w = opened();
     clearResults();
-    applySettings(w.project, settings, 'preview');
+    applyActiveSettings(w.project, settings, 'preview');
     await applyArtwork(w, edits);
     progress?.('paints');
     const artwork = await artworkOf(w);
@@ -285,7 +335,11 @@ export function createHandlers(
           case 'svg':
             return install(engine.Project.svg(request.name, bytes));
           case 'project':
-            return install(engine.Project.open(bytes));
+            return install(
+              readProjectFile(() => engine.Project.open(bytes)),
+              undefined,
+              readProjectFile
+            );
         }
         break;
       }
@@ -295,7 +349,7 @@ export function createHandlers(
         const { project, picture } = opened();
         clearResults();
         if (!picture) throw new Error(text.errors.tilesNeedPicture);
-        applySettings(project, request.settings, 'preview');
+        applyActiveSettings(project, request.settings, 'preview');
         chart = project.tileChart(picture);
         const summary = {
           tilesX: chart.tilesX,
@@ -306,6 +360,7 @@ export function createHandlers(
           lineMm: chart.lineMm,
           widthMm: chart.widthMm,
           heightMm: chart.heightMm,
+          bedFit: engine.bedFit(chart.widthMm, chart.heightMm, ...request.settings.stencils.bed_mm),
           widthPx: chart.widthPx,
           heightPx: chart.heightPx,
           palette: chart.palette(),
@@ -351,10 +406,48 @@ export function createHandlers(
         return file(builtPlates().threeMf(opened().project));
       case 'projectFile': {
         const w = opened();
-        applySettings(w.project, request.settings, 'save');
-        await applyArtwork(w, request.edits);
-        if (!w.picture) await artworkOf(w);
-        return file(w.project.file());
+        // Save a snapshot copy, so a queued autosave never disturbs the live preview.
+        const snapshot = w.project.clone();
+        try {
+          applySaveSettings(snapshot, request.settings, request.strict === true);
+          const changed = await applyEdits(
+            snapshot,
+            { fontRevision: w.fontRevision },
+            request.edits
+          );
+          // Validate changed text or fonts on the copy; an unchanged drawing was already
+          // validated when it opened, and its live artwork is still current.
+          if (snapshot.kind !== 'picture' && (changed || !w.artwork)) {
+            new engine.Artwork(snapshot, await drawingFonts()).free();
+          }
+          return file(snapshot.file());
+        } catch (error) {
+          if (!request.strict || error instanceof ProjectSaveError) throw error;
+          throw new ProjectSaveError({ kind: 'artwork' }, { cause: error });
+        } finally {
+          snapshot.free();
+        }
+      }
+      case 'validateProject': {
+        let project: Wasm.Project;
+        try {
+          project = engine.Project.open(new Uint8Array(request.bytes));
+        } catch {
+          return { value: null, transfer: [] };
+        }
+        try {
+          // A failed font load says nothing about the file. Let it reject the request.
+          const fonts = project.kind === 'picture' ? undefined : await drawingFonts();
+          try {
+            if (fonts) new engine.Artwork(project, fonts).free();
+            else new engine.Source(project.sourceData()).free();
+          } catch {
+            return { value: null, transfer: [] };
+          }
+          return { value: settingsOf(project).mode, transfer: [] };
+        } finally {
+          project.free();
+        }
       }
     }
     throw new Error(text.errors.unknownRequest);

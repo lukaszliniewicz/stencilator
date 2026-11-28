@@ -37,6 +37,7 @@ export class Theme {
     });
     $effect(() => {
       apply(this.choice);
+      // The workspace opens asynchronously; keep the value for the first paint.
       writeStored(KEY, this.choice);
     });
   }

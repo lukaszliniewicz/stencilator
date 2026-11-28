@@ -188,6 +188,101 @@ export function sanitise(value: unknown): Settings {
   };
 }
 
+type NumberRange = readonly [number, number];
+
+/**
+ * The engine's accepted settings ranges, which a saved default must meet in every mode.
+ * The interface leaves a live out-of-range entry for the engine to explain; a restored or
+ * migrated default offered for new projects has no such moment. As storage's `sanitise`
+ * does for a missing or malformed value, an unusable range takes the engine's default
+ * rather than rejecting the saved preferences, and every valid explicit value is kept.
+ *
+ * A default seeds projects in any mode and presets may switch sizing or mode, so every
+ * field is checked even while its mode is inactive. This is deliberately stricter than a
+ * single engine check, which ignores inactive fields: a default is only useful if it stays
+ * usable after such a switch. Paint merges and skipped paints are valid lists, not ranges,
+ * and are kept exactly as saved, without deduplication or truncation.
+ */
+const DEFAULT_RANGES: Partial<Record<NumberKey, NumberRange>> = {
+  canvasWidthMm: [1, 10_000],
+  canvasHeightMm: [1, 10_000],
+  tileMm: [0.1, 1_000],
+  lineMm: [0, 20],
+  artWidthMm: [1, 10_000],
+  artHeightMm: [1, 10_000],
+  cellMm: [0.05, 0.5],
+  minPatchMm2: [0, 100],
+  marginMm: [2, 100],
+  minWebMm: [0.1, 5],
+  minOpeningMm: [0.1, 5],
+  bridgeWidthMm: [0.6, 5],
+  connectorWidthMm: [0.6, 5],
+  connectorClearanceMm: [0.4, 30],
+  beamMm: [0.4, 5],
+  warnSpanMm: [1, 200],
+  thicknessMm: [0.2, 20],
+  bedWidthMm: [50, 2_000],
+  bedDepthMm: [50, 2_000]
+};
+
+/** Ranges checked after the engine's rounding of a whole number. */
+const DEFAULT_WHOLE_RANGES: Partial<Record<NumberKey, NumberRange>> = {
+  colours: [1, 256],
+  dpi: [72, 2_400]
+};
+
+/** Settings that accept zero, such as no chamfer, or a value within a range. */
+const DEFAULT_ZERO_OR_RANGES: Partial<Record<NumberKey, NumberRange>> = {
+  chamferMm: [0.1, 2],
+  overlapMm: [0.1, 2]
+};
+
+const inRange = (value: number, [min, max]: NumberRange): boolean =>
+  Number.isFinite(value) && value >= min && value <= max;
+
+/** Whole micrometres, rounding as the engine does, for its thickness comparisons. */
+function micrometres(mm: number): number {
+  const scaled = mm * 1_000;
+  const lower = Math.floor(scaled);
+  const fraction = scaled - lower;
+  if (fraction < 0.5) return lower;
+  if (fraction > 0.5) return lower + 1;
+  return lower % 2 === 0 ? lower : lower + 1;
+}
+
+/**
+ * Saved defaults with unusable values replaced, so new projects can always be saved.
+ * This seeds a project or a set of migrated preferences; live artwork and project edits
+ * still go through `sanitise`, which leaves an out-of-range entry for the engine to explain.
+ */
+export function normaliseDefaults(raw: unknown): Settings {
+  const settings = sanitise(raw);
+  const fallback = sanitise(undefined);
+  for (const [key, range] of Object.entries(DEFAULT_RANGES) as [NumberKey, NumberRange][]) {
+    if (!inRange(settings[key], range)) settings[key] = fallback[key];
+  }
+  for (const [key, range] of Object.entries(DEFAULT_WHOLE_RANGES) as [NumberKey, NumberRange][]) {
+    if (!inRange(Math.round(settings[key]), range)) settings[key] = fallback[key];
+  }
+  for (const [key, range] of Object.entries(DEFAULT_ZERO_OR_RANGES) as [NumberKey, NumberRange][]) {
+    if (settings[key] !== 0 && !inRange(settings[key], range)) settings[key] = fallback[key];
+  }
+  // A raised connector needs 0.2 mm of clearance above the plate itself. Compare whole
+  // micrometres, as the engine does, so a value it accepts is never changed by rounding.
+  const thickness = micrometres(settings.thicknessMm);
+  if (micrometres(settings.connectorClearanceMm) - thickness < 200) {
+    settings.connectorClearanceMm = Math.max(
+      fallback.connectorClearanceMm,
+      (thickness + 200) / 1_000
+    );
+  }
+  // A chamfer must leave 0.2 mm of plate at the work face.
+  if (settings.chamferMm !== 0 && thickness - micrometres(settings.chamferMm) < 200) {
+    settings.chamferMm = fallback.chamferMm;
+  }
+  return settings;
+}
+
 function same(a: unknown, b: unknown): boolean {
   if (Array.isArray(a) && Array.isArray(b)) {
     return a.length === b.length && a.every((item, i) => same(item, b[i]));

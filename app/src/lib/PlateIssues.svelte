@@ -2,7 +2,7 @@
   import type { PlateReport } from '../engine/client';
   import { text } from './text';
 
-  let { plate }: { plate: PlateReport } = $props();
+  let { plate, includeFit = true }: { plate: PlateReport; includeFit?: boolean } = $props();
   const words = text.freeform;
   const flat = $derived(plate.flat_bridges);
   const raised = $derived(plate.raised_connectors);
@@ -20,7 +20,7 @@
     ...(plate.mark && !plate.mark.applied ? [text.finishing.markSkipped(plate.mark.text)] : []),
     ...(plate.chamfer_limited ? [text.finishing.chamferLimited] : []),
     ...(plate.overlap_limited ? [text.finishing.overlapLimited] : []),
-    ...(!plate.fits_bed ? [words.bedWarning] : [])
+    ...(includeFit && plate.bed_fit !== 'as-drawn' ? [text.bed.fit[plate.bed_fit]] : [])
   ]);
 </script>
 
@@ -36,7 +36,7 @@
       <li>{issue}</li>
     {/each}
   </ul>
-{:else}
+{:else if includeFit}
   <p class="note">{words.noWarnings}</p>
 {/if}
 

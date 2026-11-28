@@ -1,6 +1,7 @@
 <script lang="ts">
   // Everything there is to save: the chart in three formats, with or without grid lines,
   // and the stencils of the ticked paints, together or one at a time.
+  import type { Snippet } from 'svelte';
   import type { ChartFormat } from '../engine/client';
   import { chartFileName, stencilFileName, stencilsZipName } from './names';
   import Segmented from './Segmented.svelte';
@@ -11,12 +12,11 @@
   interface Props {
     bench: Workbench;
     dark: boolean;
+    shared: Snippet;
   }
 
-  let { bench, dark }: Props = $props();
+  let { bench, dark, shared }: Props = $props();
 
-  /** Larger than this on either side, and a stencil fits few printers. */
-  const COMMON_BED_MM = 256;
   const CARD_WIDTH = 150;
 
   let withLines = $state(true);
@@ -57,13 +57,15 @@
 </script>
 
 {#if chart}
-  <div class="files">
+  <div class="files quiet-scroll">
     <header class="top">
       <h1 class="title">{text.files.heading}</h1>
       <p class="note">
         {text.files.summary(bench.fileName, chart.tilesX, chart.tilesY, chart.counts.length)}
       </p>
     </header>
+
+    {@render shared()}
 
     <div class="columns">
       <section class="column chart" aria-labelledby="chart-files-heading">
@@ -182,9 +184,6 @@
             <li>{text.files.actualSize}</li>
             {#if bench.stencilsPossible}<li>{text.files.flat(chart.lineMm)}</li>{/if}
           </ol>
-          {#if bench.stencilsPossible && Math.max(chart.widthMm, chart.heightMm) > COMMON_BED_MM}
-            <p class="notice">{text.files.tooLarge(chart.widthMm, chart.heightMm)}</p>
-          {/if}
         </div>
       </section>
     </div>
@@ -196,7 +195,7 @@
     flex: 1;
     min-height: 0;
     overflow-y: auto;
-    padding: 28px 32px 40px;
+    padding: clamp(12px, 3vw, 28px) clamp(12px, 4vw, 32px) 40px;
     display: flex;
     flex-direction: column;
     gap: 24px;

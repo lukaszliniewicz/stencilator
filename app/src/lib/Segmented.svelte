@@ -13,12 +13,13 @@
     onpick: (value: T) => void;
     /** Share the width equally, as in the settings panel. */
     stretch?: boolean;
+    wrap?: boolean;
   }
 
-  let { label, options, value, onpick, stretch = false }: Props = $props();
+  let { label, options, value, onpick, stretch = false, wrap = false }: Props = $props();
 </script>
 
-<div class="segmented" class:stretch role="group" aria-label={label}>
+<div class="segmented" class:stretch class:wrap role="group" aria-label={label}>
   {#each options as option (option.value)}
     <button
       type="button"
@@ -43,6 +44,12 @@
     display: flex;
   }
 
+  .wrap {
+    flex-wrap: wrap;
+    gap: 3px;
+    border: 0;
+  }
+
   button {
     min-height: 32px;
     padding: 0 12px;
@@ -64,6 +71,12 @@
 
   button + button {
     border-left: 1px solid var(--line-strong);
+  }
+
+  .wrap button {
+    padding-inline: 8px;
+    border: 1px solid var(--line);
+    font-size: 10px;
   }
 
   button:hover:not(:disabled) {

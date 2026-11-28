@@ -95,7 +95,6 @@
     camera.up.set(0, 0, 1);
     camera.position.set(200, -260, 200);
     const orbit = new OrbitControls(camera, canvas);
-    orbit.enablePan = false;
     const light = new DirectionalLight(0xffffff, 2);
     light.position.set(-4, -5, 9);
     scene.add(light, new HemisphereLight(0xf4f7ff, 0x535964, 2));
@@ -109,6 +108,7 @@
     let frame: Mesh | undefined;
     let extent = 0;
     let lift = 0;
+    const centre = new Vector3();
 
     const render = (): void => {
       renderer.render(scene, camera);
@@ -118,6 +118,7 @@
       const fit = Math.min(1, camera.aspect);
       // Leave room above the frame for the plate to lift.
       const distance = (extent / 2 + lift) / (Math.sin((camera.fov * Math.PI) / 360) * fit);
+      orbit.target.copy(centre);
       camera.position
         .copy(orbit.target)
         .addScaledVector(new Vector3(0.9, -1.5, 1.2).normalize(), distance);
@@ -145,37 +146,37 @@
     orbit.addEventListener('change', render);
 
     const arrows = new Map([
-      [
-        'ArrowLeft',
-        () => {
-          orbit.rotateLeft(0.13);
-        }
-      ],
-      [
-        'ArrowRight',
-        () => {
-          orbit.rotateLeft(-0.13);
-        }
-      ],
-      [
-        'ArrowUp',
-        () => {
-          orbit.rotateUp(0.13);
-        }
-      ],
-      [
-        'ArrowDown',
-        () => {
-          orbit.rotateUp(-0.13);
-        }
-      ]
+      ['ArrowLeft', [-1, 0]],
+      ['ArrowRight', [1, 0]],
+      ['ArrowUp', [0, -1]],
+      ['ArrowDown', [0, 1]]
     ]);
+    const zoomStep = 1 / 1.2;
     const key = (event: KeyboardEvent): void => {
-      const turn = arrows.get(event.key);
-      if (turn) {
-        event.preventDefault();
-        turn();
+      if (event.ctrlKey || event.metaKey || event.altKey) return;
+      const arrow = arrows.get(event.key);
+      if (arrow) {
+        const [x = 0, y = 0] = arrow;
+        if (event.shiftKey) orbit.pan(x * 20, y * 20);
+        else if (x) orbit.rotateLeft(-x * 0.13);
+        else orbit.rotateUp(-y * 0.13);
+      } else {
+        switch (event.key) {
+          case '+':
+          case '=':
+            orbit.dollyIn(zoomStep);
+            break;
+          case '-':
+            orbit.dollyOut(zoomStep);
+            break;
+          case '0':
+            reset();
+            break;
+          default:
+            return;
+        }
       }
+      event.preventDefault();
     };
     canvas.addEventListener('webglcontextlost', lost);
 
@@ -199,8 +200,8 @@
           const box = new Box3().setFromObject(group);
           extent = box.getSize(new Vector3()).length();
           lift = parts.frame ? Math.max(8, extent * 0.12) : 0;
-          box.getCenter(orbit.target);
-          orbit.target.z += lift * 0.25;
+          box.getCenter(centre);
+          centre.z += lift * 0.25;
           reset();
           return clear;
         } catch (error) {

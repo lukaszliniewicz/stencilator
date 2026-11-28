@@ -12,6 +12,8 @@ use i_overlay::mesh::int::arc::ArcOptions;
 use i_overlay::mesh::int::outline::offset::IntOutlineOffset;
 use i_overlay::mesh::int::style::{IntLineJoin, IntOutlineStyle};
 
+use serde::Serialize;
+
 use crate::Error;
 
 /// Micrometres per millimetre.
@@ -27,9 +29,38 @@ pub(crate) fn mm(um: i32) -> f64 {
     f64::from(um) / UM_PER_MM
 }
 
-/// Whether the part fits on the bed, turned if need be.
-pub(crate) fn fits_bed((w, h): (f64, f64), (bed_w, bed_h): (f64, f64)) -> bool {
-    (w <= bed_w && h <= bed_h) || (w <= bed_h && h <= bed_w)
+/// How one flat part fits in the rectangular usable area of a print bed.
+///
+/// As JSON this is `"as-drawn"`, `"quarter-turn"` or `"too-large"`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum BedFit {
+    /// The part fits in the orientation of its export.
+    AsDrawn,
+    /// The part fits only when turned 90 degrees in the plane of the bed.
+    QuarterTurn,
+    /// Neither orientation fits.
+    TooLarge,
+}
+
+impl BedFit {
+    /// Whether either orientation fits.
+    #[must_use]
+    pub fn fits(self) -> bool {
+        self != Self::TooLarge
+    }
+}
+
+/// Compares two footprints in millimetres, preferring the exported orientation.
+#[must_use]
+pub fn bed_fit((w, h): (f64, f64), (bed_w, bed_h): (f64, f64)) -> BedFit {
+    if w <= bed_w && h <= bed_h {
+        BedFit::AsDrawn
+    } else if h <= bed_w && w <= bed_h {
+        BedFit::QuarterTurn
+    } else {
+        BedFit::TooLarge
+    }
 }
 
 /// A point in micrometres.
@@ -188,6 +219,14 @@ pub fn svg_path(shapes: &[Shape], height_um: i32) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bed_fit_checks_both_flat_orientations_at_the_actual_size() {
+        assert_eq!(bed_fit((103.5, 100.5), (104.0, 101.0)), BedFit::AsDrawn);
+        assert_eq!(bed_fit((100.5, 103.5), (104.0, 101.0)), BedFit::QuarterTurn);
+        assert_eq!(bed_fit((100.5, 103.5), (103.499, 101.0)), BedFit::TooLarge);
+        assert_eq!(bed_fit((100.5, 103.5), (103.5, 103.5)), BedFit::AsDrawn);
+    }
 
     fn square(x0: i32, y0: i32, side: i32) -> Shapes {
         vec![vec![rectangle(x0, y0, x0 + side, y0 + side)]]

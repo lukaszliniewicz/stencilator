@@ -13,6 +13,7 @@ import type {
   Kind,
   OpenedProject,
   PlateDrawing,
+  ProjectMode,
   ProjectSettings,
   Replies,
   Reply,
@@ -20,12 +21,16 @@ import type {
   SupportIssue
 } from './protocol';
 import { text } from '../lib/text';
+import { ProjectSaveError } from './protocol';
+
+export { ProjectSaveError };
 
 export type {
   About,
   ArtworkEdits,
   ArtworkSize,
   ArtworkSource,
+  BedFit,
   ChartFormat,
   ChartSummary,
   Coat,
@@ -74,6 +79,7 @@ export class Engine {
       }
       this.#waiting.delete(data.id);
       if (data.ok) waiting?.resolve(data.value);
+      else if ('saveProblem' in data) waiting?.reject(new ProjectSaveError(data.saveProblem));
       else waiting?.reject(new Error(data.message));
     };
     this.#worker.onerror = (event) => {
@@ -173,7 +179,13 @@ export class Engine {
     return this.#call({ kind: 'threeMf' });
   }
 
-  projectFile(settings: ProjectSettings, edits: ArtworkEdits): Promise<Uint8Array> {
-    return this.#call({ kind: 'projectFile', settings, edits });
+  projectFile(settings: ProjectSettings, edits: ArtworkEdits, strict = false): Promise<Uint8Array> {
+    return this.#call({ kind: 'projectFile', settings, edits, strict });
+  }
+
+  /** Returns the mode or null for an invalid file; rejects if validation is unavailable. */
+  async validateProject(file: Blob): Promise<ProjectMode | null> {
+    const bytes = await file.arrayBuffer();
+    return this.#call({ kind: 'validateProject', bytes }, [bytes]);
   }
 }

@@ -1,5 +1,5 @@
 <script lang="ts">
-  // Above the bench: undo and redo, what the bench shows, and the way to the files.
+  // Above the bench: undo, redo and what the bench shows.
   import Segmented from './Segmented.svelte';
   import { text } from './text';
   import type { View, Workbench } from './workbench.svelte';
@@ -25,9 +25,8 @@
         disabled: !bench.canShowFiles
       });
     }
-    return views;
+    return [...views, { value: 'bed', label: text.bed.title, disabled: !bench.stencilsPossible }];
   });
-  const onFiles = $derived(bench.screen === 'files');
 </script>
 
 <div class="toolbar">
@@ -76,75 +75,23 @@
     </button>
   </div>
 
-  <div class="middle">
-    {#if !onFiles}
-      <Segmented
-        label={text.toolbar.view}
-        options={views}
-        value={bench.view}
-        onpick={(view: View) => {
-          bench.show(view);
-        }}
-      />
-    {/if}
-  </div>
-
-  <div class="end">
-    {#if onFiles}
-      <button
-        type="button"
-        class="button"
-        onclick={() => {
-          bench.go('bench');
-        }}
-      >
-        <svg
-          width="16"
-          height="16"
-          viewBox="0 0 16 16"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="1.5"
-          aria-hidden="true"
-        >
-          <path d="M10 3L5 8l5 5" />
-        </svg>
-        {bench.isFreeform ? text.freeform.back : text.toolbar.back}
-      </button>
-    {:else}
-      <button
-        type="button"
-        class="button primary"
-        disabled={!bench.canShowFiles || bench.opening}
-        onclick={() => {
-          bench.go('files');
-        }}
-      >
-        {text.toolbar.files}
-        <svg
-          width="16"
-          height="16"
-          viewBox="0 0 16 16"
-          fill="none"
-          stroke="currentColor"
-          stroke-width="1.5"
-          aria-hidden="true"
-        >
-          <path d="M6 3l5 5-5 5" />
-        </svg>
-      </button>
-    {/if}
-  </div>
+  <Segmented
+    label={text.toolbar.view}
+    options={views}
+    value={bench.view}
+    onpick={bench.show}
+    wrap
+  />
 </div>
 
 <style>
   .toolbar {
-    min-height: 56px;
-    padding: 8px 12px;
-    display: grid;
-    grid-template-columns: 1fr auto 1fr;
+    flex: none;
+    padding: 5px 10px;
+    display: flex;
+    flex-wrap: wrap;
     align-items: center;
-    gap: 12px;
+    gap: 4px 10px;
     border-bottom: 1px solid var(--line);
     background: var(--panel);
   }
@@ -152,22 +99,5 @@
   .start {
     display: flex;
     gap: 4px;
-  }
-
-  .end {
-    display: flex;
-    justify-content: flex-end;
-  }
-
-  @media (max-width: 720px) {
-    .toolbar {
-      grid-template-columns: auto 1fr;
-    }
-
-    .middle {
-      grid-row: 2;
-      grid-column: 1 / -1;
-      overflow-x: auto;
-    }
   }
 </style>

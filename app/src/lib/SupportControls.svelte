@@ -1,17 +1,20 @@
 <script lang="ts">
+  import { tick } from 'svelte';
+  import type { SupportDrawing } from '../engine/client';
   import NumberField from './NumberField.svelte';
   import Segmented from './Segmented.svelte';
   import type { Settings } from './settings';
   import { text } from './text';
   import type { Workbench } from './workbench.svelte';
 
-  let { bench }: { bench: Workbench } = $props();
+  let { bench, placeSupport }: { bench: Workbench; placeSupport: () => void } = $props();
   const words = text.supports;
   const ends = [0, 1] as const;
   const choices = (['none', 'flat', 'raised'] as const).map((value) => ({
     value,
     label: words.kinds[value]
   }));
+  let coordinates: HTMLDivElement | undefined = $state();
   const kind = $derived(bench.supportKind);
   const raised = $derived(kind === 'raised');
   const plate = $derived(bench.selectedPlate);
@@ -36,6 +39,17 @@
     (value: number): void => {
       bench.change(key, value);
     };
+
+  async function edit(event: MouseEvent, support?: SupportDrawing): Promise<void> {
+    bench.editSupport(support);
+    if (!bench.supportDraft) return;
+    if (event.detail > 0) {
+      placeSupport();
+      return;
+    }
+    await tick();
+    coordinates?.querySelector('input')?.focus();
+  }
 </script>
 
 <Segmented
@@ -125,7 +139,7 @@
       {/if}
       {#if draft}
         <p class="note">{words.placement}</p>
-        <div class="fields">
+        <div class="fields" bind:this={coordinates}>
           {#each ends as end (end)}
             <NumberField
               label={words.coordinate(end, 'X')}
@@ -166,9 +180,7 @@
                 type="button"
                 class="button"
                 disabled={!bench.ready}
-                onclick={() => {
-                  bench.editSupport(selected);
-                }}
+                onclick={(event) => void edit(event, selected)}
               >
                 {words.move}
               </button>
@@ -191,9 +203,7 @@
             type="button"
             class="button primary"
             disabled={!bench.ready}
-            onclick={() => {
-              bench.editSupport();
-            }}
+            onclick={(event) => void edit(event)}
           >
             {words.add}
           </button>

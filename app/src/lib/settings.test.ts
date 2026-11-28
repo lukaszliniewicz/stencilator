@@ -5,6 +5,7 @@ import {
   fromProjectSettings,
   guessSizing,
   isSkipped,
+  normaliseDefaults,
   sanitise,
   toProjectSettings,
   toggledStencil,
@@ -96,6 +97,54 @@ describe('settings', () => {
 
   it('leave out-of-range values for the engine to explain', () => {
     expect(sanitise({ canvasWidthMm: -5 }).canvasWidthMm).toBe(-5);
+  });
+
+  it('repair saved defaults before they seed a project', () => {
+    const repaired = normaliseDefaults({
+      cellMm: 3,
+      bedWidthMm: 40,
+      marginMm: 1,
+      thicknessMm: 50,
+      connectorClearanceMm: 1,
+      chamferMm: 3
+    });
+    expect(repaired).toMatchObject({
+      cellMm: 0.1,
+      bedWidthMm: 256,
+      marginMm: 10,
+      thicknessMm: 1.2,
+      connectorClearanceMm: 4,
+      chamferMm: 0
+    });
+    expect(normaliseDefaults(undefined)).toEqual(defaults);
+  });
+
+  it('keep valid explicit saved defaults and replace only what is unusable', () => {
+    const kept = normaliseDefaults({
+      cellMm: 0.2,
+      bedWidthMm: 300,
+      bedDepthMm: 320,
+      tileMm: 12,
+      colours: 32,
+      marginMm: 25,
+      supportKind: 'flat',
+      bridgeWidthMm: 1.8,
+      skipped: ['#202030']
+    });
+    expect(kept).toMatchObject({
+      cellMm: 0.2,
+      bedWidthMm: 300,
+      bedDepthMm: 320,
+      tileMm: 12,
+      colours: 32,
+      marginMm: 25,
+      supportKind: 'flat',
+      bridgeWidthMm: 1.8,
+      skipped: ['#202030']
+    });
+    // Fields left out still take the engine's default.
+    expect(kept.canvasWidthMm).toBe(200);
+    expect(kept.artWidthMm).toBe(200);
   });
 
   it('compare by value, with an empty field equal to itself', () => {

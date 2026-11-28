@@ -8,6 +8,7 @@ use serde_json::{Value, json};
 use stencilator_core::artwork::{LabelMap, label_drawing, label_picture};
 use stencilator_core::colour::Rgb;
 use stencilator_core::drawing::{parse_svg, text_drawing};
+use stencilator_core::geometry::BedFit;
 use stencilator_core::plate::{
     Mark, Plate, PlateReport, RaisedSettings, Spot, SupportKind, build_plates, check_plate, plate_files, plates_3mf,
     registration_frame, reports_json,
@@ -527,17 +528,31 @@ impl Report<'_> {
             warnings.push(format!("{edits} for unticked or missing paints."));
         }
         let [bed_w, bed_h] = self.project.stencils.bed_mm;
-        if let Some(report) = self.reports.first().filter(|r| !r.fits_bed) {
-            warnings.push(format!(
-                "the plates, {:.1} x {:.1} mm, do not fit a {bed_w} x {bed_h} mm bed",
-                report.width_mm, report.height_mm
-            ));
+        if let Some(report) = self.reports.first() {
+            match report.bed_fit {
+                BedFit::QuarterTurn => warnings.push(format!(
+                    "the plates, {:.1} x {:.1} mm, fit a {bed_w} x {bed_h} mm bed after a quarter-turn",
+                    report.width_mm, report.height_mm
+                )),
+                BedFit::TooLarge => warnings.push(format!(
+                    "the plates, {:.1} x {:.1} mm, do not fit a {bed_w} x {bed_h} mm bed",
+                    report.width_mm, report.height_mm
+                )),
+                BedFit::AsDrawn => {}
+            }
         }
-        if let Some(frame) = self.frame.filter(|frame| !frame.fits_bed) {
-            warnings.push(format!(
-                "the registration frame, {:.1} x {:.1} mm, does not fit a {bed_w} x {bed_h} mm bed",
-                frame.width_mm, frame.height_mm
-            ));
+        if let Some(frame) = self.frame {
+            match frame.bed_fit {
+                BedFit::QuarterTurn => warnings.push(format!(
+                    "the registration frame, {:.1} x {:.1} mm, fits a {bed_w} x {bed_h} mm bed after a quarter-turn",
+                    frame.width_mm, frame.height_mm
+                )),
+                BedFit::TooLarge => warnings.push(format!(
+                    "the registration frame, {:.1} x {:.1} mm, does not fit a {bed_w} x {bed_h} mm bed",
+                    frame.width_mm, frame.height_mm
+                )),
+                BedFit::AsDrawn => {}
+            }
         }
         warnings
     }

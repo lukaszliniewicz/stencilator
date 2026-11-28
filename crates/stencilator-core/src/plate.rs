@@ -24,8 +24,8 @@ use crate::artwork::LabelMap;
 use crate::chart::COLOURS;
 use crate::colour::{Rgb, hex};
 use crate::geometry::{
-    Corners, Point, Shape, Shapes, UM_PER_MM, area_mm2, bounds, difference, fits_bed, mm, offset, rectangle, svg_path,
-    translate, um, union,
+    BedFit, Corners, Point, Shape, Shapes, UM_PER_MM, area_mm2, bed_fit, bounds, difference, mm, offset, rectangle,
+    svg_path, translate, um, union,
 };
 use crate::mesh::{Mesh, mesh_slabs};
 use crate::ral;
@@ -271,6 +271,8 @@ pub struct PlateReport {
     pub narrow_openings: Vec<Spot>,
     /// Whether the plate fits the bed, turned if need be.
     pub fits_bed: bool,
+    /// How the plate fits the bed: as drawn, after a quarter-turn, or not at all.
+    pub bed_fit: BedFit,
     /// What the optional flat bridges changed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub flat_bridges: Option<FlatBridgeReport>,
@@ -638,6 +640,7 @@ pub fn inspect_plate(plate: &Plate, settings: &PlateSettings) -> Result<(PlateRe
     let (thin_webs, web_spots) = long(webs, settings.min_web_mm);
     let (narrow_openings, narrow_spots) =
         long(narrow_parts(&plate.openings, um(settings.min_opening_mm))?, settings.min_opening_mm);
+    let fit = bed_fit((width_mm, height_mm), settings.bed_mm);
     let report = PlateReport {
         paint: plate.paint,
         colour: plate.colour,
@@ -650,7 +653,8 @@ pub fn inspect_plate(plate: &Plate, settings: &PlateSettings) -> Result<(PlateRe
         islands: island_spots,
         thin_webs: web_spots,
         narrow_openings: narrow_spots,
-        fits_bed: fits_bed((width_mm, height_mm), settings.bed_mm),
+        fits_bed: fit.fits(),
+        bed_fit: fit,
         flat_bridges: plate.flat_bridges.clone(),
         raised_connectors: raised.map(|settings| RaisedReport {
             count: plate.supports.count(),
@@ -835,6 +839,7 @@ mod tests {
         let x = entry["islands"][0]["x_mm"].as_f64().unwrap();
         assert!((x - disc.x_mm).abs() < 0.0005 && (x * 1000.0).fract() == 0.0, "{x}");
         assert_eq!(entry["thin_webs"], serde_json::json!([]));
+        assert_eq!((entry["fits_bed"].as_bool(), entry["bed_fit"].as_str()), (Some(true), Some("as-drawn")));
     }
 
     #[test]
@@ -1133,8 +1138,14 @@ mod tests {
         let settings = PlateSettings::default();
         let plate = &build_plates(&map, &settings, &[]).unwrap()[0];
         // 260 by 120 mm with the margins.
-        assert!(!check_plate(plate, &settings).unwrap().fits_bed);
-        assert!(check_plate(plate, &PlateSettings { bed_mm: (150.0, 300.0), ..settings }).unwrap().fits_bed);
+        let report = check_plate(plate, &settings).unwrap();
+        assert!(!report.fits_bed);
+        assert_eq!(report.bed_fit, BedFit::TooLarge);
+        let turned = check_plate(plate, &PlateSettings { bed_mm: (150.0, 300.0), ..settings.clone() }).unwrap();
+        assert!(turned.fits_bed);
+        assert_eq!(turned.bed_fit, BedFit::QuarterTurn);
+        let drawn = check_plate(plate, &PlateSettings { bed_mm: (260.0, 120.0), ..settings }).unwrap();
+        assert_eq!(drawn.bed_fit, BedFit::AsDrawn);
     }
 
     #[test]
