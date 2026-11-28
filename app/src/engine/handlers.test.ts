@@ -247,6 +247,42 @@ describe('the engine in WebAssembly', () => {
     expect(await stencil()).toEqual(before);
   });
 
+  it('uses the last valid bed only for a Tiles download with an invalid bed', async () => {
+    await picture('pixel-art/fox.png');
+    const withBed = (bed_mm: [number, number]) => ({
+      ...SETTINGS,
+      stencils: { ...SETTINGS.stencils, bed_mm }
+    });
+    const save = (settings: typeof SETTINGS, strict: boolean) =>
+      ask({ kind: 'projectFile', settings, edits: { fonts: { revision: 0, files: [] } }, strict });
+    const reopen = (bytes: Uint8Array) =>
+      ask({
+        kind: 'open',
+        file: 'project',
+        name: 'tiles.stencilator',
+        bytes: new Uint8Array(bytes).buffer
+      });
+
+    const previousBed: [number, number] = [120, 345];
+    await reopen(await save(withBed(previousBed), true));
+    const invalid = withBed([40, 256]);
+    await expect(save(invalid, true)).rejects.toMatchObject({
+      name: 'ProjectSaveError',
+      problem: { kind: 'settings' }
+    });
+    expect((await reopen(await save(invalid, false))).settings.stencils.bed_mm).toEqual(
+      previousBed
+    );
+    const badThickness = { ...invalid, stencils: { ...invalid.stencils, thickness_mm: 0 } };
+    await expect(save(badThickness, false)).rejects.toThrow();
+
+    const custom = withBed([50, 2_000]);
+    const unfinished = { ...custom, freeform: { ...custom.freeform, cell_mm: -1 } };
+    expect((await reopen(await save(unfinished, false))).settings.stencils.bed_mm).toEqual([
+      50, 2_000
+    ]);
+  });
+
   it('validates a project file without opening it', async () => {
     expect(await ask({ kind: 'validateProject', bytes: bytesOf('projects/fox.stencilator') })).toBe(
       'freeform'

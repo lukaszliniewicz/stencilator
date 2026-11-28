@@ -230,14 +230,22 @@
   }
 
   function keydown(event: KeyboardEvent): void {
-    if (event.defaultPrevented || modal || workspace.busy) return;
+    if (event.defaultPrevented || modal) return;
+    const shortcut = (event.ctrlKey || event.metaKey) && !event.altKey;
+    const key = event.key.toLowerCase();
+    if (shortcut && key === 'o') {
+      event.preventDefault();
+      choose('incoming');
+      return;
+    }
+    if (workspace.busy) return;
     if (event.key === 'Escape' && bench.supportDraft) {
       event.preventDefault();
       bench.cancelSupport();
       return;
     }
-    if (!(event.ctrlKey || event.metaKey) || event.altKey) return;
-    switch (event.key.toLowerCase()) {
+    if (!shortcut) return;
+    switch (key) {
       case 'z':
         if (workspace.starting || event.target instanceof HTMLTextAreaElement) return;
         event.preventDefault();
@@ -249,9 +257,6 @@
         event.preventDefault();
         bench.redo();
         break;
-      case 'o':
-        event.preventDefault();
-        choose('incoming');
     }
   }
 </script>

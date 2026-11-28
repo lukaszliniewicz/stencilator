@@ -78,7 +78,7 @@ function takePreview(preview: Wasm.RasterPreview): RasterPreview {
 function applyActiveSettings(
   project: Wasm.Project,
   settings: ProjectSettings,
-  use: 'preview' | 'save'
+  use: 'preview' | 'save' | 'save-with-last-bed'
 ): void {
   const previous = settingsOf(project);
   const active =
@@ -91,7 +91,7 @@ function applyActiveSettings(
             // Thickness affects STL files, but an unfinished value should not block the chart.
             thickness_mm:
               use === 'preview' ? previous.stencils.thickness_mm : settings.stencils.thickness_mm,
-            bed_mm: use === 'preview' ? previous.stencils.bed_mm : settings.stencils.bed_mm
+            bed_mm: use === 'save' ? settings.stencils.bed_mm : previous.stencils.bed_mm
           }
         }
       : { ...settings, tiles: previous.tiles };
@@ -112,8 +112,10 @@ function applySaveSettings(
     try {
       applyActiveSettings(project, settings, 'save');
     } catch (activeError) {
-      if (!strict) throw activeError;
-      throw new ProjectSaveError({ kind: 'settings' }, { cause: error });
+      if (strict) throw new ProjectSaveError({ kind: 'settings' }, { cause: error });
+      if (settings.mode !== 'tiles') throw activeError;
+      // A legacy bed can block a project download even though Tiles can still export stencils.
+      applyActiveSettings(project, settings, 'save-with-last-bed');
     }
     if (strict) {
       const mode = settings.mode === 'tiles' ? 'freeform' : 'tiles';

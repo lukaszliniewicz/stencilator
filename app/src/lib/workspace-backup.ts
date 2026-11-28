@@ -305,18 +305,37 @@ function decodePreferences(raw: unknown): Omit<WorkspacePreferences, 'lastProjec
   return { defaults: sanitise(defaults), theme, defaultProfileId };
 }
 
-/**
- * The name a record was imported under, or its current name once the person renamed it.
- * Only when the current name still equals `origin.importedAs` is `origin.name` a fair
- * comparison for the source it came from.
- */
-function comparableName<T extends { origin?: Origin }>(
-  record: T,
+/** The saved name, allowing an unchanged name allocated to avoid a clash during restore. */
+function matchesSavedName<T extends { id: string; origin?: Origin }>(
+  candidate: T,
+  source: T,
   nameOf: (record: T) => string
-): string {
-  const origin = record.origin;
-  if (origin === undefined) return nameOf(record);
-  return nameOf(record) === origin.importedAs ? origin.name : nameOf(record);
+): boolean {
+  const savedName = nameOf(source);
+  const currentName = nameOf(candidate);
+  if (currentName === savedName) return true;
+
+  const { origin } = candidate;
+  if (
+    origin?.importedAs !== currentName ||
+    (origin.sourceId !== undefined && origin.sourceId !== source.id) ||
+    !currentName.startsWith(savedName)
+  ) {
+    return false;
+  }
+
+  // Older restores of copies could store the ancestor's name. In either case, the
+  // allocated name must be the incoming saved name followed by one restore suffix.
+  const suffix = currentName.slice(savedName.length);
+  const number = Number(suffix.replace(/\D/g, '') || '1');
+  if (number < 1 || !Number.isSafeInteger(number) || suffix !== text.workspace.copySuffix(number))
+    return false;
+  const direct = (origin.sourceId ?? origin.id) === source.id;
+  const earlier = source.origin;
+  return (
+    (direct && origin.name === savedName) ||
+    (earlier?.id === origin.id && earlier.name === origin.name && earlier.importedAs === savedName)
+  );
 }
 
 /** A name distinct from every name already taken, comparing without case. */
@@ -374,7 +393,7 @@ function planRecords<T extends { id: string; origin?: Origin }>(
   const sourceIds = new Set(exportedIds ?? sources.map(({ id }) => id));
   return sources.map((source) => {
     const incoming = remap(source);
-    const sourceName = comparableName(source, nameOf);
+    const sourceName = nameOf(source);
     // Reserve exact ids for their own rows, including rows in other parts. On older restores,
     // the original id is the only evidence of the exported id.
     const candidates = existing.filter(
@@ -383,12 +402,12 @@ function planRecords<T extends { id: string; origin?: Origin }>(
         (!sourceIds.has(record.id) && (record.origin?.sourceId ?? record.origin?.id) === source.id)
     );
     const matches = candidates.filter(
-      (record) => comparableName(record, nameOf) === sourceName && same(record, incoming)
+      (record) => matchesSavedName(record, source, nameOf) && same(record, incoming)
     );
     const identical = matches.find((record) => record.id === source.id) ?? matches[0];
     if (identical) return { source, record: identical, action: 'skip' };
 
-    const name = distinctName(nameOf(source), taken);
+    const name = distinctName(sourceName, taken);
     const origin: Origin = {
       id: source.origin?.id ?? source.id,
       sourceId: source.id,

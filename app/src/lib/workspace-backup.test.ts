@@ -259,7 +259,8 @@ describe('workspace backups', () => {
         ...Array.from({ length: 4 }, (_, i) => ({
           ...original,
           id: `p${String(i)}`,
-          file: sizedFile(size)
+          // 96 MiB plus one byte, still well below the encoded-file ceiling.
+          file: sizedFile(i === 3 ? 1 : size)
         }))
       ],
       profiles: [printer],
@@ -487,6 +488,73 @@ describe('workspace backups', () => {
     expect(plan.preferences.defaultProfileId).toBe(restoredProfile.id);
   });
 
+  it('keeps the backed-up names of copies renamed locally and skips repeat restores', async () => {
+    const restoredProject = await project('p1-copy', 'Fox (copy)', 'bytes', {
+      origin: { id: 'p1', sourceId: 'p1', name: 'Fox', importedAs: 'Fox (copy)' }
+    });
+    const restoredProfile = profile('pr1-copy', 'Ender (copy)', 240, 210, {
+      origin: { id: 'pr1', sourceId: 'pr1', name: 'Ender', importedAs: 'Ender (copy)' }
+    });
+    const snapshot: WorkspaceSnapshot = {
+      revision: 4,
+      projects: [restoredProject],
+      profiles: [restoredProfile],
+      preferences: preferences()
+    };
+    const backup = await decodeBackup(await encodeBackup(snapshot), validateProject);
+
+    snapshot.projects = [
+      { ...restoredProject, title: 'Fox' },
+      await project('other-project', restoredProject.title, 'other bytes')
+    ];
+    snapshot.profiles = [
+      { ...restoredProfile, name: 'Ender' },
+      profile('other-profile', restoredProfile.name)
+    ];
+    const plan = previewRestore(backup, snapshot);
+    const [design] = plan.projects;
+    const [printer] = plan.profiles;
+    assert(design && printer);
+    expect(design).toMatchObject({ action: 'copy', record: { title: 'Fox (copy) (copy)' } });
+    expect(printer).toMatchObject({ action: 'copy', record: { name: 'Ender (copy) (copy)' } });
+    snapshot.projects.push(design.record);
+    snapshot.profiles.push(printer.record);
+
+    const repeat = previewRestore(backup, snapshot);
+    expect(repeat.projects).toMatchObject([{ action: 'skip', record: design.record }]);
+    expect(repeat.profiles).toMatchObject([{ action: 'skip', record: printer.record }]);
+  });
+
+  it('recognises an earlier restore that kept the ancestor name in its origin', async () => {
+    const imported = await project('p1-copy', 'Fox (copy)', 'bytes', {
+      origin: { id: 'p1', name: 'Fox', importedAs: 'Fox (copy)' }
+    });
+    const restored = {
+      ...imported,
+      title: 'Fox (copy) (copy 2)',
+      origin: { id: 'p1', sourceId: imported.id, name: 'Fox', importedAs: 'Fox (copy) (copy 2)' }
+    };
+    const snapshot: WorkspaceSnapshot = {
+      revision: 4,
+      projects: [restored],
+      profiles: [],
+      preferences: preferences()
+    };
+    const backup = {
+      version: 1 as const,
+      projects: [imported],
+      profiles: [],
+      preferences: preferences()
+    };
+    expect(previewRestore(backup, snapshot).projects).toMatchObject([
+      { action: 'skip', record: restored }
+    ]);
+    backup.projects = [{ ...imported, title: 'Fox' }];
+    expect(previewRestore(backup, snapshot).projects).toMatchObject([
+      { action: 'copy', record: { title: 'Fox' } }
+    ]);
+  });
+
   it('copies a changed record and adds a new one with a distinct title', async () => {
     const existing = await project('p1', 'Fox', 'old-bytes');
     const snapshot: WorkspaceSnapshot = {
@@ -512,8 +580,8 @@ describe('workspace backups', () => {
     expect(changed.record.digest).toBe(edited.digest);
     expect(added.action).toBe('add');
     expect(added.record.id).toBe('p2');
-    // Matching by name alone never overwrites: the added "Fox" gets a distinct title.
-    expect(added.record.title.toLocaleLowerCase()).not.toBe('fox');
+    const titles = [existing.title, changed.record.title, added.record.title];
+    expect(new Set(titles.map((title) => title.toLocaleLowerCase())).size).toBe(titles.length);
   });
 
   it('repoints a project to a profile imported as a copy', async () => {

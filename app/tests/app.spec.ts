@@ -303,6 +303,28 @@ test('a second drop during a project open tells the user to retry', async ({ pag
   await expect(page.getByRole('dialog')).toHaveCount(0);
 });
 
+test('the open shortcut stays in the app during a project transition', async ({ page }) => {
+  const request = await controlWorkerRequest(page, 'open');
+  await page.goto('/');
+  await workspaceReady(page);
+  await request.hold();
+  await openPicture(page);
+  await request.held();
+
+  const prevented = await page.evaluate(() =>
+    ['ctrlKey', 'metaKey'].map(
+      (modifier) =>
+        !window.dispatchEvent(
+          new KeyboardEvent('keydown', { key: 'o', [modifier]: true, cancelable: true })
+        )
+    )
+  );
+  expect.soft(prevented).toEqual([true, true]);
+  await expect(page.getByRole('alert')).toHaveText(OPEN_BUSY);
+  await request.release();
+  await expect(page.getByRole('button', { name: 'chart-0', exact: true })).toBeEnabled();
+});
+
 test('a theme write failure keeps the local choice through a workspace refresh', async ({
   page
 }) => {
@@ -1007,31 +1029,32 @@ test('a saved project that fails to open can be retried from the Projects dialog
   await expect(page.getByRole('textbox', { name: 'Text', exact: true })).toHaveValue('O');
 });
 
-test('an unreadable project file is explained without replacing the open project', async ({
-  page
-}) => {
-  await page.goto('/');
-  await openPicture(page);
-  await saved(page);
-  const field = page.getByLabel('Stencilator project file');
-  for (const contents of [
-    'not json',
-    '{"stencilator":999}',
-    '{"stencilator":1,"source":{"kind":"picture","data":"YmFkIGltYWdl"}}'
-  ]) {
-    await field.setInputFiles({
+for (const [reason, contents] of Object.entries({
+  'malformed JSON': 'not json',
+  'unsupported version': '{"stencilator":999}',
+  'invalid picture': '{"stencilator":1,"source":{"kind":"picture","data":"YmFkIGltYWdl"}}'
+})) {
+  test(`an unreadable project file (${reason}) leaves the open project in place`, async ({
+    page
+  }) => {
+    await page.goto('/');
+    await openPicture(page);
+    await saved(page);
+    const alert = page.getByRole('alert');
+    await expect(alert).toHaveCount(0);
+    await page.getByLabel('Stencilator project file').setInputFiles({
       name: 'Unreadable.stencilator',
       mimeType: 'application/json',
       buffer: Buffer.from(contents)
     });
-    await expect(page.getByRole('button', { name: 'chart-0', exact: true })).toBeEnabled();
-    await expect(page.getByRole('alert')).toHaveText(
+    await expect(alert).toHaveText(
       'This project file could not be opened. It may be damaged or need a newer version of Stencilator.'
     );
-  }
-  await page.getByRole('button', { name: 'Files', exact: true }).click();
-  await expect(page.getByRole('button', { name: /^Save stencil 1,/ })).toBeEnabled();
-});
+    await expect(page.getByRole('button', { name: 'chart-0', exact: true })).toBeEnabled();
+    await page.getByRole('button', { name: 'Files', exact: true }).click();
+    await expect(page.getByRole('button', { name: /^Save stencil 1,/ })).toBeEnabled();
+  });
+}
 
 test('the Projects dialog explains why opening is blocked during an STL export', async ({
   page
@@ -1406,6 +1429,33 @@ test('a browser without storage keeps the draft editable and asks before leaving
   await expect(page.getByLabel('Tile (mm)', { exact: true })).toHaveValue('6');
 });
 
+test('a new view saves automatically after a view-only save fails', async ({ page }) => {
+  await page.goto('/');
+  await openPicture(page);
+  await saved(page);
+  await page.evaluate(() => {
+    // eslint-disable-next-line @typescript-eslint/unbound-method -- Restored after the failed write.
+    const transaction = IDBDatabase.prototype.transaction;
+    IDBDatabase.prototype.transaction = function (stores, mode, options) {
+      if (mode === 'readwrite') {
+        IDBDatabase.prototype.transaction = transaction;
+        throw new DOMException('The workspace is full.', 'QuotaExceededError');
+      }
+      return transaction.call(this, stores, mode, options);
+    };
+  });
+
+  await page.getByRole('button', { name: 'Picture', exact: true }).click();
+  await expect(page.getByRole('region', { name: 'Could not save in this browser' })).toContainText(
+    'The browser ran out of storage space.'
+  );
+  const next = page.getByRole('button', { name: 'Side by side', exact: true });
+  await next.click();
+  await saved(page);
+  await page.reload();
+  await expect(next).toHaveAttribute('aria-pressed', 'true');
+});
+
 for (const removed of [false, true]) {
   test(
     removed
@@ -1551,7 +1601,7 @@ test('Tiles checks the saved bed in the preview and in Files', async ({ page }) 
   await expect(settings(page).getByRole('heading', { name: 'Tile sizing' })).toBeFocused();
 });
 
-test('Tiles reports a legacy bed outside the fit range and still offers stencil files', async ({
+test('Tiles explains a legacy bed outside the fit range and still offers downloads', async ({
   page
 }) => {
   await page.addInitScript(() => {
@@ -1567,6 +1617,14 @@ test('Tiles reports a legacy bed outside the fit range and still offers stencil 
   await page.getByRole('button', { name: 'Files', exact: true }).click();
   await expect(fit.getByText(outsideRange)).toBeVisible();
   await expect(page.getByRole('button', { name: /^Save stencil 1,/ })).toBeEnabled();
+  await expect(page.getByRole('region', { name: 'Could not save in this browser' })).toContainText(
+    'Check the settings for this project before saving.'
+  );
+  const download = page.waitForEvent('download', { timeout: 5_000 });
+  await bench(page).getByRole('button', { name: 'Download project', exact: true }).click();
+  const file = await readFile(await (await download).path(), 'utf8');
+  expect(JSON.parse(file)).toMatchObject({ stencils: { bed_mm: [256, 256] } });
+  await expect(fit.getByText(outsideRange)).toBeVisible();
   await changeBed(page, '256', '256');
   await expect(fit.getByText('All parts fit as drawn.')).toBeVisible();
 });
@@ -2078,6 +2136,36 @@ test('two restores can be backed up as separate files when the workspace outgrow
     );
     await preview.getByRole('button', { name: 'Back to backup options' }).click();
   }
+});
+
+test('a workspace connection opened after a blocked request is closed', async ({ page }) => {
+  await page.addInitScript(() => {
+    const open = indexedDB.open.bind(indexedDB);
+    indexedDB.open = (name, version) => {
+      const request = open(name, version);
+      if (name === 'stencilator-workspace') {
+        indexedDB.open = open;
+        request.addEventListener('success', () => {
+          const db = request.result;
+          const close = db.close.bind(db);
+          const root = document.documentElement;
+          root.dataset.lateOpen = 'open';
+          db.close = () => {
+            close();
+            root.dataset.lateOpen = 'closed';
+          };
+        });
+        // Simulate the blocked event, then let IndexedDB open a real connection.
+        queueMicrotask(() => {
+          request.dispatchEvent(new Event('blocked'));
+        });
+      }
+      return request;
+    };
+  });
+  await page.goto('/');
+  await expect(page.getByRole('region', { name: 'This tab needs to reload' })).toBeVisible();
+  await expect(page.locator('html')).toHaveAttribute('data-late-open', 'closed');
 });
 
 test('an older tab stops writing when another connection upgrades the database', async ({

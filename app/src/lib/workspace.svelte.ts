@@ -36,6 +36,12 @@ export interface ReplacementTarget {
   revision: number | null;
 }
 
+interface SaveDraft {
+  version: number;
+  title: string;
+  view: ProjectView;
+}
+
 function sameView(a: ProjectView, b: ProjectView): boolean {
   return (
     a.view === b.view &&
@@ -84,7 +90,7 @@ export class Workspace {
   #readyBytes = $state.raw<{ version: number; file: Blob }>();
   #savedVersion = $state(-1);
   #sampleVersion = $state(-1);
-  #failedVersion = $state(-1);
+  #failedDraft = $state.raw<SaveDraft>();
   #writing = $state(false);
   #refreshWhenIdle = $state(false);
   #localTheme = $state.raw<{ choice: ThemeChoice; useSnapshot: boolean }>();
@@ -173,7 +179,8 @@ export class Workspace {
   constructor(bench: Workbench) {
     this.bench = bench;
     $effect(() => {
-      const version = this.bench.editVersion;
+      const { version, title, view } = this.#saveDraft();
+      const failed = this.#failedDraft;
       if (
         !this.pending ||
         this.busy ||
@@ -181,7 +188,8 @@ export class Workspace {
         this.bench.opening ||
         this.upgrade ||
         this.conflict ||
-        (this.saveProblem && this.#failedVersion === version)
+        this.#writing ||
+        (failed?.version === version && failed.title === title && sameView(failed.view, view))
       )
         return;
       const timer = setTimeout(() => void this.flush(), SAVE_AFTER_MS);
@@ -310,8 +318,12 @@ export class Workspace {
     return !this.pending;
   }
 
+  #saveDraft(): SaveDraft {
+    return { version: this.bench.editVersion, title: this.title, view: this.bench.projectView };
+  }
+
   async #write(): Promise<boolean> {
-    let version = this.bench.editVersion;
+    let draft = this.#saveDraft();
     this.#writing = true;
     this.saveProblem = '';
     try {
@@ -320,11 +332,12 @@ export class Workspace {
         this.saveProblem = this.storageProblem || words.errors.unavailable;
         return false;
       }
-      version = this.bench.editVersion;
+      draft = this.#saveDraft();
+      const { version, title, view } = draft;
       const input = {
         id: this.id,
-        title: this.title,
-        view: this.bench.projectView,
+        title,
+        view,
         mode: this.bench.settings.projectMode,
         profileId: this.bench.profileId
       };
@@ -348,7 +361,7 @@ export class Workspace {
       else this.saveProblem = workspaceProblem(error);
       return false;
     } finally {
-      this.#failedVersion = version;
+      this.#failedDraft = this.saveProblem ? draft : undefined;
       this.#writing = false;
     }
   }
@@ -461,6 +474,7 @@ export class Workspace {
     this.#sampleVersion = -1;
     this.conflict = false;
     this.saveProblem = '';
+    this.#failedDraft = undefined;
     this.starting = false;
   }
 

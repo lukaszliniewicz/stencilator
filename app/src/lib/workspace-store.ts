@@ -39,6 +39,7 @@ export interface Origin {
   id: string;
   /** The incoming backup's record id, absent on older restores. */
   sourceId?: string;
+  /** The name in the incoming backup. Older restores could keep an ancestor's name here. */
   name: string;
   importedAs: string;
 }
@@ -556,6 +557,7 @@ export function openWorkspace(
 ): Promise<WorkspaceStore> {
   return new Promise((resolve, reject) => {
     const request = indexedDB.open(DB_NAME, DB_VERSION);
+    let blocked = false;
     request.onupgradeneeded = () => {
       const db = request.result;
       db.createObjectStore('projects', { keyPath: 'id' });
@@ -565,10 +567,16 @@ export function openWorkspace(
       workspace.put({ key: 'revision', value: 0 });
     };
     request.onblocked = () => {
+      blocked = true;
       reject(new WorkspaceError('upgrade', 'Another tab is blocking the workspace upgrade.'));
     };
     request.onsuccess = () => {
       const db = request.result;
+      // Rejecting the promise does not cancel the IndexedDB request.
+      if (blocked) {
+        db.close();
+        return;
+      }
       if (db.version > DB_VERSION) {
         db.close();
         reject(new WorkspaceError('upgrade', 'The workspace uses a newer storage version.'));

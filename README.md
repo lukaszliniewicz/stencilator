@@ -29,8 +29,9 @@ There’s nothing to install to use the web app, and it never uploads your artwo
    whole set or separate STLs. Check each plate at actual size in your
    slicer and lay it flat on the bed.
 
-Projects save in your current browser. Use **Download project** in
-**Project actions** or **Files** for a `.stencilator` file you can open in the
+Projects save in your current browser. To come back to an unchanged fox or
+badge sample, select **Keep project** before leaving it. Use **Download project**
+in **Project actions** or **Files** for a `.stencilator` file you can open in the
 app, on the command line or through MCP. To keep all your projects, printer
 profiles and preferences together, choose **Back up or restore…** in the
 project switcher.
