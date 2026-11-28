@@ -3,7 +3,7 @@ import { SvelteSet } from 'svelte/reactivity';
 import { ProjectSaveError } from '../engine/client';
 import { baseName, projectFileName } from './names';
 import type { Settings } from './settings';
-import { sanitise } from './settings';
+import { normaliseDefaults } from './settings';
 import { readStored } from './storage';
 import { text } from './text';
 import type { ThemeChoice } from './theme.svelte';
@@ -29,7 +29,7 @@ import {
 const SAVE_AFTER_MS = 450;
 export const TITLE_LIMIT = 120;
 const words = text.workspace;
-const legacyDefaults = (): Settings => sanitise(readStored('stencilator.settings'));
+const legacyDefaults = (): Settings => normaliseDefaults(readStored('stencilator.settings'));
 
 export interface ReplacementTarget {
   id: string;
@@ -486,7 +486,9 @@ export class Workspace {
   }
 
   #defaults(): Settings {
-    const defaults = this.snapshot?.preferences.defaults ?? legacyDefaults();
+    const defaults = this.snapshot
+      ? normaliseDefaults(this.snapshot.preferences.defaults)
+      : legacyDefaults();
     const profile = this.defaultProfile;
     return {
       ...defaults,
@@ -603,10 +605,19 @@ export class Workspace {
   }
 
   async #confirmReplacement(target: ReplacementTarget): Promise<boolean> {
-    if (this.#flight) await this.#flight;
-    if (this.canReplace(target)) return true;
-    this.message = words.replaceChanged;
-    return false;
+    const current = (): boolean => this.canReplace(target);
+    if (!current()) {
+      this.message = words.replaceChanged;
+      return false;
+    }
+    const saved = await this.flush();
+    if (!current()) {
+      this.message = words.replaceChanged;
+      return false;
+    }
+    // A clean draft or a successful save needs no warning. A failed save leaves the draft
+    // here, so ask before the replacement clears it.
+    return saved || !this.pending || window.confirm(words.replaceUnsaved(this.title));
   }
 
   replace = (file: File, target: ReplacementTarget): Promise<boolean> =>

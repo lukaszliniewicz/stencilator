@@ -11,8 +11,7 @@
  * does not advance the revision.
  */
 import type { ProjectMode } from '../engine/client';
-import type { Settings } from './settings';
-import { sanitise } from './settings';
+import { normaliseDefaults, type Settings } from './settings';
 import { readStored } from './storage';
 
 const DB_NAME = 'stencilator-workspace';
@@ -112,6 +111,8 @@ export interface RestorePlan {
   projects: RestoreEntry<SavedProject>[];
   profiles: RestoreEntry<PrinterProfile>[];
   preferences: Omit<WorkspacePreferences, 'lastProjectId'>;
+  /** Whether the workspace can still be backed up with each preference choice. */
+  fits: { keep: boolean; restore: boolean };
 }
 
 export type WorkspaceErrorCode =
@@ -134,7 +135,7 @@ const BED_MAX_MM = 2000;
 
 function defaultPreferences(): WorkspacePreferences {
   return {
-    defaults: sanitise(undefined),
+    defaults: normaliseDefaults(undefined),
     theme: 'auto',
     defaultProfileId: null,
     lastProjectId: null
@@ -145,7 +146,7 @@ function defaultPreferences(): WorkspacePreferences {
 function migratedPreferences(): WorkspacePreferences {
   const theme = readStored(LEGACY_THEME_KEY);
   return {
-    defaults: sanitise(readStored(LEGACY_SETTINGS_KEY)),
+    defaults: normaliseDefaults(readStored(LEGACY_SETTINGS_KEY)),
     theme: theme === 'light' || theme === 'dark' || theme === 'auto' ? theme : 'auto',
     defaultProfileId: null,
     lastProjectId: null
@@ -501,6 +502,9 @@ class Store implements WorkspaceStore {
       const workspace = tx.objectStore('workspace');
       const revision = (await workspaceValue<number>(workspace, 'revision')) ?? 0;
       if (revision !== plan.revision) return false;
+      if (!(restorePreferences ? plan.fits.restore : plan.fits.keep)) {
+        throw new WorkspaceError('too-large');
+      }
       if (!hasChanges) return true;
       const next = revision + 1;
       const projectStore = tx.objectStore('projects');

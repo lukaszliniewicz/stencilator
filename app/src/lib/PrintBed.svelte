@@ -51,9 +51,21 @@
   }
 
   const world = $derived.by(() => {
-    const [x, y, w, d]: [number, number, number, number] =
-      frame === 'part' && part ? [offsetX, offsetY, width, depth] : [0, 0, bedW, bedD];
-    const corners = [project(x, y), project(x + w, y), project(x, y + d), project(x + w, y + d)];
+    const placed: [number, number, number, number] = [offsetX, offsetY, width, depth];
+    // A part that fits stays framed by the bed alone. An overhanging part is framed with
+    // the bed so the whole outline outside it stays visible, including negative offsets.
+    const boxes: [number, number, number, number][] =
+      frame === 'part' && part
+        ? [placed]
+        : over
+          ? [[0, 0, bedW, bedD], placed]
+          : [[0, 0, bedW, bedD]];
+    const corners = boxes.flatMap(([x, y, w, d]) => [
+      project(x, y),
+      project(x + w, y),
+      project(x, y + d),
+      project(x + w, y + d)
+    ]);
     const xs = corners.map(([value]) => value);
     const ys = corners.map(([, value]) => value);
     const left = Math.min(...xs);

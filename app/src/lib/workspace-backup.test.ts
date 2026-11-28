@@ -27,6 +27,15 @@ const VIEW = {
 
 /** Three copies, the record and both origin fields, exceed the 160 MiB export budget. */
 const HUGE_NAME = 'a'.repeat(54 * 1024 * 1024);
+/** A name whose reserved restored size, with a 32 MiB project, exceeds one backup file. */
+const LARGE_NAME = 'b'.repeat(40 * 1024 * 1024);
+
+/** A Blob that reports a size without allocating its bytes. */
+function sizedFile(size: number): Blob {
+  const file = new Blob();
+  Object.defineProperty(file, 'size', { value: size });
+  return file;
+}
 
 const project = async (
   id: string,
@@ -222,6 +231,39 @@ describe('workspace backups', () => {
     await expect(decodeBackup(file, () => Promise.resolve('freeform'))).rejects.toMatchObject({
       code: 'invalid'
     });
+  });
+
+  it('plans many small records without reserialising the envelope for each', async () => {
+    const design = await project('p0', 'One', 'bytes');
+    const printer = profile('pr1', 'Ender');
+    const snapshot: WorkspaceSnapshot = {
+      revision: 1,
+      projects: Array.from({ length: 100 }, (_, i) => ({
+        ...design,
+        id: `p${String(i)}`,
+        title: `Project ${String(i)}`
+      })),
+      profiles: [printer],
+      preferences: preferences({ defaultProfileId: printer.id })
+    };
+
+    const stringify = vi.spyOn(JSON, 'stringify');
+    const { planned, envelopes } = (() => {
+      try {
+        const result = planBackups(snapshot);
+        return {
+          planned: result,
+          envelopes: stringify.mock.calls.filter(
+            ([value]) =>
+              typeof value === 'object' && value !== null && 'stencilator_workspace' in value
+          ).length
+        };
+      } finally {
+        stringify.mockRestore();
+      }
+    })();
+    expect(planned.parts.flatMap(({ projects }) => projects)).toHaveLength(100);
+    expect(envelopes).toBeLessThanOrEqual(5);
   });
 
   it('splits large workspaces without losing projects, unlinked profiles or printer links', async () => {
@@ -596,6 +638,114 @@ describe('workspace backups', () => {
     ]);
   });
 
+  it('restores an authored rename instead of skipping the earlier import', async () => {
+    const original = await project('p1', 'Fox', 'bytes');
+    const unrelated = await project('u1', 'Fox', 'other bytes');
+    const empty: WorkspaceSnapshot = {
+      revision: 1,
+      projects: [unrelated],
+      profiles: [],
+      preferences: preferences()
+    };
+    const [first] = previewRestore(
+      { version: 1, projects: [original], profiles: [], preferences: preferences() },
+      empty
+    ).projects;
+    assert(first);
+    expect(first).toMatchObject({ action: 'add', record: { id: 'p1', title: 'Fox (copy)' } });
+
+    // The original backup still recognises its unchanged import.
+    const withCopy: WorkspaceSnapshot = { ...empty, projects: [unrelated, first.record] };
+    expect(
+      previewRestore(
+        { version: 1, projects: [original], profiles: [], preferences: preferences() },
+        withCopy
+      ).projects
+    ).toMatchObject([{ action: 'skip', record: first.record }]);
+
+    // Renaming the imported copy back to the original name and backing that up is a new
+    // saved name, not a replay of the import that allocated “Fox (copy)”.
+    const renamed = { ...first.record, title: 'Fox' };
+    const renamedBackup = {
+      version: 1 as const,
+      projects: [renamed],
+      profiles: [],
+      preferences: preferences()
+    };
+    const [changed] = previewRestore(renamedBackup, withCopy).projects;
+    assert(changed);
+    expect(changed).toMatchObject({ action: 'copy', record: { title: 'Fox (copy 2)' } });
+    expect(changed.record.id).not.toBe('p1');
+    withCopy.projects.push(changed.record);
+    expect(previewRestore(renamedBackup, withCopy).projects).toMatchObject([
+      { action: 'skip', record: changed.record }
+    ]);
+  });
+
+  it('does not reuse the earlier allocated name in a fresh collision workspace', async () => {
+    const original = await project('p1', 'Fox', 'bytes');
+    const unrelated = await project('u1', 'Fox', 'other bytes');
+    const empty: WorkspaceSnapshot = {
+      revision: 1,
+      projects: [unrelated],
+      profiles: [],
+      preferences: preferences()
+    };
+    const [first] = previewRestore(
+      { version: 1, projects: [original], profiles: [], preferences: preferences() },
+      empty
+    ).projects;
+    assert(first);
+    const renamed = { ...first.record, title: 'Fox' };
+    const backup = {
+      version: 1 as const,
+      projects: [renamed],
+      profiles: [],
+      preferences: preferences()
+    };
+
+    // “Fox (copy)” is free here, but it was the earlier import's allocated name.
+    const [restored] = previewRestore(backup, empty).projects;
+    assert(restored);
+    expect(restored).toMatchObject({ action: 'add', record: { title: 'Fox (copy 2)' } });
+    empty.projects.push(restored.record);
+    expect(previewRestore(backup, empty).projects).toMatchObject([
+      { action: 'skip', record: restored.record }
+    ]);
+  });
+
+  it('applies the same rename matching to printer profiles', () => {
+    const original = profile('pr1', 'Ender');
+    const unrelated = profile('u1', 'Ender', 300);
+    const empty: WorkspaceSnapshot = {
+      revision: 1,
+      projects: [],
+      profiles: [unrelated],
+      preferences: preferences()
+    };
+    const [first] = previewRestore(
+      { version: 1, projects: [], profiles: [original], preferences: preferences() },
+      empty
+    ).profiles;
+    assert(first);
+    expect(first).toMatchObject({ action: 'add', record: { name: 'Ender (copy)' } });
+    const renamed = { ...first.record, name: 'Ender' };
+    empty.profiles.push(first.record);
+    const [changed] = previewRestore(
+      { version: 1, projects: [], profiles: [renamed], preferences: preferences() },
+      empty
+    ).profiles;
+    assert(changed);
+    expect(changed).toMatchObject({ action: 'copy', record: { name: 'Ender (copy 2)' } });
+    empty.profiles.push(changed.record);
+    expect(
+      previewRestore(
+        { version: 1, projects: [], profiles: [renamed], preferences: preferences() },
+        empty
+      ).profiles
+    ).toMatchObject([{ action: 'skip', record: changed.record }]);
+  });
+
   it('copies a changed record and adds a new one with a distinct title', async () => {
     const existing = await project('p1', 'Fox', 'old-bytes');
     const snapshot: WorkspaceSnapshot = {
@@ -649,6 +799,7 @@ describe('workspace backups', () => {
     expect(newProfileId).not.toBe('pr1');
     expect(plan.projects).toMatchObject([{ record: { profileId: newProfileId } }]);
     expect(plan.preferences.defaultProfileId).toBe(newProfileId);
+    expect(plan.fits).toEqual({ keep: true, restore: true });
   });
 
   it('repairs restored defaults the engine would reject and keeps valid values', async () => {
@@ -799,6 +950,122 @@ describe('workspace backups', () => {
     }
     expect(thrown).toBeInstanceOf(WorkspaceError);
     expect(thrown).toMatchObject({ code: 'too-large' });
+  });
+
+  it.each([null, 'pr1'])(
+    'rejects a restore whose project and linked printer cannot share a part (%s default)',
+    async (defaultProfileId) => {
+      const design = {
+        ...(await project('p1', 'Design', 'bytes', { profileId: 'pr1' })),
+        file: sizedFile(32 * 1024 * 1024)
+      };
+      const backup = {
+        version: 1 as const,
+        projects: [design],
+        profiles: [profile('pr1', LARGE_NAME)],
+        preferences: preferences({ defaultProfileId })
+      };
+      const snapshot: WorkspaceSnapshot = {
+        revision: 0,
+        projects: [],
+        profiles: [],
+        preferences: preferences()
+      };
+
+      let thrown: unknown;
+      try {
+        previewRestore(backup, snapshot);
+      } catch (error) {
+        thrown = error;
+      }
+      expect(thrown).toBeInstanceOf(WorkspaceError);
+      expect(thrown).toMatchObject({ code: 'too-large' });
+    }
+  );
+
+  it('allows an existing excluded profile but not restoring it as the default', async () => {
+    const excluded = profile('huge', HUGE_NAME);
+    const snapshot: WorkspaceSnapshot = {
+      revision: 1,
+      projects: [],
+      profiles: [excluded],
+      preferences: preferences()
+    };
+    expect(planBackups(snapshot).excluded).toEqual([
+      { kind: 'profile', id: excluded.id, title: HUGE_NAME }
+    ]);
+    const backup = {
+      version: 1 as const,
+      projects: [await project('p2', 'New project', 'bytes')],
+      profiles: [excluded],
+      preferences: preferences({ defaultProfileId: excluded.id })
+    };
+
+    const plan = previewRestore(backup, snapshot);
+    expect(plan.fits).toEqual({ keep: true, restore: false });
+    expect(plan.projects).toMatchObject([{ action: 'add', record: { id: 'p2' } }]);
+    expect(plan.profiles).toMatchObject([{ action: 'skip', record: excluded }]);
+  });
+
+  it('lets a restored default free room for a new project that the current one blocks', async () => {
+    const large = profile('current', LARGE_NAME);
+    const snapshot: WorkspaceSnapshot = {
+      revision: 1,
+      projects: [],
+      profiles: [large],
+      preferences: preferences({ defaultProfileId: large.id })
+    };
+    expect(planBackups(snapshot).excluded).toEqual([]);
+    const backup = {
+      version: 1 as const,
+      projects: [
+        {
+          ...(await project('p2', 'Design', 'bytes', { profileId: 'linked' })),
+          file: sizedFile(32 * 1024 * 1024)
+        }
+      ],
+      profiles: [profile('linked', 'Small printer')],
+      preferences: preferences()
+    };
+
+    const plan = previewRestore(backup, snapshot);
+    expect(plan.fits).toEqual({ keep: false, restore: true });
+    expect(plan.projects).toMatchObject([{ action: 'add', record: { profileId: 'linked' } }]);
+  });
+
+  it('counts a restored default printer once when a project links to it', async () => {
+    const shared = profile('shared', 'c'.repeat(30 * 1024 * 1024));
+    const design = {
+      ...(await project('p1', 'Design', 'bytes', { profileId: shared.id })),
+      file: sizedFile(32 * 1024 * 1024)
+    };
+    const backup = {
+      version: 1 as const,
+      projects: [design],
+      profiles: [shared],
+      preferences: preferences({ defaultProfileId: shared.id })
+    };
+    const snapshot: WorkspaceSnapshot = {
+      revision: 0,
+      projects: [],
+      profiles: [],
+      preferences: preferences()
+    };
+
+    const plan = previewRestore(backup, snapshot);
+    expect(plan.fits).toEqual({ keep: true, restore: true });
+    const planned = planBackups({
+      revision: 0,
+      projects: plan.projects.map(({ record }) => record),
+      profiles: plan.profiles.map(({ record }) => record),
+      preferences: { ...plan.preferences, lastProjectId: null }
+    });
+    expect(planned.excluded).toEqual([]);
+    expect(planned.parts).toHaveLength(1);
+    expect(planned.parts[0]).toMatchObject({
+      projects: [{ id: 'p1' }],
+      profiles: [{ id: shared.id }]
+    });
   });
 
   it('exports the other records and names an oversized profile and its linked project', async () => {

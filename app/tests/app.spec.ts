@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { expect, test, type Page } from '@playwright/test';
 
 const IMAGE = fileURLToPath(new URL('../../fixtures/reference/chart-0.png', import.meta.url));
+const FOX = fileURLToPath(new URL('../../fixtures/pixel-art/fox.png', import.meta.url));
 const WIDE_SVG =
   '<svg xmlns="http://www.w3.org/2000/svg" width="80mm" height="60mm" viewBox="0 0 80 60">' +
   '<rect width="80" height="60" fill="#1d2f5c"/></svg>';
@@ -501,10 +502,14 @@ test('flat bridges hold a text island and stay with the saved project', async ({
   const buffer = await readFile(await design.path());
   expect(buffer.toString('utf8')).toContain('"bridge_width_mm": 1.4');
   await page.getByLabel('Stencilator project file', { exact: true }).setInputFiles({
-    name: design.suggestedFilename(),
+    name: 'Restored flat bridges.stencilator',
     mimeType: 'application/json',
     buffer
   });
+  await expect(
+    page.getByRole('button', { name: 'Restored flat bridges', exact: true })
+  ).toBeVisible();
+  await saved(page);
   await expect(bridges).toHaveAttribute('aria-pressed', 'true');
   await expect(width).toHaveValue('1.4');
   await expect(added).toBeVisible();
@@ -591,10 +596,14 @@ test('raised support edits validate both ends, persist and undo', async ({ page 
   expect(buffer.toString('utf8')).toContain('"stencilator": 4');
   expect(buffer.toString('utf8')).toContain('"support_edits": [');
   await page.getByLabel('Stencilator project file', { exact: true }).setInputFiles({
-    name: design.suggestedFilename(),
+    name: 'Restored raised endpoints.stencilator',
     mimeType: 'application/json',
     buffer
   });
+  await expect(
+    page.getByRole('button', { name: 'Restored raised endpoints', exact: true })
+  ).toBeVisible();
+  await saved(page);
   await expect(first).toBeEnabled();
   await first.click();
   await supports.getByRole('button', { name: 'Move ends' }).click();
@@ -1605,6 +1614,54 @@ test('a browser without storage keeps the draft editable and asks before leaving
   await expect(page.getByLabel('Tile (mm)', { exact: true })).toHaveValue('6');
 });
 
+test('replacing artwork asks before discarding a draft that could not be saved', async ({
+  page
+}) => {
+  await page.goto('/');
+  await openPicture(page);
+  await saved(page);
+
+  await page.evaluate(() => {
+    // eslint-disable-next-line @typescript-eslint/unbound-method -- Keep failing every write.
+    const transaction = IDBDatabase.prototype.transaction;
+    IDBDatabase.prototype.transaction = function (stores, mode, options) {
+      if (mode === 'readwrite') {
+        throw new DOMException('The workspace is full.', 'QuotaExceededError');
+      }
+      return transaction.call(this, stores, mode, options);
+    };
+  });
+
+  await page.getByRole('button', { name: /^Paint 1, #/ }).click();
+  await page
+    .getByRole('button', { name: /^Merge paint 1, #/ })
+    .first()
+    .click();
+  const merged = page.getByText('Merged', { exact: true });
+  await expect(merged).toBeVisible();
+  await expect(page.getByRole('region', { name: 'Could not save in this browser' })).toBeVisible();
+
+  const choose = async () => {
+    const chooser = page.waitForEvent('filechooser');
+    await page.getByRole('button', { name: 'Replace', exact: true }).click();
+    const dialog = page.waitForEvent('dialog');
+    await (await chooser).setFiles(FOX);
+    return dialog;
+  };
+  const firstPrompt = await choose();
+  expect(firstPrompt.message()).toBe(
+    '“chart-0” could not be saved here. Replace its artwork anyway? Unsaved changes may be lost.'
+  );
+  await firstPrompt.dismiss();
+  await expect(page.getByText('chart-0.png', { exact: true })).toBeVisible();
+  await expect(merged).toBeVisible();
+
+  const secondPrompt = await choose();
+  await secondPrompt.accept();
+  await expect(page.getByText('fox.png', { exact: true })).toBeVisible();
+  await expect(merged).toHaveCount(0);
+});
+
 test('Retry save keeps keyboard focus through failure and returns it to the project on success', async ({
   page
 }) => {
@@ -1825,6 +1882,105 @@ test('the keyed badge fits turned, with the unchanged frame file when the bed ge
   await expect(fit.getByText(/Turned: 0\.01 mm wider/)).toBeVisible();
 });
 
+test('the print-bed view frames an overhanging part together with the bed', async ({ page }) => {
+  await page.goto('/');
+  await page.getByRole('button', { name: 'Free-form', exact: true }).click();
+  await page.getByRole('button', { name: 'Try the badge' }).click();
+  await settings(page).getByText('Plate & registration', { exact: true }).click();
+  await page.getByRole('checkbox', { name: 'Use a keyed frame' }).check();
+  await changeBed(page, '50', '50');
+  await page.getByRole('button', { name: 'Print bed', exact: true }).click();
+  await page.getByRole('combobox', { name: 'Part on the bed' }).selectOption('frame');
+  await bench(page).getByRole('button', { name: 'Top', exact: true }).click();
+  const drawing = bench(page).getByRole('img', {
+    name: /Registration frame on a 50 × 50 mm bed/
+  });
+  await expect(drawing).toBeVisible();
+  const overhang = drawing.locator('use.overhang');
+  await expect(overhang).toBeVisible();
+
+  const placed = async () =>
+    overhang.evaluate((element) => {
+      const svg = (element as SVGUseElement).ownerSVGElement;
+      const matrix = svg?.getScreenCTM();
+      if (!svg || !matrix) throw new Error('The drawing has no screen matrix.');
+      const point = svg.createSVGPoint();
+      const box = element.getBoundingClientRect();
+      const at = (x: number, y: number): [number, number] => {
+        point.x = x;
+        point.y = y;
+        const mapped = point.matrixTransform(matrix.inverse());
+        return [mapped.x, mapped.y];
+      };
+      const corners = [
+        at(box.left, box.top),
+        at(box.right, box.top),
+        at(box.left, box.bottom),
+        at(box.right, box.bottom)
+      ];
+      const xs = corners.map(([x]) => x);
+      const ys = corners.map(([, y]) => y);
+      return {
+        left: Math.min(...xs),
+        top: Math.min(...ys),
+        right: Math.max(...xs),
+        bottom: Math.max(...ys)
+      };
+    });
+  const viewBox = async () => {
+    const value = await drawing.getAttribute('viewBox');
+    if (!value) throw new Error('The drawing has no viewBox.');
+    return value.split(' ').map(Number);
+  };
+  const contains = (box: number[], bounds: Awaited<ReturnType<typeof placed>>) => {
+    const [x, y, width, height] = box;
+    expect(x).toBeLessThanOrEqual(bounds.left + 0.01);
+    expect(y).toBeLessThanOrEqual(bounds.top + 0.01);
+    expect((x ?? 0) + (width ?? 0)).toBeGreaterThanOrEqual(bounds.right - 0.01);
+    expect((y ?? 0) + (height ?? 0)).toBeGreaterThanOrEqual(bounds.bottom - 0.01);
+  };
+
+  const top = await placed();
+  expect(top.left).toBeCloseTo(-25.25, 0);
+  expect(top.top).toBeCloseTo(-26.75, 0);
+  expect(top.right).toBeCloseTo(75.25, 0);
+  expect(top.bottom).toBeCloseTo(76.75, 0);
+  contains(await viewBox(), top);
+
+  await bench(page).getByRole('button', { name: 'Angled', exact: true }).click();
+  await expect(overhang).toBeVisible();
+  contains(await viewBox(), await placed());
+
+  const fitPart = page.getByRole('button', { name: 'Fit part', exact: true });
+  const together = await viewBox();
+  await fitPart.click();
+  await expect(fitPart).toHaveAttribute('aria-pressed', 'true');
+  const closeUp = await viewBox();
+  expect(closeUp).not.toEqual(together);
+  contains(closeUp, await placed());
+});
+
+test('the bed viewport ignores horizontal-only wheel movement', async ({ page }) => {
+  await page.goto('/');
+  await openPicture(page);
+  await saved(page);
+  await page.getByRole('button', { name: 'Print bed', exact: true }).click();
+  const viewport = page.getByRole('application', { name: 'Print bed' });
+  const scene = viewport.locator('.scene');
+  const scale = async (): Promise<number> => {
+    const transform = await scene.evaluate((element) => element.style.transform);
+    const value = /scale\(([^)]+)\)/.exec(transform)?.[1];
+    return Number(value ?? 1);
+  };
+
+  await viewport.dispatchEvent('wheel', { deltaX: 120, deltaY: 0 });
+  expect(await scale()).toBe(1);
+  await viewport.dispatchEvent('wheel', { deltaX: 0, deltaY: -100 });
+  await expect.poll(scale).toBeCloseTo(1.22, 5);
+  await viewport.dispatchEvent('wheel', { deltaX: 0, deltaY: 100 });
+  await expect.poll(scale).toBeCloseTo(1, 5);
+});
+
 test('Tiles checks the saved bed in the preview and in Files', async ({ page }) => {
   await page.goto('/');
   await page.getByRole('button', { name: 'Pixel art', exact: true }).click();
@@ -1843,32 +1999,28 @@ test('Tiles checks the saved bed in the preview and in Files', async ({ page }) 
   await expect(settings(page).getByRole('heading', { name: 'Tile sizing' })).toBeFocused();
 });
 
-test('Tiles explains a legacy bed outside the fit range and still offers downloads', async ({
-  page
-}) => {
+test('Tiles repairs an invalid legacy bed before it seeds a new project', async ({ page }) => {
   await page.addInitScript(() => {
-    localStorage.setItem('stencilator.settings', JSON.stringify({ bedWidthMm: 40 }));
+    localStorage.setItem(
+      'stencilator.settings',
+      JSON.stringify({ bedWidthMm: 40, cellMm: 3, tileMm: 6 })
+    );
   });
   await page.goto('/');
   await openPicture(page);
+  await saved(page);
+  const tile = page.getByLabel('Tile (mm)', { exact: true });
+  await expect(tile).toHaveValue('6');
+  await page.getByRole('button', { name: 'Print bed', exact: true }).click();
   const fit = bench(page).getByRole('region', { name: 'Print-bed fit' });
   const outsideRange = 'Set both bed dimensions between 50 and 2,000 mm to check fit.';
-  await page.getByRole('button', { name: 'Print bed', exact: true }).click();
-  await expect(fit.getByText(outsideRange)).toBeVisible();
-  await expect(fit.getByRole('button', { name: 'Change bed…' })).toBeEnabled();
-  await page.getByRole('button', { name: 'Files', exact: true }).click();
-  await expect(fit.getByText(outsideRange)).toBeVisible();
-  await expect(page.getByRole('button', { name: /^Save stencil 1,/ })).toBeEnabled();
-  await expect(page.getByRole('region', { name: 'Could not save in this browser' })).toContainText(
-    'Check the settings for this project before saving.'
-  );
-  const download = page.waitForEvent('download', { timeout: 5_000 });
-  await bench(page).getByRole('button', { name: 'Download project', exact: true }).click();
-  const file = await readFile(await (await download).path(), 'utf8');
-  expect(JSON.parse(file)).toMatchObject({ stencils: { bed_mm: [256, 256] } });
-  await expect(fit.getByText(outsideRange)).toBeVisible();
-  await changeBed(page, '256', '256');
-  await expect(fit.getByText('All parts fit as drawn.')).toBeVisible();
+  await expect(fit.getByText(outsideRange)).toHaveCount(0);
+  await expect(bench(page).getByText('256 × 256 mm', { exact: true })).toBeVisible();
+
+  await page.reload();
+  await expect(page.getByRole('button', { name: 'chart-0', exact: true })).toBeEnabled();
+  await expect(tile).toHaveValue('6');
+  await saved(page);
 });
 
 test('the separate fit verdict does not sit beside a no-warnings message', async ({ page }) => {
@@ -1963,13 +2115,21 @@ test('compact header follows the visual order with keyboard Tab', async ({ page 
     page.getByRole('combobox', { name: 'Theme' })
   ];
   await first.focus();
-  let lastY = 0;
+  let rowY: number | undefined;
+  let lastX = 0;
   for (const control of controls) {
     await expect(control).toBeFocused();
     const box = await control.boundingBox();
     if (!box) throw new Error('Header control has no box.');
-    expect(box.y + box.height / 2).toBeGreaterThanOrEqual(lastY - 5);
-    lastY = box.y + box.height / 2;
+    const centreX = box.x + box.width / 2;
+    const centreY = box.y + box.height / 2;
+    if (rowY === undefined || Math.abs(centreY - rowY) > 5) {
+      if (rowY !== undefined) expect(centreY).toBeGreaterThanOrEqual(rowY - 5);
+      rowY = centreY;
+      lastX = Number.NEGATIVE_INFINITY;
+    }
+    expect(centreX).toBeGreaterThan(lastX);
+    lastX = centreX;
     await page.keyboard.press('Tab');
   }
 });

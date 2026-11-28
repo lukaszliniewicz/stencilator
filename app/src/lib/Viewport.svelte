@@ -56,6 +56,8 @@
     if (!viewport || !enabled) return;
     const node = viewport;
     function wheel(event: WheelEvent): void {
+      // A horizontal-only wheel gesture has no vertical delta and must not zoom.
+      if (event.deltaY === 0) return;
       event.preventDefault();
       zoomTo(event.deltaY < 0 ? scale * ZOOM : scale / ZOOM, event.clientX, event.clientY);
     }

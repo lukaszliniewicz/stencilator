@@ -10,7 +10,7 @@
  * inside the preserved project bytes.
  */
 import type { ProjectMode } from '../engine/client';
-import { sanitise, type Settings } from './settings';
+import { normaliseDefaults } from './settings';
 import { text } from './text';
 import type { RestoreEntry, RestorePlan } from './workspace-store';
 import { WorkspaceError } from './workspace-store';
@@ -241,100 +241,6 @@ function checkBed(mm: number): void {
   if (Number.isNaN(mm) || mm < BED_MIN_MM || mm > BED_MAX_MM) throw new WorkspaceError('invalid');
 }
 
-type NumberField = {
-  [K in keyof Settings]: Settings[K] extends number ? K : never;
-}[keyof Settings];
-type Range = readonly [number, number];
-
-/**
- * The engine's accepted settings ranges, which a saved default must meet in every mode.
- * The interface leaves a live out-of-range entry for the engine to explain; a restored
- * default offered for new projects has no such moment. As storage's `sanitise` does for a
- * missing or malformed value, an unusable range takes the engine's default rather than
- * rejecting a backup with otherwise usable records, and every valid explicit value is kept.
- *
- * A default seeds projects in any mode and presets may switch sizing or mode, so every
- * field is checked even while its mode is inactive. This is deliberately stricter than a
- * single engine check, which ignores inactive fields: a default is only useful if it stays
- * usable after such a switch. Paint merges and skipped paints are valid lists, not ranges,
- * and are kept exactly as saved, without deduplication or truncation.
- */
-const DEFAULT_RANGES: Partial<Record<NumberField, Range>> = {
-  canvasWidthMm: [1, 10_000],
-  canvasHeightMm: [1, 10_000],
-  tileMm: [0.1, 1_000],
-  lineMm: [0, 20],
-  artWidthMm: [1, 10_000],
-  artHeightMm: [1, 10_000],
-  cellMm: [0.05, 0.5],
-  minPatchMm2: [0, 100],
-  marginMm: [2, 100],
-  minWebMm: [0.1, 5],
-  minOpeningMm: [0.1, 5],
-  bridgeWidthMm: [0.6, 5],
-  connectorWidthMm: [0.6, 5],
-  connectorClearanceMm: [0.4, 30],
-  beamMm: [0.4, 5],
-  warnSpanMm: [1, 200],
-  thicknessMm: [0.2, 20],
-  bedWidthMm: [BED_MIN_MM, BED_MAX_MM],
-  bedDepthMm: [BED_MIN_MM, BED_MAX_MM]
-};
-
-/** Ranges checked after the engine's rounding of a whole number. */
-const DEFAULT_WHOLE_RANGES: Partial<Record<NumberField, Range>> = {
-  colours: [1, 256],
-  dpi: [72, 2_400]
-};
-
-/** Settings that accept zero, such as no chamfer, or a value within a range. */
-const DEFAULT_ZERO_OR_RANGES: Partial<Record<NumberField, Range>> = {
-  chamferMm: [0.1, 2],
-  overlapMm: [0.1, 2]
-};
-
-const inRange = (value: number, [min, max]: Range): boolean =>
-  Number.isFinite(value) && value >= min && value <= max;
-
-/** Whole micrometres, rounding as the engine does, for its thickness comparisons. */
-function micrometres(mm: number): number {
-  const scaled = mm * 1_000;
-  const lower = Math.floor(scaled);
-  const fraction = scaled - lower;
-  if (fraction < 0.5) return lower;
-  if (fraction > 0.5) return lower + 1;
-  return lower % 2 === 0 ? lower : lower + 1;
-}
-
-/** Saved defaults with unusable values replaced, so new projects can always be saved. */
-function checkedDefaults(raw: unknown): Settings {
-  const settings = sanitise(raw);
-  const fallback = sanitise(undefined);
-  for (const [key, range] of Object.entries(DEFAULT_RANGES) as [NumberField, Range][]) {
-    if (!inRange(settings[key], range)) settings[key] = fallback[key];
-  }
-  for (const [key, range] of Object.entries(DEFAULT_WHOLE_RANGES) as [NumberField, Range][]) {
-    if (!inRange(Math.round(settings[key]), range)) settings[key] = fallback[key];
-  }
-  for (const [key, range] of Object.entries(DEFAULT_ZERO_OR_RANGES) as [NumberField, Range][]) {
-    if (settings[key] !== 0 && !inRange(settings[key], range)) settings[key] = fallback[key];
-  }
-  // A raised connector needs 0.2 mm of clearance above the plate itself. Compare whole
-  // micrometres, as the engine does, so a value it accepts is never changed by rounding.
-  const thickness = micrometres(settings.thicknessMm);
-  if (micrometres(settings.connectorClearanceMm) - thickness < 200) {
-    settings.connectorClearanceMm = Math.max(
-      fallback.connectorClearanceMm,
-      (thickness + 200) / 1_000
-    );
-  }
-  // A chamfer must leave 0.2 mm of plate at the work face.
-  if (settings.chamferMm !== 0 && thickness - micrometres(settings.chamferMm) < 200) {
-    settings.chamferMm = fallback.chamferMm;
-  }
-  return settings;
-}
-
 const VIEWS = ['picture', 'chart', 'both', 'stencil', 'result', 'bed'] as const;
 const HEX = /^#[0-9a-f]{6}$/i;
 
@@ -514,7 +420,7 @@ function decodePreferences(raw: unknown): Omit<WorkspacePreferences, 'lastProjec
   ) {
     throw new WorkspaceError('invalid');
   }
-  return { defaults: checkedDefaults(defaults), theme, defaultProfileId };
+  return { defaults: normaliseDefaults(defaults), theme, defaultProfileId };
 }
 
 /** The saved name, allowing an unchanged name allocated to avoid a clash during restore. */
@@ -544,23 +450,31 @@ function matchesSavedName<T extends { id: string; origin?: Origin }>(
     return false;
   const direct = (origin.sourceId ?? origin.id) === source.id;
   const earlier = source.origin;
+  const earlierName = earlier?.importedAs;
+  // A record whose own name no longer matches the name it was imported as is an authored
+  // rename, not the allocation that origin describes. Do not let it match the earlier
+  // import under that allocation, even if its contents are unchanged.
+  const renamed = earlierName !== undefined && earlierName !== savedName;
   return (
-    (direct && origin.name === savedName) ||
+    (direct && origin.name === savedName && !(renamed && origin.importedAs === earlierName)) ||
     (earlier?.id === origin.id && earlier.name === origin.name && earlier.importedAs === savedName)
   );
 }
 
 /** A name distinct from every name already taken, comparing without case. */
-function distinctName(base: string, taken: Set<string>): string {
+function distinctName(base: string, taken: Set<string>, avoid?: string): string {
   const key = base.toLocaleLowerCase();
   if (!taken.has(key)) {
     taken.add(key);
     return base;
   }
+  const avoidKey = avoid?.toLocaleLowerCase();
   for (let n = 1; ; n++) {
     const candidate = `${base}${text.workspace.copySuffix(n)}`;
     const candidateKey = candidate.toLocaleLowerCase();
-    if (!taken.has(candidateKey)) {
+    // A restored authored rename must not reuse the name allocated to its earlier import,
+    // or a second restore could no longer tell the two records apart.
+    if (!taken.has(candidateKey) && candidateKey !== avoidKey) {
       taken.add(candidateKey);
       return candidate;
     }
@@ -619,7 +533,13 @@ function planRecords<T extends { id: string; origin?: Origin }>(
     const identical = matches.find((record) => record.id === source.id) ?? matches[0];
     if (identical) return { source, record: identical, action: 'skip' };
 
-    const name = distinctName(sourceName, taken);
+    const name = distinctName(
+      sourceName,
+      taken,
+      source.origin && source.origin.importedAs !== sourceName
+        ? source.origin.importedAs
+        : undefined
+    );
     const origin: Origin = {
       id: source.origin?.id ?? source.id,
       sourceId: source.id,
@@ -640,8 +560,11 @@ function planRecords<T extends { id: string; origin?: Origin }>(
 export function planBackups(snapshot: WorkspaceSnapshot): BackupPlan {
   const excluded: ExcludedRecord[] = [];
   let included: SavedProject[] = [];
+  const recordBytes = new Map<string, number>();
   for (const project of snapshot.projects) {
-    if (project.file.size > MAX_PROJECT_BYTES || reservedRecordBytes(project) > MAX_FILE_BYTES) {
+    const bytes = reservedRecordBytes(project);
+    recordBytes.set(project.id, bytes);
+    if (project.file.size > MAX_PROJECT_BYTES || bytes > MAX_FILE_BYTES) {
       excluded.push({ kind: 'project', id: project.id, title: project.title });
     } else {
       included.push(project);
@@ -696,29 +619,38 @@ export function planBackups(snapshot: WorkspaceSnapshot): BackupPlan {
   if (envelopeBytes() > MAX_FILE_BYTES) throw new WorkspaceError('too-large');
 
   // A profile that cannot share a fresh part with the envelope and default printer is
-  // reported rather than aborting the export of everything else.
+  // reported rather than aborting the export of everything else. The envelope does not
+  // change for projects during this loop, and loses only the removed id and its separator.
+  let envelopeSize = envelopeBytes();
   for (const [id, { profile, bytes }] of allProfiles) {
     if (id === defaultProfile?.profile.id) continue;
-    if (envelopeBytes() + (defaultProfile?.bytes ?? 0) + bytes > MAX_FILE_BYTES) {
+    if (envelopeSize + (defaultProfile?.bytes ?? 0) + bytes > MAX_FILE_BYTES) {
       excluded.push({ kind: 'profile', id, title: profile.name });
+      const before = allProfiles.size;
       allProfiles.delete(id);
+      envelopeSize -= jsonStringBytes(id) + (before > 1 ? 1 : 0);
     }
   }
   dropBrokenLinks();
 
-  // Likewise for a project whose own metadata and file cannot fit a fresh part.
+  // Likewise for a project whose own metadata and file cannot fit a fresh part. The
+  // included list is fixed until this filter completes, so the envelope size is too.
+  envelopeSize = envelopeBytes();
   included = included.filter((project) => {
     const linked = allProfiles.get(project.profileId ?? '');
     const extra = linked && linked.profile.id !== defaultProfile?.profile.id ? linked.bytes : 0;
     const fits =
-      envelopeBytes() + (defaultProfile?.bytes ?? 0) + reservedRecordBytes(project) + extra;
+      envelopeSize +
+      (defaultProfile?.bytes ?? 0) +
+      (recordBytes.get(project.id) ?? reservedRecordBytes(project)) +
+      extra;
     if (fits <= MAX_FILE_BYTES) return true;
     excluded.push({ kind: 'project', id: project.id, title: project.title });
     return false;
   });
 
   const exportedIds: BackupIdentities = identities();
-  const emptyBytes = envelopeBytes() + (defaultProfile?.bytes ?? 0);
+  const emptyBytes = jsonBytes(envelope(preferences(), exportedIds)) + (defaultProfile?.bytes ?? 0);
   if (emptyBytes > MAX_FILE_BYTES) throw new WorkspaceError('too-large');
 
   const unassigned = new Set(allProfiles.keys());
@@ -747,7 +679,7 @@ export function planBackups(snapshot: WorkspaceSnapshot): BackupPlan {
 
   for (const project of included) {
     const size = project.file.size;
-    const bytes = reservedRecordBytes(project);
+    const bytes = recordBytes.get(project.id) ?? reservedRecordBytes(project);
     const linked = allProfiles.get(project.profileId ?? '');
     const profileBytes = () => (linked && !profiles.has(linked.profile.id) ? linked.bytes : 0);
     if (
@@ -894,42 +826,86 @@ export function previewRestore(backup: WorkspaceBackup, snapshot: WorkspaceSnaps
 
   const preferences = {
     // Decoding already checked these; a hand-built backup cannot bypass the same guard.
-    defaults: checkedDefaults(backup.preferences.defaults),
+    defaults: normaliseDefaults(backup.preferences.defaults),
     theme: backup.preferences.theme,
     defaultProfileId: backup.preferences.defaultProfileId
       ? (profileMap.get(backup.preferences.defaultProfileId) ?? null)
       : null
   };
 
-  // Every backup part repeats the whole id set and one preferences block. Check the
-  // workspace after this part is added with either preference choice, before any write.
-  const projectIds = new Set(snapshot.projects.map(({ id }) => id));
-  const profileIds = new Set(snapshot.profiles.map(({ id }) => id));
-  for (const { action, record } of profiles) {
-    if (action !== 'skip') profileIds.add(record.id);
-  }
-  for (const { action, record } of projects) {
-    if (action !== 'skip') projectIds.add(record.id);
-  }
-  const identities = { projects: [...projectIds], profiles: [...profileIds] };
-  const envelopeBytes = Math.max(
-    jsonBytes(envelope(snapshot.preferences, identities)),
-    jsonBytes(envelope(preferences, identities))
-  );
-  if (envelopeBytes > MAX_FILE_BYTES) throw new WorkspaceError('too-large');
+  const nextProjects = [
+    ...snapshot.projects,
+    ...projects.filter(({ action }) => action !== 'skip').map(({ record }) => record)
+  ];
+  const nextProfiles = [
+    ...snapshot.profiles,
+    ...profiles.filter(({ action }) => action !== 'skip').map(({ record }) => record)
+  ];
 
-  // A restored record adds its saved name to both origin fields and might need a copy id.
-  // Reserve that future form too, so the next export need not drop what was restored.
-  for (const { action, record } of [...profiles, ...projects]) {
-    if (action !== 'skip' && envelopeBytes + reservedRecordBytes(record) > MAX_FILE_BYTES) {
-      throw new WorkspaceError('too-large');
+  const candidate = (choice: 'keep' | 'restore'): WorkspaceSnapshot => ({
+    ...snapshot,
+    projects: nextProjects,
+    profiles: nextProfiles,
+    preferences:
+      choice === 'restore'
+        ? { ...preferences, lastProjectId: snapshot.preferences.lastProjectId }
+        : snapshot.preferences
+  });
+
+  const keyOf = ({ kind, id }: ExcludedRecord): string => `${kind}:${id}`;
+  let existingExcluded: Set<string> | undefined;
+  const existing = (): Set<string> => {
+    if (!existingExcluded) {
+      try {
+        existingExcluded = new Set(planBackups(snapshot).excluded.map(keyOf));
+      } catch (error) {
+        // A workspace that already cannot be exported has no allowed exclusions to reuse.
+        if (error instanceof WorkspaceError && error.code === 'too-large')
+          existingExcluded = new Set();
+        else throw error;
+      }
     }
-  }
+    return existingExcluded;
+  };
+
+  // Ask the export planner itself whether the workspace after this part can still be
+  // backed up. Only metadata and file sizes are measured; no project bytes are read.
+  const fits = (choice: 'keep' | 'restore'): boolean => {
+    const next = candidate(choice);
+    let plan: BackupPlan;
+    try {
+      plan = planBackups(next);
+    } catch (error) {
+      if (error instanceof WorkspaceError && error.code === 'too-large') return false;
+      throw error;
+    }
+    if (plan.excluded.length) {
+      const already = existing();
+      if (plan.excluded.some((record) => !already.has(keyOf(record)))) return false;
+    }
+    // Restoring preferences that name an excluded printer would lose that choice on the
+    // next export, even if the profile was already excluded before this restore.
+    if (
+      choice === 'restore' &&
+      next.preferences.defaultProfileId !== null &&
+      plan.excluded.some(
+        ({ kind, id }) => kind === 'profile' && id === next.preferences.defaultProfileId
+      )
+    ) {
+      return false;
+    }
+    return true;
+  };
+
+  const keep = fits('keep');
+  const restore = fits('restore');
+  if (!keep && !restore) throw new WorkspaceError('too-large');
 
   return {
     revision: snapshot.revision,
     projects,
     profiles,
-    preferences
+    preferences,
+    fits: { keep, restore }
   };
 }

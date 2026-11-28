@@ -174,6 +174,9 @@
       {words.preferences}
     </label>
     <p class="note">{words.preferencesHint}</p>
+    {#if !preview.fits[preferences ? 'restore' : 'keep']}
+      <p class="notice" role="status">{words.restoreChoiceTooLarge}</p>
+    {/if}
     <div class="button-row">
       <button
         type="button"
@@ -188,7 +191,12 @@
       >
         {words.back}
       </button>
-      <button type="button" class="button primary" disabled={busy} onclick={restore}>
+      <button
+        type="button"
+        class="button primary"
+        disabled={busy || !preview.fits[preferences ? 'restore' : 'keep']}
+        onclick={restore}
+      >
         {words.import}
       </button>
     </div>

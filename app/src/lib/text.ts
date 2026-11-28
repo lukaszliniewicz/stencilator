@@ -248,6 +248,8 @@ export const text = {
       'Saved projects stay in this browser and can be cleared with its site data. Download a project or a workspace backup to keep it elsewhere.',
     leaveUnsaved: (name: string) =>
       `“${name}” could not be saved here. Leave it without saving these changes?`,
+    replaceUnsaved: (name: string) =>
+      `“${name}” could not be saved here. Replace its artwork anyway? Unsaved changes may be lost.`,
     broughtIn: (name: string) => `Open “${name}”`,
     incomingHelp: (name: string) =>
       `Start a separate project, or replace the artwork in “${name}”.`,
@@ -306,6 +308,8 @@ export const text = {
     preferences: 'Also restore app preferences',
     preferencesHint:
       'Includes theme, defaults and the default printer profile. Invalid saved defaults are replaced with engine defaults.',
+    restoreChoiceTooLarge:
+      'This choice would make the restored workspace too large to back up safely. Change the preference option to continue.',
     previewProjects: 'Projects',
     previewProfiles: 'Printer profiles',
     count: (projects: number, profiles: number) =>

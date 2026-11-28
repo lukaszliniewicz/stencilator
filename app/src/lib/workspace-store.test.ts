@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { ProjectView, WorkspaceStore } from './workspace-store';
+import type { PrinterProfile, ProjectView, RestorePlan, WorkspaceStore } from './workspace-store';
 import { openWorkspace } from './workspace-store';
 
 /**
@@ -222,14 +222,19 @@ describe('the saved workspace', () => {
     expect(snapshot.revision).toBe(before);
   });
 
-  it('keeps the selection unchanged when another tab removed the project', async () => {
-    const saved = await store.saveProject(write('p1'), null);
-    await store.updatePreferences({ lastProjectId: saved.id });
-    await store.removeProject(saved.id, saved.revision);
-    // The id was read from a project menu before the removal; remembering it now would
-    // restore a workspace that opens nothing.
-    await store.updatePreferences({ lastProjectId: saved.id });
-    expect((await store.snapshot()).preferences.lastProjectId).toBeNull();
+  it('keeps the current selection when another tab removed the previous project', async () => {
+    const first = await store.saveProject(write('p1'), null);
+    await store.updatePreferences({ lastProjectId: first.id });
+    await store.removeProject(first.id, first.revision);
+    const second = await store.saveProject(write('p2'), null);
+    await store.updatePreferences({ lastProjectId: second.id });
+    const before = (await store.snapshot()).revision;
+    // The id was read from a project menu before the removal; remembering it now must not
+    // replace the project this workspace actually has open.
+    await store.updatePreferences({ lastProjectId: first.id });
+    const snapshot = await store.snapshot();
+    expect(snapshot.preferences.lastProjectId).toBe('p2');
+    expect(snapshot.revision).toBe(before);
   });
 
   it('does not link a project this workspace never held', async () => {
@@ -243,6 +248,58 @@ describe('the saved workspace', () => {
     expect(preferences.theme).toBe('dark');
     expect(preferences.lastProjectId).toBeNull();
   });
+
+  it.each([false, true])(
+    'refuses a non-fitting restore choice without writing (restore preferences: %s)',
+    async (restorePreferences) => {
+      const first = await store.saveProject(write('p1'), null);
+      await store.updatePreferences({ lastProjectId: first.id });
+      const before = await store.snapshot();
+      const printer: PrinterProfile = {
+        id: 'pr1',
+        revision: 0,
+        name: 'Printer',
+        widthMm: 200,
+        depthMm: 200
+      };
+      const second = { ...first, ...write('p2'), revision: 0, profileId: printer.id };
+      const plan: RestorePlan = {
+        revision: before.revision,
+        projects: [{ source: second, record: second, action: 'add' }],
+        profiles: [{ source: printer, record: printer, action: 'add' }],
+        preferences: {
+          defaults: before.preferences.defaults,
+          theme: 'dark',
+          defaultProfileId: printer.id
+        },
+        fits: { keep: restorePreferences, restore: !restorePreferences }
+      };
+
+      await expect(store.restore(plan, restorePreferences)).rejects.toMatchObject({
+        code: 'too-large'
+      });
+      const refused = await store.snapshot();
+      expect(refused.revision).toBe(before.revision);
+      expect(refused.projects.map(({ id }) => id)).toEqual(['p1']);
+      expect(refused.profiles).toEqual([]);
+      expect(refused.preferences).toEqual(before.preferences);
+
+      // The opposite choice is safe and the same preview is still current.
+      await expect(store.restore(plan, !restorePreferences)).resolves.toBe(true);
+      const applied = await store.snapshot();
+      expect(applied.revision).toBe(before.revision + 1);
+      expect(applied.projects.find(({ id }) => id === 'p2')).toMatchObject({ profileId: 'pr1' });
+      expect(applied.profiles).toMatchObject([{ id: 'pr1' }]);
+      expect(applied.preferences).toMatchObject({
+        theme: restorePreferences ? before.preferences.theme : 'dark',
+        defaultProfileId: restorePreferences ? before.preferences.defaultProfileId : 'pr1',
+        lastProjectId: first.id
+      });
+      // A stale preview must ask for a fresh plan, even if its old fit flag was false.
+      await expect(store.restore(plan, restorePreferences)).resolves.toBe(false);
+      expect((await store.snapshot()).revision).toBe(applied.revision);
+    }
+  );
 
   it('clears the selection when asked explicitly', async () => {
     const saved = await store.saveProject(write('p1'), null);
