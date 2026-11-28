@@ -3,13 +3,14 @@
  * versioned JSON envelope carrying each project's exact `.stencilator` bytes as base64.
  * Decoding validates everything before any write: size, envelope version, unique ids,
  * finite timestamps, profile dimensions within the engine's bed range, view shape, project
- * mode against the engine's own validation, and project-to-profile links. The restore
- * preview is deterministic: it skips, adds or copies by identity and saved content, never
- * by name alone, and remaps linked profile ids while the applied bed stays inside the
- * preserved project bytes.
+ * mode against the engine's own validation, saved defaults against the engine's settings
+ * ranges, restored metadata against the backup file budget, and project-to-profile links.
+ * The restore preview is deterministic: it skips, adds or copies by identity and saved
+ * content, never by name alone, and remaps linked profile ids while the applied bed stays
+ * inside the preserved project bytes.
  */
 import type { ProjectMode } from '../engine/client';
-import { sanitise } from './settings';
+import { sanitise, type Settings } from './settings';
 import { text } from './text';
 import type { RestoreEntry, RestorePlan } from './workspace-store';
 import { WorkspaceError } from './workspace-store';
@@ -26,6 +27,13 @@ const BACKUP_VERSION = 1;
 
 /** The maximum number of projects, and separately of profiles, in a backup. */
 const MAX_ITEMS = 500;
+/** The longest record, origin or exported id, in UTF-16 code units. */
+const MAX_ID_LENGTH = 256;
+
+/** A fresh id from `crypto.randomUUID()`, in UTF-16 code units. */
+const RESTORED_ID_LENGTH = 36;
+/** Enough for a generated copy suffix, including locale grouping and a large number. */
+const COPY_SUFFIX_HEADROOM = 64;
 /** Each project's `.stencilator` file, in bytes, at most 32 MiB. */
 const MAX_PROJECT_BYTES = 32 * 1024 * 1024;
 /** All project bytes in one backup, at most 96 MiB. */
@@ -59,15 +67,22 @@ interface BackupPart extends WorkspaceSnapshot {
   exportedIds?: BackupIdentities;
 }
 
+/** A saved record left out of an export because it cannot fit an importable file. */
+interface ExcludedRecord {
+  kind: 'project' | 'profile';
+  id: string;
+  title: string;
+}
+
 export interface BackupPlan {
   parts: BackupPart[];
-  excluded: Pick<SavedProject, 'id' | 'title'>[];
+  excluded: ExcludedRecord[];
 }
 
 type EncodedProject = Omit<SavedProject, 'file'> & { file: string };
 
 function envelope(
-  { defaults, theme, defaultProfileId }: WorkspacePreferences,
+  { defaults, theme, defaultProfileId }: Omit<WorkspacePreferences, 'lastProjectId'>,
   exportedIds: BackupIdentities | undefined,
   projects: EncodedProject[] = [],
   profiles: PrinterProfile[] = []
@@ -82,6 +97,94 @@ function envelope(
 }
 
 const jsonBytes = (value: unknown): number => new Blob([JSON.stringify(value)]).size;
+
+/** Printable ASCII without a quote or backslash, which JSON carries one byte per character. */
+const PLAIN_ASCII = /^[\x20\x21\x23-\x5b\x5d-\x7e]*$/;
+
+/** The bytes a JSON string adds, without materialising a second copy of a large name. */
+function jsonStringBytes(value: string): number {
+  if (PLAIN_ASCII.test(value)) return value.length + 2;
+  let bytes = 2;
+  for (let i = 0; i < value.length;) {
+    const code = value.codePointAt(i) ?? 0;
+    if (code === 0x22 || code === 0x5c) bytes += 2;
+    else if (code === 0x08 || code === 0x09 || code === 0x0a || code === 0x0c || code === 0x0d) {
+      bytes += 2;
+    } else if (code < 0x20 || (code >= 0xd800 && code <= 0xdfff)) bytes += 6;
+    else bytes += code < 0x80 ? 1 : code < 0x800 ? 2 : code < 0x10000 ? 3 : 4;
+    i += code > 0xffff ? 2 : 1;
+  }
+  return bytes;
+}
+
+/** A string's JSON content bytes, excluding the quotes the blank field already carries. */
+const contentBytes = (value: string): number => jsonStringBytes(value) - 2;
+
+/**
+ * The bytes a saved record adds to a backup file: its JSON, the comma after it, and a
+ * project's base64 file. A restored record keeps its saved name in the record itself and
+ * in both origin fields, so each name is measured once rather than materialising a string
+ * several times the size of the original.
+ */
+function backupRecordBytes(record: SavedProject | PrinterProfile): number {
+  const base: Record<string, unknown> = { ...record };
+  let name: string;
+  let fileBytes = 0;
+  if ('file' in record) {
+    name = record.title;
+    base.file = '';
+    base.title = '';
+    // Base64 uses four ASCII bytes per three input bytes, and the comma follows the record.
+    fileBytes = 4 * Math.ceil(record.file.size / 3);
+  } else {
+    name = record.name;
+    base.name = '';
+  }
+  const names = [name, record.origin?.name ?? '', record.origin?.importedAs ?? ''];
+  if (record.origin) base.origin = { ...record.origin, name: '', importedAs: '' };
+  const encodedNames = names.reduce((sum, value) => (value ? sum + contentBytes(value) : sum), 0);
+  return jsonBytes(base) + encodedNames + fileBytes + 1;
+}
+
+/**
+ * The bytes a record needs after a restore gives it an origin, a possibly suffixed name in
+ * both name fields and, for a copy, a fresh id. This is at least the saved name's own
+ * length, so an incoming backup cannot grow a record beyond what it exported from.
+ */
+function futureRecordBytes(record: SavedProject | PrinterProfile): number {
+  const base: Record<string, unknown> = { ...record };
+  let name: string;
+  let fileBytes = 0;
+  if ('file' in record) {
+    name = record.title;
+    base.file = '';
+    base.title = '';
+    fileBytes = 4 * Math.ceil(record.file.size / 3);
+  } else {
+    name = record.name;
+    base.name = '';
+  }
+  base.id = '';
+  base.origin = { id: '', sourceId: '', name: '', importedAs: '' };
+  const allocated = contentBytes(name) + COPY_SUFFIX_HEADROOM;
+  const originId = record.origin?.id ?? record.id;
+  return (
+    jsonBytes(base) +
+    fileBytes +
+    1 +
+    allocated +
+    contentBytes(name) +
+    allocated +
+    Math.max(contentBytes(record.id), RESTORED_ID_LENGTH) +
+    contentBytes(originId) +
+    contentBytes(record.id)
+  );
+}
+
+/** The bytes to reserve for a record both as exported now and as restored next time. */
+function reservedRecordBytes(record: SavedProject | PrinterProfile): number {
+  return Math.max(backupRecordBytes(record), futureRecordBytes(record));
+}
 
 const asObject = (value: unknown): Record<string, unknown> | undefined =>
   typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -103,7 +206,7 @@ function decodeIds(raw: unknown, records: unknown[]): string[] {
   const ids = new Set<string>();
   for (const value of asArray(raw)) {
     const id = asString(value);
-    if (!id || ids.has(id)) throw new WorkspaceError('invalid');
+    if (!id || id.length > MAX_ID_LENGTH || ids.has(id)) throw new WorkspaceError('invalid');
     ids.add(id);
   }
   if (records.some((record) => !ids.has(asString(asObject(record)?.id) ?? ''))) {
@@ -136,6 +239,100 @@ async function digest(file: Blob): Promise<string> {
 
 function checkBed(mm: number): void {
   if (Number.isNaN(mm) || mm < BED_MIN_MM || mm > BED_MAX_MM) throw new WorkspaceError('invalid');
+}
+
+type NumberField = {
+  [K in keyof Settings]: Settings[K] extends number ? K : never;
+}[keyof Settings];
+type Range = readonly [number, number];
+
+/**
+ * The engine's accepted settings ranges, which a saved default must meet in every mode.
+ * The interface leaves a live out-of-range entry for the engine to explain; a restored
+ * default offered for new projects has no such moment. As storage's `sanitise` does for a
+ * missing or malformed value, an unusable range takes the engine's default rather than
+ * rejecting a backup with otherwise usable records, and every valid explicit value is kept.
+ *
+ * A default seeds projects in any mode and presets may switch sizing or mode, so every
+ * field is checked even while its mode is inactive. This is deliberately stricter than a
+ * single engine check, which ignores inactive fields: a default is only useful if it stays
+ * usable after such a switch. Paint merges and skipped paints are valid lists, not ranges,
+ * and are kept exactly as saved, without deduplication or truncation.
+ */
+const DEFAULT_RANGES: Partial<Record<NumberField, Range>> = {
+  canvasWidthMm: [1, 10_000],
+  canvasHeightMm: [1, 10_000],
+  tileMm: [0.1, 1_000],
+  lineMm: [0, 20],
+  artWidthMm: [1, 10_000],
+  artHeightMm: [1, 10_000],
+  cellMm: [0.05, 0.5],
+  minPatchMm2: [0, 100],
+  marginMm: [2, 100],
+  minWebMm: [0.1, 5],
+  minOpeningMm: [0.1, 5],
+  bridgeWidthMm: [0.6, 5],
+  connectorWidthMm: [0.6, 5],
+  connectorClearanceMm: [0.4, 30],
+  beamMm: [0.4, 5],
+  warnSpanMm: [1, 200],
+  thicknessMm: [0.2, 20],
+  bedWidthMm: [BED_MIN_MM, BED_MAX_MM],
+  bedDepthMm: [BED_MIN_MM, BED_MAX_MM]
+};
+
+/** Ranges checked after the engine's rounding of a whole number. */
+const DEFAULT_WHOLE_RANGES: Partial<Record<NumberField, Range>> = {
+  colours: [1, 256],
+  dpi: [72, 2_400]
+};
+
+/** Settings that accept zero, such as no chamfer, or a value within a range. */
+const DEFAULT_ZERO_OR_RANGES: Partial<Record<NumberField, Range>> = {
+  chamferMm: [0.1, 2],
+  overlapMm: [0.1, 2]
+};
+
+const inRange = (value: number, [min, max]: Range): boolean =>
+  Number.isFinite(value) && value >= min && value <= max;
+
+/** Whole micrometres, rounding as the engine does, for its thickness comparisons. */
+function micrometres(mm: number): number {
+  const scaled = mm * 1_000;
+  const lower = Math.floor(scaled);
+  const fraction = scaled - lower;
+  if (fraction < 0.5) return lower;
+  if (fraction > 0.5) return lower + 1;
+  return lower % 2 === 0 ? lower : lower + 1;
+}
+
+/** Saved defaults with unusable values replaced, so new projects can always be saved. */
+function checkedDefaults(raw: unknown): Settings {
+  const settings = sanitise(raw);
+  const fallback = sanitise(undefined);
+  for (const [key, range] of Object.entries(DEFAULT_RANGES) as [NumberField, Range][]) {
+    if (!inRange(settings[key], range)) settings[key] = fallback[key];
+  }
+  for (const [key, range] of Object.entries(DEFAULT_WHOLE_RANGES) as [NumberField, Range][]) {
+    if (!inRange(Math.round(settings[key]), range)) settings[key] = fallback[key];
+  }
+  for (const [key, range] of Object.entries(DEFAULT_ZERO_OR_RANGES) as [NumberField, Range][]) {
+    if (settings[key] !== 0 && !inRange(settings[key], range)) settings[key] = fallback[key];
+  }
+  // A raised connector needs 0.2 mm of clearance above the plate itself. Compare whole
+  // micrometres, as the engine does, so a value it accepts is never changed by rounding.
+  const thickness = micrometres(settings.thicknessMm);
+  if (micrometres(settings.connectorClearanceMm) - thickness < 200) {
+    settings.connectorClearanceMm = Math.max(
+      fallback.connectorClearanceMm,
+      (thickness + 200) / 1_000
+    );
+  }
+  // A chamfer must leave 0.2 mm of plate at the work face.
+  if (settings.chamferMm !== 0 && thickness - micrometres(settings.chamferMm) < 200) {
+    settings.chamferMm = fallback.chamferMm;
+  }
+  return settings;
 }
 
 const VIEWS = ['picture', 'chart', 'both', 'stencil', 'result', 'bed'] as const;
@@ -171,8 +368,12 @@ function decodeOrigin(value: unknown): Origin | undefined {
   const name = asString(obj.name);
   const importedAs = asString(obj.importedAs);
   const sourceId = asString(obj.sourceId);
-  if (!id || name === undefined || importedAs === undefined) throw new WorkspaceError('invalid');
-  if (obj.sourceId !== undefined && !sourceId) throw new WorkspaceError('invalid');
+  if (!id || id.length > MAX_ID_LENGTH || name === undefined || importedAs === undefined) {
+    throw new WorkspaceError('invalid');
+  }
+  if (obj.sourceId !== undefined && (!sourceId || sourceId.length > MAX_ID_LENGTH)) {
+    throw new WorkspaceError('invalid');
+  }
   return { id, name, importedAs, ...(sourceId ? { sourceId } : {}) };
 }
 
@@ -194,6 +395,7 @@ async function decodeProjects(
     const fileText = asString(obj.file);
     if (
       !id ||
+      id.length > MAX_ID_LENGTH ||
       !title?.trim() ||
       (mode !== 'tiles' && mode !== 'freeform') ||
       fileText === undefined
@@ -209,8 +411,12 @@ async function decodeProjects(
     }
     const view = decodeView(obj.view);
     const profileId = obj.profileId === null ? null : asString(obj.profileId);
-    if (profileId === undefined || (profileId !== null && !profileIds.has(profileId)))
+    if (
+      profileId === undefined ||
+      (profileId !== null && (profileId.length > MAX_ID_LENGTH || !profileIds.has(profileId)))
+    ) {
       throw new WorkspaceError('invalid');
+    }
     // Reject oversized base64 before allocating a second copy of the data.
     const remaining = Math.min(MAX_PROJECT_BYTES, MAX_TOTAL_BYTES - total);
     if (fileText.length > 4 * Math.ceil(remaining / 3)) throw new WorkspaceError('too-large');
@@ -259,7 +465,7 @@ function decodeProfiles(raw: unknown[]): PrinterProfile[] {
     if (!obj) throw new WorkspaceError('invalid');
     const id = asString(obj.id);
     const name = asString(obj.name);
-    if (!id || !name?.trim()) throw new WorkspaceError('invalid');
+    if (!id || id.length > MAX_ID_LENGTH || !name?.trim()) throw new WorkspaceError('invalid');
     if (seen.has(id)) throw new WorkspaceError('invalid');
     seen.add(id);
     const revision = asNumber(obj.revision);
@@ -301,8 +507,14 @@ function decodePreferences(raw: unknown): Omit<WorkspacePreferences, 'lastProjec
     throw new WorkspaceError('invalid');
   const defaultProfileId = obj.defaultProfileId === null ? null : asString(obj.defaultProfileId);
   const defaults = asObject(obj.defaults);
-  if (defaultProfileId === undefined || !defaults) throw new WorkspaceError('invalid');
-  return { defaults: sanitise(defaults), theme, defaultProfileId };
+  if (
+    defaultProfileId === undefined ||
+    (defaultProfileId !== null && defaultProfileId.length > MAX_ID_LENGTH) ||
+    !defaults
+  ) {
+    throw new WorkspaceError('invalid');
+  }
+  return { defaults: checkedDefaults(defaults), theme, defaultProfileId };
 }
 
 /** The saved name, allowing an unchanged name allocated to avoid a clash during restore. */
@@ -426,26 +638,91 @@ function planRecords<T extends { id: string; origin?: Origin }>(
  * carries the default profile and any profiles needed by its projects.
  */
 export function planBackups(snapshot: WorkspaceSnapshot): BackupPlan {
-  const included: SavedProject[] = [];
-  const excluded: BackupPlan['excluded'] = [];
+  const excluded: ExcludedRecord[] = [];
+  let included: SavedProject[] = [];
   for (const project of snapshot.projects) {
-    if (project.file.size > MAX_PROJECT_BYTES)
-      excluded.push({ id: project.id, title: project.title });
-    else included.push(project);
+    if (project.file.size > MAX_PROJECT_BYTES || reservedRecordBytes(project) > MAX_FILE_BYTES) {
+      excluded.push({ kind: 'project', id: project.id, title: project.title });
+    } else {
+      included.push(project);
+    }
   }
-  const exportedIds: BackupIdentities = {
+
+  const allProfiles = new Map<string, { profile: PrinterProfile; bytes: number }>();
+  for (const profile of snapshot.profiles) {
+    const bytes = reservedRecordBytes(profile);
+    if (bytes > MAX_FILE_BYTES) {
+      excluded.push({ kind: 'profile', id: profile.id, title: profile.name });
+    } else {
+      allProfiles.set(profile.id, { profile, bytes });
+    }
+  }
+
+  let defaultProfile = allProfiles.get(snapshot.preferences.defaultProfileId ?? '');
+  const preferences = (): WorkspacePreferences => ({
+    ...snapshot.preferences,
+    defaultProfileId: defaultProfile ? snapshot.preferences.defaultProfileId : null
+  });
+  const identities = (): BackupIdentities => ({
     projects: included.map(({ id }) => id),
-    profiles: snapshot.profiles.map(({ id }) => id)
+    profiles: [...allProfiles.keys()]
+  });
+  const envelopeBytes = (): number => jsonBytes(envelope(preferences(), identities()));
+
+  /** Removes projects whose linked profile was left out, so no part carries a broken link. */
+  const dropBrokenLinks = (): void => {
+    included = included.filter((project) => {
+      if (project.profileId === null || allProfiles.has(project.profileId)) return true;
+      excluded.push({ kind: 'project', id: project.id, title: project.title });
+      return false;
+    });
   };
-  const allProfiles = new Map(
-    snapshot.profiles.map((profile) => [profile.id, { profile, bytes: jsonBytes(profile) + 1 }])
-  );
-  const defaultProfile = allProfiles.get(snapshot.preferences.defaultProfileId ?? '');
+  dropBrokenLinks();
+
+  // A default profile that cannot share a fresh part with the envelope is left out; every
+  // project linked to it follows, while the rest of the workspace still exports. A part
+  // cannot refer to a printer it does not carry, so its preferences carry no default and
+  // the excluded list names the one left out.
+  if (defaultProfile && envelopeBytes() + defaultProfile.bytes > MAX_FILE_BYTES) {
+    excluded.push({
+      kind: 'profile',
+      id: defaultProfile.profile.id,
+      title: defaultProfile.profile.name
+    });
+    allProfiles.delete(defaultProfile.profile.id);
+    defaultProfile = undefined;
+    dropBrokenLinks();
+  }
+  if (envelopeBytes() > MAX_FILE_BYTES) throw new WorkspaceError('too-large');
+
+  // A profile that cannot share a fresh part with the envelope and default printer is
+  // reported rather than aborting the export of everything else.
+  for (const [id, { profile, bytes }] of allProfiles) {
+    if (id === defaultProfile?.profile.id) continue;
+    if (envelopeBytes() + (defaultProfile?.bytes ?? 0) + bytes > MAX_FILE_BYTES) {
+      excluded.push({ kind: 'profile', id, title: profile.name });
+      allProfiles.delete(id);
+    }
+  }
+  dropBrokenLinks();
+
+  // Likewise for a project whose own metadata and file cannot fit a fresh part.
+  included = included.filter((project) => {
+    const linked = allProfiles.get(project.profileId ?? '');
+    const extra = linked && linked.profile.id !== defaultProfile?.profile.id ? linked.bytes : 0;
+    const fits =
+      envelopeBytes() + (defaultProfile?.bytes ?? 0) + reservedRecordBytes(project) + extra;
+    if (fits <= MAX_FILE_BYTES) return true;
+    excluded.push({ kind: 'project', id: project.id, title: project.title });
+    return false;
+  });
+
+  const exportedIds: BackupIdentities = identities();
+  const emptyBytes = envelopeBytes() + (defaultProfile?.bytes ?? 0);
+  if (emptyBytes > MAX_FILE_BYTES) throw new WorkspaceError('too-large');
+
   const unassigned = new Set(allProfiles.keys());
   if (defaultProfile) unassigned.delete(defaultProfile.profile.id);
-
-  const emptyBytes =
-    jsonBytes(envelope(snapshot.preferences, exportedIds)) + (defaultProfile?.bytes ?? 0);
   let encodedBytes = emptyBytes;
   let projectBytes = 0;
   let projects: SavedProject[] = [];
@@ -454,7 +731,13 @@ export function planBackups(snapshot: WorkspaceSnapshot): BackupPlan {
   const parts: BackupPart[] = [];
 
   function finishPart(): void {
-    parts.push({ ...snapshot, projects, profiles: [...profiles.values()], exportedIds });
+    parts.push({
+      ...snapshot,
+      preferences: preferences(),
+      projects,
+      profiles: [...profiles.values()],
+      exportedIds
+    });
     projects = [];
     profiles.clear();
     if (defaultProfile) profiles.set(defaultProfile.profile.id, defaultProfile.profile);
@@ -462,11 +745,9 @@ export function planBackups(snapshot: WorkspaceSnapshot): BackupPlan {
     encodedBytes = emptyBytes;
   }
 
-  if (emptyBytes > MAX_FILE_BYTES) throw new WorkspaceError('too-large');
   for (const project of included) {
     const size = project.file.size;
-    // Base64 uses four ASCII bytes per three input bytes. Reserve one byte for the comma.
-    const bytes = jsonBytes({ ...project, file: '' }) + 4 * Math.ceil(size / 3) + 1;
+    const bytes = reservedRecordBytes(project);
     const linked = allProfiles.get(project.profileId ?? '');
     const profileBytes = () => (linked && !profiles.has(linked.profile.id) ? linked.bytes : 0);
     if (
@@ -477,8 +758,6 @@ export function planBackups(snapshot: WorkspaceSnapshot): BackupPlan {
     ) {
       finishPart();
     }
-    if (encodedBytes + bytes + profileBytes() > MAX_FILE_BYTES)
-      throw new WorkspaceError('too-large');
     projects.push(project);
     projectBytes += size;
     encodedBytes += bytes + profileBytes();
@@ -490,7 +769,6 @@ export function planBackups(snapshot: WorkspaceSnapshot): BackupPlan {
   for (const { profile, bytes } of allProfiles.values()) {
     if (!unassigned.has(profile.id)) continue;
     if (profiles.size === MAX_ITEMS || encodedBytes + bytes > MAX_FILE_BYTES) finishPart();
-    if (encodedBytes + bytes > MAX_FILE_BYTES) throw new WorkspaceError('too-large');
     profiles.set(profile.id, profile);
     encodedBytes += bytes;
   }
@@ -564,6 +842,16 @@ export async function decodeBackup(
     throw new WorkspaceError('invalid');
   }
   const projects = await decodeProjects(projectItems, profileIds, validateProject);
+  // Preferences, including paint merges and skipped paints, travel in every backup part.
+  // They are valid lists and are kept as saved, but a block that cannot fit a file on its
+  // own would make every later export impossible, so refuse it before anything is stored.
+  const identities = exportedIds ?? {
+    projects: projects.map(({ id }) => id),
+    profiles: profiles.map(({ id }) => id)
+  };
+  if (jsonBytes(envelope(preferences, identities)) > MAX_FILE_BYTES) {
+    throw new WorkspaceError('too-large');
+  }
   return {
     version: BACKUP_VERSION,
     projects,
@@ -604,16 +892,44 @@ export function previewRestore(backup: WorkspaceBackup, snapshot: WorkspaceSnaps
     remap
   );
 
+  const preferences = {
+    // Decoding already checked these; a hand-built backup cannot bypass the same guard.
+    defaults: checkedDefaults(backup.preferences.defaults),
+    theme: backup.preferences.theme,
+    defaultProfileId: backup.preferences.defaultProfileId
+      ? (profileMap.get(backup.preferences.defaultProfileId) ?? null)
+      : null
+  };
+
+  // Every backup part repeats the whole id set and one preferences block. Check the
+  // workspace after this part is added with either preference choice, before any write.
+  const projectIds = new Set(snapshot.projects.map(({ id }) => id));
+  const profileIds = new Set(snapshot.profiles.map(({ id }) => id));
+  for (const { action, record } of profiles) {
+    if (action !== 'skip') profileIds.add(record.id);
+  }
+  for (const { action, record } of projects) {
+    if (action !== 'skip') projectIds.add(record.id);
+  }
+  const identities = { projects: [...projectIds], profiles: [...profileIds] };
+  const envelopeBytes = Math.max(
+    jsonBytes(envelope(snapshot.preferences, identities)),
+    jsonBytes(envelope(preferences, identities))
+  );
+  if (envelopeBytes > MAX_FILE_BYTES) throw new WorkspaceError('too-large');
+
+  // A restored record adds its saved name to both origin fields and might need a copy id.
+  // Reserve that future form too, so the next export need not drop what was restored.
+  for (const { action, record } of [...profiles, ...projects]) {
+    if (action !== 'skip' && envelopeBytes + reservedRecordBytes(record) > MAX_FILE_BYTES) {
+      throw new WorkspaceError('too-large');
+    }
+  }
+
   return {
     revision: snapshot.revision,
     projects,
     profiles,
-    preferences: {
-      defaults: backup.preferences.defaults,
-      theme: backup.preferences.theme,
-      defaultProfileId: backup.preferences.defaultProfileId
-        ? (profileMap.get(backup.preferences.defaultProfileId) ?? null)
-        : null
-    }
+    preferences
   };
 }

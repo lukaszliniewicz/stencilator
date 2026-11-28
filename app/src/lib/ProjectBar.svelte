@@ -7,6 +7,7 @@
     workspace,
     theme,
     pickTheme,
+    projectButton = $bindable<HTMLButtonElement | undefined>(),
     projects,
     actions,
     files,
@@ -15,6 +16,7 @@
     workspace: Workspace;
     theme: Theme;
     pickTheme: (theme: ThemeChoice) => void;
+    projectButton: HTMLButtonElement | undefined;
     projects: () => void;
     actions: () => void;
     files: () => void;
@@ -39,6 +41,7 @@
     <button
       type="button"
       class="project"
+      bind:this={projectButton}
       aria-haspopup="dialog"
       onclick={projects}
       disabled={workspace.initialising || workspace.busy}
@@ -184,12 +187,12 @@
       height: 23px;
     }
     .active .actions {
-      margin-left: auto;
+      flex-basis: 100%;
+      justify-content: flex-end;
       flex-wrap: wrap;
     }
     .active .identity {
-      order: 1;
-      flex-basis: 100%;
+      flex: 1 1 0;
     }
     .state {
       font-size: 11px;
@@ -207,8 +210,11 @@
   }
 
   @media (max-width: 370px) {
+    .active .identity {
+      flex-basis: 100%;
+    }
     .active .actions {
-      margin-left: 0;
+      justify-content: flex-start;
     }
   }
 </style>

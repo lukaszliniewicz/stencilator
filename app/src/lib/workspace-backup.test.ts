@@ -2,7 +2,12 @@ import { assert, describe, expect, it, vi } from 'vitest';
 
 import { sanitise } from './settings';
 import { decodeBackup, encodeBackup, planBackups, previewRestore } from './workspace-backup';
-import type { PrinterProfile, SavedProject, WorkspaceSnapshot } from './workspace-store';
+import {
+  WorkspaceError,
+  type PrinterProfile,
+  type SavedProject,
+  type WorkspaceSnapshot
+} from './workspace-store';
 
 /** The engine's validation is mocked: any declared "tiles" project opens. */
 const validateProject = (): Promise<'tiles'> => Promise.resolve('tiles');
@@ -19,6 +24,9 @@ const VIEW = {
   bedPart: null,
   comparePaint: false
 } as const;
+
+/** Three copies, the record and both origin fields, exceed the 160 MiB export budget. */
+const HUGE_NAME = 'a'.repeat(54 * 1024 * 1024);
 
 const project = async (
   id: string,
@@ -61,6 +69,27 @@ const preferences = (overrides: Partial<WorkspaceSnapshot['preferences']> = {}) 
   ...overrides
 });
 
+const defaultsBackup = (defaults: unknown): Blob =>
+  new Blob([
+    JSON.stringify({
+      stencilator_workspace: 1,
+      projects: [],
+      profiles: [],
+      preferences: { theme: 'auto', defaultProfileId: null, defaults }
+    })
+  ]);
+
+const backupFile = (overrides: Record<string, unknown> = {}): Blob =>
+  new Blob([
+    JSON.stringify({
+      stencilator_workspace: 1,
+      projects: [],
+      profiles: [],
+      preferences: { theme: 'auto', defaultProfileId: null, defaults: sanitise(undefined) },
+      ...overrides
+    })
+  ]);
+
 const wireProject = (id: string, mode = 'tiles', profileId: string | null = null) => ({
   id,
   revision: 1,
@@ -74,7 +103,7 @@ const wireProject = (id: string, mode = 'tiles', profileId: string | null = null
 });
 
 describe('workspace backups', () => {
-  it('round-trips projects, profiles and preferences without touching the digest', async () => {
+  it('round-trips records and recomputes the digest from the project bytes', async () => {
     const original = await project('p1', 'One', '{"a":1}', { profileId: 'pr1' });
     const profiles = [profile('pr1', 'Ender')];
     const snapshot: WorkspaceSnapshot = {
@@ -84,12 +113,24 @@ describe('workspace backups', () => {
       preferences: preferences({ theme: 'dark', defaultProfileId: 'pr1', lastProjectId: 'p1' })
     };
 
-    const backup = await decodeBackup(await encodeBackup(snapshot), validateProject);
+    // The stored fingerprint is untrusted: the decoded one is recomputed from the bytes.
+    const encoded = JSON.parse(await (await encodeBackup(snapshot)).text()) as {
+      projects: { digest: string }[];
+    };
+    const wire = encoded.projects[0];
+    assert(wire);
+    wire.digest = 'tampered';
+    const backup = await decodeBackup(
+      new Blob([JSON.stringify(encoded)], { type: 'application/json' }),
+      validateProject
+    );
     expect(backup.version).toBe(1);
     expect(backup.projects).toHaveLength(1);
     const [restored] = backup.projects;
     assert(restored);
+    expect(restored.digest).toBe(await sha256(await restored.file.text()));
     expect(restored.digest).toBe(original.digest);
+    expect(restored.digest).not.toBe('tampered');
     expect(await restored.file.text()).toBe('{"a":1}');
     expect(restored.profileId).toBe('pr1');
     expect(backup.profiles).toMatchObject([{ name: 'Ender' }]);
@@ -608,5 +649,320 @@ describe('workspace backups', () => {
     expect(newProfileId).not.toBe('pr1');
     expect(plan.projects).toMatchObject([{ record: { profileId: newProfileId } }]);
     expect(plan.preferences.defaultProfileId).toBe(newProfileId);
+  });
+
+  it('repairs restored defaults the engine would reject and keeps valid values', async () => {
+    const file = new Blob([
+      JSON.stringify({
+        stencilator_workspace: 1,
+        projects: [],
+        profiles: [],
+        preferences: {
+          theme: 'auto',
+          defaultProfileId: null,
+          defaults: {
+            canvasWidthMm: -5,
+            canvasHeightMm: 300,
+            tileMm: 0.05,
+            dpi: 5_000,
+            colours: 300,
+            cellMm: 3,
+            minPatchMm2: 150,
+            marginMm: 1,
+            minWebMm: 1.1,
+            bridgeWidthMm: 8,
+            connectorClearanceMm: 1,
+            thicknessMm: 50,
+            bedWidthMm: 20,
+            // Project state, not a workspace default: `sanitise` clears it before ranges.
+            registrationClearanceMm: 2,
+            chamferMm: 3,
+            overlapMm: 3
+          }
+        }
+      })
+    ]);
+
+    const { preferences } = await decodeBackup(file, validateProject);
+    expect(preferences.defaults).toMatchObject({
+      canvasWidthMm: 200,
+      canvasHeightMm: 300,
+      tileMm: 5,
+      dpi: 300,
+      colours: 16,
+      cellMm: 0.1,
+      minPatchMm2: 1,
+      marginMm: 10,
+      minWebMm: 1.1,
+      bridgeWidthMm: 1.2,
+      connectorClearanceMm: 4,
+      thicknessMm: 1.2,
+      bedWidthMm: 256,
+      registrationClearanceMm: null,
+      chamferMm: 0,
+      overlapMm: 0
+    });
+    // Existing `sanitise` resets project-specific settings; the restore does not range-check it.
+    expect(sanitise({ registrationClearanceMm: 2 }).registrationClearanceMm).toBeNull();
+
+    // A field left out still takes the engine's default.
+    const sparse = new Blob([
+      JSON.stringify({
+        stencilator_workspace: 1,
+        projects: [],
+        profiles: [],
+        preferences: { theme: 'auto', defaultProfileId: null, defaults: { cellMm: 0.2 } }
+      })
+    ]);
+    const decoded = await decodeBackup(sparse, validateProject);
+    expect(decoded.preferences.defaults).toEqual({ ...sanitise(undefined), cellMm: 0.2 });
+  });
+
+  it('keeps the cross-field defaults the engine accepts at the micrometre boundary', async () => {
+    const accepted = await decodeBackup(
+      defaultsBackup({ thicknessMm: 1.2, connectorClearanceMm: 1.4, chamferMm: 1 }),
+      validateProject
+    );
+    expect(accepted.preferences.defaults).toMatchObject({
+      thicknessMm: 1.2,
+      connectorClearanceMm: 1.4,
+      chamferMm: 1
+    });
+
+    const tight = await decodeBackup(
+      defaultsBackup({ thicknessMm: 1.2, connectorClearanceMm: 1.399, chamferMm: 1.1 }),
+      validateProject
+    );
+    expect(tight.preferences.defaults).toMatchObject({
+      thicknessMm: 1.2,
+      connectorClearanceMm: 4,
+      chamferMm: 0
+    });
+  });
+
+  it('checks defaults for every mode, not only the saved one', async () => {
+    const { preferences } = await decodeBackup(
+      defaultsBackup({
+        sizing: 'pixels',
+        canvasWidthMm: -5,
+        sizeMode: 'natural',
+        artWidthMm: -5,
+        supportKind: 'none',
+        bridgeWidthMm: 8
+      }),
+      validateProject
+    );
+    expect(preferences.defaults).toMatchObject({
+      sizing: 'pixels',
+      canvasWidthMm: 200,
+      sizeMode: 'natural',
+      artWidthMm: 200,
+      supportKind: 'none',
+      bridgeWidthMm: 1.2
+    });
+  });
+
+  it('keeps paint merges and skipped paints exactly as saved', async () => {
+    const hex = (value: number): string => `#${value.toString(16).padStart(6, '0')}`;
+    const merges = Array.from({ length: 400 }, (_, i): [string, string] => [
+      hex(i),
+      hex(i + 1_000)
+    ]);
+    const skipped = Array.from({ length: 400 }, (_, i) => hex(i + 2_000));
+    const { preferences } = await decodeBackup(
+      defaultsBackup({ merges, skipped }),
+      validateProject
+    );
+    expect(preferences.defaults.merges).toEqual(merges);
+    expect(preferences.defaults.skipped).toEqual(skipped);
+  });
+
+  it('refuses restored metadata that could never fit a backup file', () => {
+    const backup = {
+      version: 1 as const,
+      projects: [],
+      profiles: [profile('huge', HUGE_NAME)],
+      preferences: preferences()
+    };
+    const snapshot: WorkspaceSnapshot = {
+      revision: 0,
+      projects: [],
+      profiles: [],
+      preferences: preferences()
+    };
+
+    let thrown: unknown;
+    try {
+      previewRestore(backup, snapshot);
+    } catch (error) {
+      thrown = error;
+    }
+    expect(thrown).toBeInstanceOf(WorkspaceError);
+    expect(thrown).toMatchObject({ code: 'too-large' });
+  });
+
+  it('exports the other records and names an oversized profile and its linked project', async () => {
+    const huge = profile('huge', HUGE_NAME, 200, 200, {
+      origin: { id: 'huge', name: HUGE_NAME, importedAs: HUGE_NAME }
+    });
+    const printer = profile('pr1', 'Ender');
+    const linked = await project('p1', 'Linked to the huge profile', 'bytes', {
+      profileId: huge.id
+    });
+    const design = await project('p2', 'One', 'bytes', { profileId: printer.id });
+    const snapshot: WorkspaceSnapshot = {
+      revision: 5,
+      projects: [linked, design],
+      profiles: [huge, printer],
+      preferences: preferences({ defaultProfileId: printer.id })
+    };
+
+    const plan = planBackups(snapshot);
+    expect(plan.excluded).toEqual([
+      { kind: 'profile', id: 'huge', title: HUGE_NAME },
+      { kind: 'project', id: linked.id, title: linked.title }
+    ]);
+    expect(plan.parts).toHaveLength(1);
+    const [part] = plan.parts;
+    assert(part);
+    expect(part.projects).toEqual([design]);
+    expect(part.profiles).toEqual([printer]);
+    expect(part.preferences.defaultProfileId).toBe(printer.id);
+  });
+
+  it('accepts ids at the length limit in every id field', async () => {
+    const id = 'x'.repeat(256);
+    const origin = { id, sourceId: id, name: 'Saved', importedAs: 'Saved' };
+    const file = backupFile({
+      projects: [{ ...wireProject(id, 'tiles', id), origin }],
+      profiles: [profile(id, 'Printer', 200, 200, { origin })],
+      preferences: { theme: 'auto', defaultProfileId: id, defaults: sanitise(undefined) },
+      exportedIds: { projects: [id], profiles: [id] }
+    });
+
+    const decoded = await decodeBackup(file, validateProject);
+    expect(decoded.projects[0]).toMatchObject({ id, profileId: id, origin });
+    expect(decoded.profiles[0]).toMatchObject({ id, origin });
+    expect(decoded.preferences.defaultProfileId).toBe(id);
+  });
+
+  it.each(
+    (() => {
+      const overlong = 'x'.repeat(257);
+      const atLimit = 'x'.repeat(256);
+      const cases: [string, Record<string, unknown>][] = [
+        ['project id', { projects: [wireProject(overlong)] }],
+        ['profile id', { profiles: [profile(overlong, 'Printer')] }],
+        [
+          'project profile link',
+          {
+            projects: [wireProject('p1', 'tiles', overlong)],
+            profiles: [profile(atLimit, 'Printer')]
+          }
+        ],
+        [
+          'default profile link',
+          {
+            profiles: [profile('pr1', 'Printer')],
+            preferences: {
+              theme: 'auto',
+              defaultProfileId: overlong,
+              defaults: sanitise(undefined)
+            }
+          }
+        ],
+        [
+          'exported id',
+          {
+            projects: [wireProject('p1')],
+            exportedIds: { projects: ['p1', overlong], profiles: [] }
+          }
+        ],
+        [
+          'origin id',
+          {
+            projects: [
+              { ...wireProject('p1'), origin: { id: overlong, name: 'Saved', importedAs: 'Saved' } }
+            ]
+          }
+        ],
+        [
+          'origin source id',
+          {
+            projects: [
+              {
+                ...wireProject('p1'),
+                origin: { id: 'p1', sourceId: overlong, name: 'Saved', importedAs: 'Saved' }
+              }
+            ]
+          }
+        ]
+      ];
+      return cases;
+    })()
+  )('rejects an overlong %s', async (_label, overrides) => {
+    await expect(decodeBackup(backupFile(overrides), validateProject)).rejects.toMatchObject({
+      code: 'invalid'
+    });
+  });
+
+  it('excludes a local record whose restored form cannot fit a backup file', async () => {
+    // The name alone fits an exported record; its restored origin and copy headroom do not.
+    const huge = profile('huge', HUGE_NAME);
+    const printer = profile('pr1', 'Ender');
+    const linked = await project('p1', 'Linked project', 'bytes', { profileId: huge.id });
+    const design = await project('p2', 'Design', 'bytes', { profileId: printer.id });
+    const snapshot: WorkspaceSnapshot = {
+      revision: 5,
+      projects: [linked, design],
+      profiles: [huge, printer],
+      preferences: preferences({ defaultProfileId: printer.id })
+    };
+
+    const { parts, excluded } = planBackups(snapshot);
+    expect(excluded).toEqual([
+      { kind: 'profile', id: huge.id, title: HUGE_NAME },
+      { kind: 'project', id: linked.id, title: linked.title }
+    ]);
+    expect(parts).toHaveLength(1);
+    const [part] = parts;
+    assert(part);
+    expect(part.projects).toEqual([design]);
+    expect(part.profiles).toEqual([printer]);
+
+    // The remaining part still imports cleanly, so the exclusion did not poison it.
+    const backup = await decodeBackup(await encodeBackup(part), validateProject);
+    expect(
+      previewRestore(backup, { ...snapshot, projects: [], profiles: [] }).profiles
+    ).toMatchObject([{ action: 'add', record: { id: printer.id, name: printer.name } }]);
+  });
+
+  it('drops an unusable default profile and its links but exports the rest', async () => {
+    const huge = profile('huge', HUGE_NAME, 200, 200, {
+      origin: { id: 'huge', name: HUGE_NAME, importedAs: HUGE_NAME }
+    });
+    const printer = profile('pr1', 'Ender');
+    const linked = await project('p1', 'Linked to the huge profile', 'bytes', {
+      profileId: huge.id
+    });
+    const design = await project('p2', 'One', 'bytes', { profileId: printer.id });
+    const snapshot: WorkspaceSnapshot = {
+      revision: 5,
+      projects: [linked, design],
+      profiles: [huge, printer],
+      preferences: preferences({ defaultProfileId: huge.id })
+    };
+
+    const { parts, excluded } = planBackups(snapshot);
+    expect(excluded).toEqual([
+      { kind: 'profile', id: 'huge', title: HUGE_NAME },
+      { kind: 'project', id: linked.id, title: linked.title }
+    ]);
+    expect(parts).toHaveLength(1);
+    const [part] = parts;
+    assert(part);
+    expect(part.projects).toEqual([design]);
+    expect(part.profiles).toEqual([printer]);
+    expect(part.preferences.defaultProfileId).toBeNull();
   });
 });

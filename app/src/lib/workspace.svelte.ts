@@ -52,6 +52,59 @@ function sameView(a: ProjectView, b: ProjectView): boolean {
   );
 }
 
+/** What this tab should do about a project revision that another tab committed. */
+export type RemoteChange =
+  | { action: 'none' }
+  | { action: 'conflict' }
+  | { action: 'adopt'; record: SavedProject }
+  | { action: 'reopen'; record: SavedProject };
+
+/**
+ * Another tab saved while this one held the project. Identical artwork bytes mean only the
+ * view or the name changed, so the new revision can be adopted without reopening the
+ * project, which would reset the screen and drop the undo history. Different bytes need the
+ * artwork reloaded. A pending draft, or a project removed elsewhere, is a conflict.
+ *
+ * An adopted record keeps `view`, this tab's screen: taking the other tab's view would make
+ * an unchanged project look unsaved here and save the old view straight back.
+ */
+export function remoteChange(
+  saved: SavedProject,
+  remote: SavedProject | undefined,
+  pending: boolean,
+  view: ProjectView
+): RemoteChange {
+  if (remote?.revision === saved.revision) return { action: 'none' };
+  if (pending || !remote) return { action: 'conflict' };
+  return remote.digest === saved.digest
+    ? { action: 'adopt', record: { ...remote, view } }
+    : { action: 'reopen', record: remote };
+}
+
+interface SaveLane {
+  /** The write already running, if any. */
+  readonly flight: () => Promise<boolean> | undefined;
+  /** Whether the current draft still differs from the saved record. */
+  readonly pending: () => boolean;
+  /** Whether saving is refused for now, by an upgrade or a conflict. */
+  readonly blocked: () => boolean;
+  /** Starts one write and answers whether it committed. */
+  readonly write: () => Promise<boolean>;
+}
+
+/**
+ * Saves until nothing is pending, settling a write that was already in flight first:
+ * callers are told the workspace is safe only once the bytes they asked about committed.
+ */
+export async function settleSaves(lane: SaveLane): Promise<boolean> {
+  const started = lane.flight();
+  if (started && !(await started)) return false;
+  while (lane.pending() && !lane.blocked()) {
+    if (!(await lane.write())) return false;
+  }
+  return !lane.pending();
+}
+
 export function suggestedTitle(file: File): string {
   return baseName(file.name).slice(0, TITLE_LIMIT);
 }
@@ -181,13 +234,19 @@ export class Workspace {
     $effect(() => {
       const { version, title, view } = this.#saveDraft();
       const failed = this.#failedDraft;
+      const blocked =
+        this.busy || this.initialising || this.bench.opening || this.upgrade || this.conflict;
+      if (!this.pending) {
+        // Reverting to the committed state leaves no draft for a failure to describe, and
+        // nothing for Retry to write. Keep a write's own failure, and a blocking error, visible.
+        if (this.saveProblem && !blocked && !this.#writing) {
+          this.saveProblem = '';
+          this.#failedDraft = undefined;
+        }
+        return;
+      }
       if (
-        !this.pending ||
-        this.busy ||
-        this.initialising ||
-        this.bench.opening ||
-        this.upgrade ||
-        this.conflict ||
+        blocked ||
         this.#writing ||
         (failed?.version === version && failed.title === title && sameView(failed.view, view))
       )
@@ -289,33 +348,43 @@ export class Workspace {
       const saved = this.#record;
       if (!saved || this.#flight || this.conflict) return;
       const remote = next.projects.find(({ id }) => id === saved.id);
-      if (remote?.revision === saved.revision) return;
+      const change = remoteChange(saved, remote, this.pending, this.bench.projectView);
+      if (change.action === 'none') return;
       if (!this.canOpen) {
         // Reread once the export or project switch finishes. Either copy may have changed.
         this.#refreshWhenIdle = true;
         return;
       }
-      if (this.pending || !remote) this.conflict = true;
-      else if (remote.digest === saved.digest && sameView(remote.view, saved.view)) {
-        this.#record = remote;
-        this.#loadedRevision = remote.revision;
-        this.title = remote.title;
-        this.bench.profileId = remote.profileId;
-      } else await this.#transition(() => this.#openSaved(remote, false), false);
+      if (change.action === 'conflict') this.conflict = true;
+      else if (change.action === 'adopt') this.#adoptRemote(change.record);
+      else await this.#transition(() => this.#openSaved(change.record, false), false);
     } catch (error) {
       if (store === this.#store) this.storageProblem = workspaceProblem(error);
     }
   };
 
   async flush(): Promise<boolean> {
-    while (this.pending && !this.upgrade && !this.conflict) {
-      this.#flight ??= this.#write().finally(() => {
-        this.#flight = undefined;
-        void this.refresh();
-      });
-      if (!(await this.#flight)) return false;
-    }
-    return !this.pending;
+    return settleSaves({
+      flight: () => this.#flight,
+      pending: () => this.pending,
+      blocked: () => this.upgrade || this.conflict,
+      write: () =>
+        (this.#flight ??= this.#write().finally(() => {
+          this.#flight = undefined;
+          void this.refresh();
+        }))
+    });
+  }
+
+  /**
+   * Takes another tab's view- or name-only save without reloading the artwork. The record
+   * already carries this tab's view, so the project does not look unsaved afterwards.
+   */
+  #adoptRemote(record: SavedProject): void {
+    this.#record = record;
+    this.#loadedRevision = record.revision;
+    this.title = record.title;
+    this.bench.profileId = record.profileId;
   }
 
   #saveDraft(): SaveDraft {

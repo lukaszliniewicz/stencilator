@@ -59,15 +59,15 @@
   let incoming = $state.raw<File>();
   let replaceTarget = $state.raw<ReplacementTarget>();
   const replacementChanged = $derived(!workspace.canReplace(replaceTarget));
-  const replacementProblem = $derived(
-    replacementChanged ? words.replaceChanged : workspace.message || bench.problem
-  );
+  const replacementProblem = $derived(workspace.message || bench.problem);
   let search = $state('');
   let rename = $state('');
   let renameFrom = $state.raw<{ id: string; title: string }>();
   let renameNotice = $state('');
   let removeProject = $state.raw<SavedProject>();
   let main: HTMLElement | undefined = $state();
+  let projectButton: HTMLButtonElement | undefined = $state();
+  const focusProject = (): void => projectButton?.focus();
   let sizeHeading: HTMLElement | undefined = $state();
   const artworkId = $props.id();
   const projects = $derived(
@@ -300,7 +300,10 @@
   onchange={(event) => {
     const file = event.currentTarget.files?.[0];
     event.currentTarget.value = '';
-    if (file) void workspace.startFile(file);
+    if (file) {
+      if (fileKind(file) === 'project') void workspace.startFile(file);
+      else workspace.message = text.project.wrongFile;
+    }
   }}
 />
 
@@ -309,6 +312,7 @@
     {workspace}
     {theme}
     {pickTheme}
+    bind:projectButton
     projects={() => {
       show('projects');
     }}
@@ -325,7 +329,10 @@
     {#if workspace.storageProblem && !workspace.upgrade}
       <p class="problem" role="alert">{workspace.storageProblem}</p>
     {/if}
-    {#if workspace.id || workspace.upgrade}<SaveNotice {workspace} />{/if}
+    {#if workspace.id || workspace.upgrade}<SaveNotice
+        {workspace}
+        onRecovered={focusProject}
+      />{/if}
     <NewProject
       {workspace}
       {preset}
@@ -342,7 +349,7 @@
       }}
     />
   {:else}
-    <SaveNotice {workspace} />
+    <SaveNotice {workspace} onRecovered={focusProject} />
     <div
       class="workspace"
       data-panel={panel}
@@ -642,7 +649,10 @@
         {words.cancel}
       </button>
     </div>
-    {#if replacementProblem}<p class="notice" role="alert">{replacementProblem}</p>{/if}
+    {#if replacementChanged}<p class="notice" role="alert">{words.replaceChanged}</p>{/if}
+    {#if replacementProblem && (!replacementChanged || replacementProblem !== words.replaceChanged)}
+      <p class="notice" role="alert">{replacementProblem}</p>
+    {/if}
   </Modal>
 {:else if modal === 'replace-text'}
   <Modal title={text.freeform.type} {dismiss} busy={workspace.busy}>
@@ -662,7 +672,10 @@
         {words.cancel}
       </button>
     </div>
-    {#if replacementProblem}<p class="notice" role="alert">{replacementProblem}</p>{/if}
+    {#if replacementChanged}<p class="notice" role="alert">{words.replaceChanged}</p>{/if}
+    {#if replacementProblem && (!replacementChanged || replacementProblem !== words.replaceChanged)}
+      <p class="notice" role="alert">{replacementProblem}</p>
+    {/if}
   </Modal>
 {:else if modal === 'printer' || modal === 'profiles'}
   <PrinterDialog {workspace} {dismiss} profilesFirst={modal === 'profiles'} />

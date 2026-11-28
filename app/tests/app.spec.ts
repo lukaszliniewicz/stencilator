@@ -1056,6 +1056,58 @@ for (const [reason, contents] of Object.entries({
   });
 }
 
+test('the dedicated project picker rejects artwork without opening a new project', async ({
+  page
+}) => {
+  await page.goto('/');
+  await openPicture(page);
+  await saved(page);
+  await page.getByLabel('Stencilator project file', { exact: true }).setInputFiles(IMAGE);
+  await expect(page.getByRole('alert')).toContainText('Choose a .stencilator project file.');
+  await expect(page.getByRole('button', { name: 'chart-0', exact: true })).toBeVisible();
+  const picker = await projects(page, 'chart-0');
+  await expect(picker.getByRole('listitem')).toHaveCount(1);
+});
+
+test('modal backdrop dismissal requires the same uncancelled pointer', async ({ page }) => {
+  await page.goto('/');
+  const dialog = await projects(page);
+  await dialog.evaluate((node) => {
+    const { left, top } = node.getBoundingClientRect();
+    const send = (type: string, pointerId: number, outside: boolean) =>
+      node.dispatchEvent(
+        new PointerEvent(type, {
+          pointerId,
+          pointerType: 'touch',
+          bubbles: true,
+          clientX: outside ? left - 1 : left + 10,
+          clientY: outside ? top - 1 : top + 10
+        })
+      );
+    send('pointerdown', 1, false);
+    send('pointerdown', 2, true);
+    send('pointerup', 1, true);
+    send('pointercancel', 2, true);
+    send('pointerup', 2, true);
+  });
+  await expect(dialog).toBeVisible();
+  await dialog.evaluate((node) => {
+    const { left, top } = node.getBoundingClientRect();
+    for (const type of ['pointerdown', 'pointerup']) {
+      node.dispatchEvent(
+        new PointerEvent(type, {
+          pointerId: 3,
+          pointerType: 'touch',
+          bubbles: true,
+          clientX: left - 1,
+          clientY: top - 1
+        })
+      );
+    }
+  });
+  await expect(dialog).toHaveCount(0);
+});
+
 test('the Projects dialog explains why opening is blocked during an STL export', async ({
   page
 }) => {
@@ -1209,6 +1261,101 @@ test('a second tab cannot overwrite a newer save and can keep its draft as a cop
   await expect(page.getByLabel(size, { exact: true })).toHaveValue('6');
 });
 
+test('a view-only save from another tab keeps Files and this tab’s undo history', async ({
+  page,
+  context
+}) => {
+  await page.addInitScript(() => {
+    window.BroadcastChannel = class extends BroadcastChannel {
+      constructor(name: string) {
+        super(name);
+        if (name !== 'stencilator-workspace') return;
+        this.addEventListener('message', () => {
+          const root = document.documentElement;
+          root.dataset.workspaceBroadcasts = String(
+            Number(root.dataset.workspaceBroadcasts ?? 0) + 1
+          );
+        });
+      }
+    };
+  });
+  const revision = () =>
+    page.evaluate(
+      () =>
+        new Promise<number>((resolve, reject) => {
+          const request = indexedDB.open('stencilator-workspace');
+          request.onerror = () => {
+            reject(request.error ?? new Error('The workspace database could not open.'));
+          };
+          request.onsuccess = () => {
+            const db = request.result;
+            const tx = db.transaction('projects', 'readonly');
+            const read = tx.objectStore('projects').getAll();
+            read.onsuccess = () => {
+              const record = (read.result as { title: string; revision: number }[]).find(
+                ({ title }) => title === 'chart-0'
+              );
+              if (!record) {
+                db.close();
+                reject(new Error('The saved project could not be read.'));
+                return;
+              }
+              tx.oncomplete = () => {
+                db.close();
+                resolve(record.revision);
+              };
+            };
+          };
+        })
+    );
+
+  await page.goto('/');
+  await openPicture(page);
+  await saved(page);
+  const tile = page.getByLabel('Tile (mm)', { exact: true });
+  await tile.fill('6');
+  await saved(page);
+  await page.getByRole('button', { name: 'Side by side', exact: true }).click();
+  await saved(page);
+  await page.getByRole('button', { name: 'Files', exact: true }).click();
+  await expect(page.getByRole('heading', { name: 'Files', exact: true })).toBeVisible();
+  const before = await revision();
+
+  const other = await context.newPage();
+  await other.goto('/');
+  await expect(other.getByLabel('Tile (mm)', { exact: true })).toHaveValue('6');
+  // A paint choice changes only the view, so the artwork bytes stay the same.
+  const paint = other.getByRole('button', { name: /^Paint 2, #/ });
+  await paint.click();
+  await expect(paint).toHaveAttribute('aria-pressed', 'true');
+  await expect.poll(revision).toBeGreaterThan(before);
+  await saved(other);
+
+  // This tab saw the newer revision and adopted it without reopening the project.
+  await expect(page.locator('html')).toHaveAttribute('data-workspace-broadcasts', '1');
+  await expect(page.getByRole('heading', { name: 'Files', exact: true })).toBeVisible();
+
+  await page.getByRole('button', { name: 'Back to the chart' }).click();
+  const sideBySide = page.getByRole('button', { name: 'Side by side', exact: true });
+  await expect(sideBySide).toHaveAttribute('aria-pressed', 'true');
+  // Later view-only saves commit against the adopted revision instead of conflicting.
+  const adopted = await revision();
+  await page.getByRole('button', { name: 'Chart', exact: true }).click();
+  await expect.poll(revision).toBeGreaterThan(adopted);
+  await saved(page);
+  const adoptedAfterWrite = await revision();
+  await sideBySide.click();
+  await expect.poll(revision).toBeGreaterThan(adoptedAfterWrite);
+  await saved(page);
+  await expect(sideBySide).toHaveAttribute('aria-pressed', 'true');
+
+  const undo = page.getByRole('button', { name: 'Undo (Ctrl+Z)' });
+  await expect(undo).toBeEnabled();
+  await undo.click();
+  await expect(tile).toHaveValue('5');
+  await saved(page);
+});
+
 test('a stale draft cannot bring a removed project back under its old name', async ({
   page,
   context
@@ -1236,7 +1383,7 @@ test('a stale draft cannot bring a removed project back under its old name', asy
 
   await tile.fill('7');
   await expect(
-    other.getByText('This project was removed in another tab', { exact: true })
+    other.getByRole('region', { name: 'This project was removed in another tab', exact: true })
   ).toBeVisible();
   await other.getByRole('button', { name: 'Keep mine as a copy' }).click();
   await saved(other);
@@ -1361,6 +1508,35 @@ for (const choice of ['incoming artwork', 'text'] as const) {
   });
 }
 
+test('a failed separate artwork import is visible alongside stale replacement', async ({
+  page,
+  context
+}) => {
+  await page.goto('/');
+  await openPicture(page);
+  await saved(page);
+  const other = await context.newPage();
+  await other.goto('/');
+  await page.getByLabel('Picture file', { exact: true }).setInputFiles({
+    name: 'broken.png',
+    mimeType: 'image/png',
+    buffer: Buffer.from('not a PNG')
+  });
+  const dialog = page.getByRole('dialog', { name: 'Open “broken”' });
+  const replace = dialog.getByRole('button', { name: 'Replace artwork' });
+  await expect(replace).toBeEnabled();
+  await other.getByLabel('Tile (mm)', { exact: true }).fill('6');
+  await saved(other);
+  await expect(replace).toBeDisabled();
+  await expect(dialog.getByRole('alert')).toHaveCount(1);
+  await dialog.getByRole('button', { name: 'Start new project' }).click();
+  await expect(dialog.getByRole('alert')).toHaveCount(2);
+  await expect(dialog.getByRole('alert').first()).toContainText('The project has changed');
+  await expect(dialog.getByRole('alert').last()).not.toContainText('The project has changed');
+  await expect(replace).toBeDisabled();
+  await expect(dialog.getByRole('button', { name: 'Start new project' })).toBeEnabled();
+});
+
 test('settings and theme remembered by v0.1.0 carry over to a new workspace', async ({ page }) => {
   await page.addInitScript(() => {
     if (localStorage.getItem('stencilator.settings') === null) {
@@ -1429,6 +1605,43 @@ test('a browser without storage keeps the draft editable and asks before leaving
   await expect(page.getByLabel('Tile (mm)', { exact: true })).toHaveValue('6');
 });
 
+test('Retry save keeps keyboard focus through failure and returns it to the project on success', async ({
+  page
+}) => {
+  await page.goto('/');
+  await openPicture(page);
+  await saved(page);
+  await page.evaluate(() => {
+    // eslint-disable-next-line @typescript-eslint/unbound-method -- Preserve the native transaction implementation.
+    const transaction = IDBDatabase.prototype.transaction;
+    document.documentElement.dataset.failSave = 'yes';
+    IDBDatabase.prototype.transaction = function (stores, mode, options) {
+      if (mode === 'readwrite' && document.documentElement.dataset.failSave === 'yes') {
+        document.documentElement.dataset.failedSaveCount = String(
+          Number(document.documentElement.dataset.failedSaveCount ?? 0) + 1
+        );
+        throw new DOMException('The workspace is full.', 'QuotaExceededError');
+      }
+      return transaction.call(this, stores, mode, options);
+    };
+  });
+  await page.getByLabel('Tile (mm)', { exact: true }).fill('6');
+  const recovery = page.getByRole('region', { name: 'Could not save in this browser' });
+  const retry = recovery.getByRole('button', { name: 'Retry save' });
+  await expect(retry).toBeEnabled();
+  const before = Number(await page.locator('html').getAttribute('data-failed-save-count'));
+  await retry.focus();
+  await retry.press('Enter');
+  await expect(page.locator('html')).toHaveAttribute('data-failed-save-count', String(before + 1));
+  await expect(retry).toBeEnabled();
+  await expect(retry).toBeFocused();
+  await page.evaluate(() => delete document.documentElement.dataset.failSave);
+  await retry.press('Enter');
+  await saved(page);
+  await expect(recovery).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'chart-0', exact: true })).toBeFocused();
+});
+
 test('a new view saves automatically after a view-only save fails', async ({ page }) => {
   await page.goto('/');
   await openPicture(page);
@@ -1454,6 +1667,35 @@ test('a new view saves automatically after a view-only save fails', async ({ pag
   await saved(page);
   await page.reload();
   await expect(next).toHaveAttribute('aria-pressed', 'true');
+});
+
+test('a failed view-only save clears its notice when the view returns to the saved one', async ({
+  page
+}) => {
+  await page.goto('/');
+  await openPicture(page);
+  await saved(page);
+  await page.evaluate(() => {
+    // eslint-disable-next-line @typescript-eslint/unbound-method -- Restored after the failed write.
+    const transaction = IDBDatabase.prototype.transaction;
+    IDBDatabase.prototype.transaction = function (stores, mode, options) {
+      if (mode === 'readwrite') {
+        IDBDatabase.prototype.transaction = transaction;
+        throw new DOMException('The workspace is full.', 'QuotaExceededError');
+      }
+      return transaction.call(this, stores, mode, options);
+    };
+  });
+
+  await page.getByRole('button', { name: 'Side by side', exact: true }).click();
+  const recovery = page.getByRole('region', { name: 'Could not save in this browser' });
+  await expect(recovery).toContainText('The browser ran out of storage space.');
+
+  const savedView = page.getByRole('button', { name: 'Chart', exact: true });
+  await savedView.click();
+  await expect(savedView).toHaveAttribute('aria-pressed', 'true');
+  await expect(recovery).toHaveCount(0);
+  await saved(page);
 });
 
 for (const removed of [false, true]) {
@@ -1648,6 +1890,88 @@ test('the separate fit verdict does not sit beside a no-warnings message', async
   await page.getByRole('button', { name: 'Files', exact: true }).click();
   await expect(fit.getByText(/Too large for this bed/)).toBeVisible();
   await expect(bench(page).getByText(noWarnings, { exact: true })).toHaveCount(0);
+});
+
+test('zero optional printer measurements name the invalid field and allow blank or small values', async ({
+  page
+}) => {
+  await page.goto('/');
+  await (await projects(page)).getByRole('button', { name: 'Manage printer profiles…' }).click();
+  const profiles = page.getByRole('dialog', { name: 'Printer profiles' });
+  await profiles.getByRole('textbox', { name: 'Profile name' }).fill('Fine printer');
+  await profiles.getByText('Optional slicer settings', { exact: true }).click();
+  const labels = ['Extrusion line width (mm)', 'Layer height (mm)', 'Nozzle diameter (mm)'];
+  for (const label of labels) {
+    await profiles.getByLabel(label).fill('0');
+    await profiles.getByRole('button', { name: 'Save profile' }).click();
+    await expect(profiles.getByRole('alert')).toContainText(label);
+    await expect(profiles.getByRole('option', { name: 'Fine printer' })).toHaveCount(0);
+    await profiles.getByLabel(label).fill('');
+  }
+  await profiles.getByLabel('Nozzle diameter (mm)').fill('0.005');
+  await profiles.getByRole('button', { name: 'Save profile' }).click();
+  await expect(profiles.getByRole('option', { name: 'Fine printer' })).toBeAttached();
+  await expect(profiles.getByRole('alert')).toHaveCount(0);
+});
+
+test('printer setup cannot apply a bed while remote artwork is reopening', async ({
+  page,
+  context
+}) => {
+  const opening = await controlWorkerRequest(page, 'open');
+  await page.goto('/');
+  await openPicture(page);
+  await saved(page);
+  const other = await context.newPage();
+  await other.goto('/');
+  await page.getByRole('button', { name: 'Change bed…', exact: true }).first().click();
+  const printer = page.getByRole('dialog', { name: 'Printer setup' });
+  await printer.getByLabel('Bed width (mm)').fill('210');
+  await printer.getByLabel('Bed depth (mm)').fill('220');
+  await opening.hold();
+  await other.getByLabel('Tile (mm)', { exact: true }).fill('6');
+  await saved(other);
+  await opening.held();
+  const apply = printer.getByRole('button', { name: 'Apply to project' });
+  await expect(apply).toBeDisabled();
+  await printer
+    .locator('form')
+    .evaluate((form) =>
+      form.dispatchEvent(new SubmitEvent('submit', { bubbles: true, cancelable: true }))
+    );
+  await expect(printer).toBeVisible();
+  await opening.release();
+  await expect(apply).toBeEnabled();
+  await apply.click();
+  await saved(page);
+  await expect(printer).toHaveCount(0);
+  await page.getByRole('button', { name: 'Print bed', exact: true }).click();
+  await expect(bench(page).getByRole('img', { name: /on a 210 × 220 mm bed/ })).toBeVisible();
+});
+
+test('compact header follows the visual order with keyboard Tab', async ({ page }) => {
+  await page.setViewportSize({ width: 720, height: 900 });
+  await page.goto('/');
+  await openPicture(page);
+  await saved(page);
+  const first = page.getByRole('button', { name: 'chart-0', exact: true });
+  const controls = [
+    first,
+    page.getByRole('button', { name: 'Project actions' }),
+    page.getByRole('button', { name: 'New project', exact: true }),
+    page.getByRole('button', { name: 'Files', exact: true }),
+    page.getByRole('combobox', { name: 'Theme' })
+  ];
+  await first.focus();
+  let lastY = 0;
+  for (const control of controls) {
+    await expect(control).toBeFocused();
+    const box = await control.boundingBox();
+    if (!box) throw new Error('Header control has no box.');
+    expect(box.y + box.height / 2).toBeGreaterThanOrEqual(lastY - 5);
+    lastY = box.y + box.height / 2;
+    await page.keyboard.press('Tab');
+  }
 });
 
 test('a printer profile can be renamed without changing small restored measurements', async ({
@@ -2367,6 +2691,7 @@ test.describe('narrow workspace', () => {
         type: 'touchMove',
         touchPoints: expand ? points(0, 10) : points(10, 0)
       });
+      expect((await transform()).scale).toBe(scale);
       await touch.send('Input.dispatchTouchEvent', {
         type: 'touchMove',
         touchPoints: points(10, 10)

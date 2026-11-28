@@ -236,6 +236,10 @@ export interface WorkspaceStore {
   removeProject(id: string, expectedRevision: number): Promise<void>;
   saveProfile(input: ProfileWrite, expectedRevision: number | null): Promise<PrinterProfile>;
   removeProfile(id: string, expectedRevision: number): Promise<void>;
+  /**
+   * Saves the preferences in the patch. A `lastProjectId` whose project has gone is left
+   * out, so a selection never points at a record another tab has removed.
+   */
   updatePreferences(patch: Partial<WorkspacePreferences>): Promise<void>;
   /** Returns false for a stale preview, true even when the valid preview needs no writes. */
   restore(plan: RestorePlan, restorePreferences: boolean): Promise<boolean>;
@@ -444,10 +448,16 @@ class Store implements WorkspaceStore {
   }
 
   async updatePreferences(patch: Partial<WorkspacePreferences>): Promise<void> {
-    // A default profile must still exist: read it in the same transaction as the write,
-    // so a concurrent deletion cannot leave a dangling preference behind.
-    const stores = patch.defaultProfileId ? ['profiles', 'workspace'] : ['workspace'];
-    await transact(this.#db, stores, async (tx) => {
+    // A linked record must still exist: read it in the same transaction as the write, so
+    // another tab's deletion cannot be interleaved between a check and the commit.
+    const { lastProjectId, ...rest } = patch;
+    const wantsProject = typeof lastProjectId === 'string';
+    const stores = [
+      'workspace',
+      ...(patch.defaultProfileId ? ['profiles'] : []),
+      ...(wantsProject ? ['projects'] : [])
+    ];
+    const written = await transact(this.#db, stores, async (tx) => {
       if (patch.defaultProfileId) {
         const profile = await requestResult(
           tx.objectStore('profiles').get(patch.defaultProfileId) as IDBRequest<
@@ -456,18 +466,31 @@ class Store implements WorkspaceStore {
         );
         if (!profile) throw new WorkspaceError('conflict');
       }
+      // Another tab can remove the project after this one read the menu; remembering it
+      // then would restore a workspace that opens nothing.
+      const linked =
+        !wantsProject ||
+        (await requestResult(
+          tx.objectStore('projects').get(lastProjectId) as IDBRequest<SavedProject | undefined>
+        )) !== undefined;
+      if (!linked && Object.keys(rest).length === 0) return false;
       const workspace = tx.objectStore('workspace');
       const preferences =
         (await workspaceValue<WorkspacePreferences>(workspace, 'preferences')) ??
         defaultPreferences();
-      putWorkspace(workspace, 'preferences', { ...preferences, ...patch });
+      putWorkspace(workspace, 'preferences', {
+        ...preferences,
+        ...rest,
+        ...(linked && lastProjectId !== undefined ? { lastProjectId } : {})
+      });
       // `lastProjectId` is session state; the rest belongs in a backup.
       if ('defaults' in patch || 'theme' in patch || 'defaultProfileId' in patch) {
         const revision = ((await workspaceValue<number>(workspace, 'revision')) ?? 0) + 1;
         putWorkspace(workspace, 'revision', revision);
       }
+      return true;
     });
-    this.#broadcast();
+    if (written) this.#broadcast();
   }
 
   async restore(plan: RestorePlan, restorePreferences: boolean): Promise<boolean> {

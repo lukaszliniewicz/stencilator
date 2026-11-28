@@ -165,6 +165,7 @@ export const text = {
     tilesNeedPicture: 'Tiles are available for PNG, JPEG and WebP pictures.',
     open: 'Import a project…',
     fileLabel: 'Stencilator project file',
+    wrongFile: 'Choose a .stencilator project file. To open artwork, use the artwork picker.',
     heading: 'Stencilator project',
     save: 'Download project',
     body: 'Keep the artwork, fonts, settings and paint choices together. Reopen this file here or use it on the command line.',
@@ -286,18 +287,25 @@ export const text = {
     exportPart: (part: number, count: number) => `Download file ${num(part)} of ${num(count)}`,
     unsaved: (name: string) => `Unsaved changes in “${name}” will be left out of the backup.`,
     oversized:
-      'Projects over 32 MiB are left out of the workspace backup. Open each project listed here and choose Download project to keep a separate copy.',
+      'The items below are left out of this backup. The rest of the workspace can still be downloaded.',
+    excludedKind: { project: 'Project', profile: 'Printer profile' },
+    oversizedProjects:
+      'Projects over 32 MiB, or projects whose metadata or linked profile cannot fit, may be left out. Open each listed project and choose Download project to keep a separate copy.',
+    oversizedProfiles: 'Keep a separate note of the settings of any listed printer profiles.',
     importTitle: 'Import a backup',
     importBody: 'Review the contents before adding them. Your existing work stays here.',
     importTooLarge: (name: string) =>
       `“${name}” is too large to import as a single backup. No changes were made.`,
+    restoreTooLarge:
+      'The restored workspace would be too large to back up safely. No changes were made.',
     choose: 'Choose backup…',
     input: 'Workspace backup file',
     preview: 'Preview import',
     import: 'Import backup',
     back: 'Back to backup options',
     preferences: 'Also restore app preferences',
-    preferencesHint: 'Includes theme, defaults and the default printer profile.',
+    preferencesHint:
+      'Includes theme, defaults and the default printer profile. Invalid saved defaults are replaced with engine defaults.',
     previewProjects: 'Projects',
     previewProfiles: 'Printer profiles',
     count: (projects: number, profiles: number) =>
@@ -337,6 +345,8 @@ export const text = {
       'Extrusion line width is the width of a line of plastic. The stencil web is the material between openings. These settings are for reference.',
     invalid:
       'Give the profile a name, a bed between 50 and 2,000 mm on each side, and positive values for any slicer settings.',
+    positiveMeasurement: (field: string) =>
+      `Enter a positive value for ${field}, or leave it blank.`,
     save: 'Save profile',
     remove: 'Remove profile…',
     removeConfirm: (name: string) =>

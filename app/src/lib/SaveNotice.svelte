@@ -1,17 +1,41 @@
 <script lang="ts">
+  import { tick } from 'svelte';
   import { text } from './text';
   import type { Workspace } from './workspace.svelte';
 
-  let { workspace }: { workspace: Workspace } = $props();
+  let { workspace, onRecovered }: { workspace: Workspace; onRecovered: () => void } = $props();
   const words = text.workspace;
-  const status = $derived(workspace.status);
+  let retrying = $state(false);
+  let retryButton: HTMLButtonElement | undefined = $state();
+  const status = $derived(retrying && workspace.status === 'saving' ? 'failed' : workspace.status);
   const missing = $derived(!workspace.remote);
+  const title = $derived(status === 'conflict' && missing ? words.removed : words[status]);
+
+  async function retry(): Promise<void> {
+    if (retrying || workspace.busy) return;
+    retrying = true;
+    const button = retryButton;
+    const wasFocused = document.activeElement === button;
+    try {
+      await workspace.flush();
+    } finally {
+      retrying = false;
+      await tick();
+      if (
+        wasFocused &&
+        (document.activeElement === button || document.activeElement === document.body)
+      ) {
+        if (retryButton) retryButton.focus();
+        else onRecovered();
+      }
+    }
+  }
 </script>
 
 {#if status === 'failed' || status === 'conflict' || status === 'upgrade'}
-  <section class="recovery notice" aria-label={words[status]}>
+  <section class="recovery notice" aria-label={title}>
     <div>
-      <p><strong>{status === 'conflict' && missing ? words.removed : words[status]}</strong></p>
+      <p><strong>{title}</strong></p>
       <p>
         {status === 'failed'
           ? words.failedHelp
@@ -30,8 +54,9 @@
         <button
           type="button"
           class="button"
-          disabled={workspace.busy}
-          onclick={() => void workspace.flush()}
+          bind:this={retryButton}
+          aria-disabled={workspace.busy || retrying}
+          onclick={() => void retry()}
         >
           {words.retry}
         </button>

@@ -16,7 +16,8 @@
     const node = dialog;
     if (!node) return;
     node.showModal();
-    let startedOutside = false;
+    // eslint-disable-next-line svelte/prefer-svelte-reactivity -- Tracks transient pointer gestures, not rendered state.
+    const startedOutside = new Set<number>();
     const outside = (event: PointerEvent): boolean => {
       const { left, right, top, bottom } = node.getBoundingClientRect();
       return (
@@ -27,16 +28,22 @@
       );
     };
     const down = (event: PointerEvent): void => {
-      startedOutside = outside(event);
+      if (outside(event)) startedOutside.add(event.pointerId);
+      else startedOutside.delete(event.pointerId);
     };
     const up = (event: PointerEvent): void => {
-      if (startedOutside && outside(event) && !busy) dismiss();
+      if (startedOutside.delete(event.pointerId) && outside(event) && !busy) dismiss();
+    };
+    const cancel = (event: PointerEvent): void => {
+      startedOutside.delete(event.pointerId);
     };
     node.addEventListener('pointerdown', down);
     node.addEventListener('pointerup', up);
+    node.addEventListener('pointercancel', cancel);
     return () => {
       node.removeEventListener('pointerdown', down);
       node.removeEventListener('pointerup', up);
+      node.removeEventListener('pointercancel', cancel);
       node.close();
     };
   });

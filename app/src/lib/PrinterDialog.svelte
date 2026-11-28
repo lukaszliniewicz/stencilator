@@ -54,7 +54,7 @@
     event.preventDefault();
     const w = profile?.widthMm ?? customWidth;
     const d = profile?.depthMm ?? customDepth;
-    if (!w || !d) return;
+    if (!w || !d || workspace.busy || workspace.bench.opening) return;
     workspace.bench.applyBed(w, d, profile?.id ?? null);
     dismiss();
   }
@@ -78,7 +78,17 @@
     event.preventDefault();
     const w = width;
     const d = depth;
-    if (!name.trim() || !w || !d) return;
+    if (!name.trim() || !w || !d || busy) return;
+    for (const [label, value] of [
+      [words.line, lineWidth],
+      [words.layer, layer],
+      [words.nozzle, nozzle]
+    ] as const) {
+      if (typeof value === 'number' && (!Number.isFinite(value) || value <= 0)) {
+        problem = words.positiveMeasurement(label);
+        return;
+      }
+    }
     void write(async () => {
       const saved = await workspace.saveProfile(
         {
@@ -186,7 +196,11 @@
         >
           {words.manage}
         </button>
-        <button type="submit" class="button primary">
+        <button
+          type="submit"
+          class="button primary"
+          disabled={workspace.busy || workspace.bench.opening}
+        >
           {selectedUpdate ? words.applyUpdate : words.apply}
         </button>
       </div>
@@ -271,7 +285,6 @@
               class="field-input"
               type="number"
               bind:value={lineWidth}
-              min="0"
               step="any"
               disabled={busy}
             />
@@ -282,7 +295,6 @@
               class="field-input"
               type="number"
               bind:value={layer}
-              min="0"
               step="any"
               disabled={busy}
             />
@@ -293,7 +305,6 @@
               class="field-input"
               type="number"
               bind:value={nozzle}
-              min="0"
               step="any"
               disabled={busy}
             />

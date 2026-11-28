@@ -80,17 +80,21 @@
 
   function inspect(file: File): void {
     checking = true;
+    let decodedFile = false;
     void action(
       async () => {
         await workspace.flush();
         const decoded = await workspace.readBackup(file);
+        decodedFile = true;
         preview = await workspace.previewBackup(decoded);
         backup = decoded;
         preferences = false;
       },
       (error) =>
         error instanceof WorkspaceError && error.code === 'too-large'
-          ? words.importTooLarge(file.name)
+          ? decodedFile
+            ? words.restoreTooLarge
+            : words.importTooLarge(file.name)
           : workspaceProblem(error)
     );
   }
@@ -99,16 +103,22 @@
     const plan = preview;
     const data = backup;
     if (!plan || !data) return;
-    void action(async () => {
-      if (await workspace.restoreBackup(plan, preferences)) {
-        preview = undefined;
-        backup = undefined;
-        note = words.imported;
-      } else {
-        preview = await workspace.previewBackup(data);
-        note = words.updated;
-      }
-    });
+    void action(
+      async () => {
+        if (await workspace.restoreBackup(plan, preferences)) {
+          preview = undefined;
+          backup = undefined;
+          note = words.imported;
+        } else {
+          preview = await workspace.previewBackup(data);
+          note = words.updated;
+        }
+      },
+      (error) =>
+        error instanceof WorkspaceError && error.code === 'too-large'
+          ? words.restoreTooLarge
+          : workspaceProblem(error)
+    );
   }
 </script>
 
@@ -193,10 +203,21 @@
       {#if oversized.length}
         <p class="notice" role="alert">{words.oversized}</p>
         <ul class="quiet-scroll">
-          {#each oversized as { id, title } (id)}
-            <li>{title}</li>
+          {#each oversized as { kind, id, title } (`${kind}:${id}`)}
+            <li>
+              <div>
+                <p class="note">{words.excludedKind[kind]}</p>
+                <strong>{title}</strong>
+              </div>
+            </li>
           {/each}
         </ul>
+        {#if oversized.some((item) => item.kind === 'project')}
+          <p class="note">{words.oversizedProjects}</p>
+        {/if}
+        {#if oversized.some((item) => item.kind === 'profile')}
+          <p class="note">{words.oversizedProfiles}</p>
+        {/if}
       {/if}
       {#if parts.length}
         {#if parts.length > 1}<p class="note">{words.split(parts.length)}</p>{/if}
@@ -221,7 +242,10 @@
             type="button"
             class="quiet"
             disabled={busy || !workspace.bench.canSaveProject}
-            onclick={() => void workspace.download()}
+            onclick={() => {
+              dismiss();
+              void workspace.download();
+            }}
           >
             {text.project.save}
           </button>
